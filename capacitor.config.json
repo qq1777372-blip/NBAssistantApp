@@ -1,0 +1,13 @@
+{
+  "appId": "asia.xiaoxu666.nbassistant",
+  "appName": "NB助手",
+  "webDir": "www",
+  "server": {
+    "url": "https://xiaoxu666.asia/ui/dashboard",
+    "cleartext": false,
+    "allowNavigation": [
+      "xiaoxu666.asia",
+      "*.xiaoxu666.asia"
+    ]
+  }
+}

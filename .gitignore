@@ -1,0 +1,8 @@
+node_modules/
+build/
+Payload/
+*.ipa
+*.ipa.sha256
+.DS_Store
+*.xcuserstate
+ios/App/App.xcodeproj/xcuserdata/
