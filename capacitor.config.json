@@ -1,9 +1,9 @@
 {
   "appId": "asia.xiaoxu666.nbassistant",
-  "appName": "NB助手",
+  "appName": "小许后台管理系统",
   "webDir": "www",
   "server": {
-    "url": "https://xiaoxu666.asia/ui/dashboard",
+    "url": "https://xiaoxu666.asia/app/",
     "cleartext": false,
     "allowNavigation": [
       "xiaoxu666.asia",
