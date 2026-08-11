@@ -1,0 +1,1 @@
+async function o(n){const t=String(n||"");if(!t)return!1;try{return await navigator.clipboard.writeText(t),!0}catch{const e=document.createElement("textarea");e.value=t,e.readOnly=!0,e.style.position="fixed",e.style.left="-9999px",e.style.opacity="0",document.body.appendChild(e),e.select();const c=document.execCommand("copy");return e.remove(),c}}export{o as c};

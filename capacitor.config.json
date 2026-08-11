@@ -2,12 +2,12 @@
   "appId": "asia.xiaoxu666.nbassistant",
   "appName": "小许后台管理系统",
   "webDir": "www",
-  "server": {
-    "url": "https://xiaoxu666.asia/app/",
-    "cleartext": false,
-    "allowNavigation": [
-      "xiaoxu666.asia",
-      "*.xiaoxu666.asia"
-    ]
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "CapacitorCookies": {
+      "enabled": true
+    }
   }
 }

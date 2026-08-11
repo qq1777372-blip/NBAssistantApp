@@ -1,13 +1,24 @@
 # 小许后台管理系统 iOS App
 
-Capacitor iOS shell for https://xiaoxu666.asia/app/.
+Capacitor iOS app with a bundled Vue frontend and remote API at https://xiaoxu666.asia.
 
 ## Local synchronization
 
 ```powershell
+# Build the native-mode snapshot from the main project first.
+cd D:\PY\RuoShopAdmin\app-frontend
+npm run build:native
+
+# Copy app-frontend-native-dist into this repository's www directory,
+# then synchronize the generated files into the iOS project.
+cd D:\PY\NBAssistantApp
 npm ci
 npm run sync
 ```
+
+Computer development remains in `D:\PY\RuoShopAdmin\app-frontend` and runs with
+`npm run dev`. Only `build:native` targets the bundled iOS runtime and the remote
+API at `https://xiaoxu666.asia`.
 
 ## Cloud build
 

@@ -1,1 +1,46 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"><meta name="theme-color" content="#0f766e"><title>小许后台管理系统</title><style>:root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fa;color:#172033}main{text-align:center;padding:32px}.logo{width:72px;height:72px;margin:0 auto 18px;display:grid;place-items:center;border-radius:20px;background:#0f766e;color:#fff;font-size:22px;font-weight:700}h1{margin:0 0 8px;font-size:22px}p{margin:0;color:#6b7280;font-size:14px}</style></head><body><main><div class="logo">小许</div><h1>小许后台管理系统</h1><p>&#x6B63;&#x5728;&#x8FDE;&#x63A5;&#x8FD0;&#x8425;&#x540E;&#x53F0;&#x2026;</p></main></body></html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#f5f7fb" />
+    <!-- Applied before the bundle loads so a dark-mode device never flashes a
+         white first frame. main.ts repeats it for the Vue side. -->
+    <script>
+      try {
+        document.documentElement.classList.toggle('ion-palette-dark', localStorage.getItem('app-theme') === 'dark')
+      } catch (_) {}
+    </script>
+    <style>
+      #app-startup{position:fixed;inset:0;z-index:20000;display:grid;place-items:center;padding:calc(env(safe-area-inset-top,0px) + 24px) 24px calc(env(safe-area-inset-bottom,0px) + 24px);color:#172033;background:#f5f7fb;opacity:1;visibility:visible;transition:opacity .2s ease-out,visibility .2s ease-out}
+      #app-startup.leaving{pointer-events:none;opacity:0;visibility:hidden}
+      .startup-content{text-align:center}.startup-logo{width:72px;height:72px;margin:0 auto;border-radius:23px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#2563eb,#8b5cf6);box-shadow:0 15px 35px rgba(37,99,235,.25);font:800 26px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif}.startup-title{margin:18px 0 0;font:760 21px/1.3 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif}.startup-status{margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px;color:#8490a3;font:400 12px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif}.startup-dots{display:flex;gap:4px}.startup-dots i{width:4px;height:4px;border-radius:50%;background:#1991ff;animation:startup-pulse 1.1s ease-in-out infinite}.startup-dots i:nth-child(2){animation-delay:.16s}.startup-dots i:nth-child(3){animation-delay:.32s}.ion-palette-dark #app-startup{color:#f3f6fc;background:#0d1626}.ion-palette-dark .startup-status{color:#91a0b8}.ion-palette-dark .startup-logo{box-shadow:0 15px 38px rgba(0,0,0,.3)}
+      @keyframes startup-pulse{0%,80%,100%{opacity:.28;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+      @media(prefers-reduced-motion:reduce){#app-startup{transition:none}.startup-dots i{animation:none;opacity:.65}}
+    </style>
+    <title>小许后台管理系统</title>
+    <!-- Runtime add-ons served from public/. They patch pages the bundle already
+         renders, so they stay outside the Vue build on purpose: license-preview
+         drives the fullscreen license image, cache-settings adds the cache
+         cleanup row to the settings list. -->
+    <script defer src="./cache-settings.js"></script>
+    <script defer src="./license-preview.js"></script>
+    <script type="module" crossorigin src="./assets/index-Bze_MSzX.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-C6Fet3OY.css">
+  <link rel="manifest" href="./manifest.webmanifest"></head>
+  <body>
+    <div id="app"></div>
+    <div id="app-startup" role="status" aria-live="polite" aria-label="应用正在启动">
+      <div class="startup-content">
+        <div class="startup-logo" aria-hidden="true">小许</div>
+        <h1 class="startup-title">小许后台管理系统</h1>
+        <div class="startup-status"><span>正在启动</span><span class="startup-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+      </div>
+    </div>
+  </body>
+</html>

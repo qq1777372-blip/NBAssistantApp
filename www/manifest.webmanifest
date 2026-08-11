@@ -1,0 +1,1 @@
+{"name":"小许后台管理系统","short_name":"小许后台","description":"店铺、任务、记账、库存与利润管理","start_url":"/app/","display":"standalone","background_color":"#f5f7fb","theme_color":"#1677ff","lang":"zh-CN","scope":"/app/","icons":[{"src":"/app/favicon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
