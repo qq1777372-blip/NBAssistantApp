@@ -1617,8 +1617,34 @@ private struct SavedLinkDetail: View {
             }
             if let description = item.description, !description.isEmpty { Section("正文") { Text(description).textSelection(.enabled) } }
             if let value = item.url, let url = URL(string: value) { Section("链接") { Link(destination: url) { Label(value, systemImage: "safari") }.lineLimit(3) } }
-            if !item.images.isEmpty { Section("图片") { ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in if let url = nativeImageURL(image.url) { AsyncImage(url: url) { phase in if case .success(let value) = phase { value.resizable().scaledToFit() } else { ProgressView().frame(maxWidth: .infinity, minHeight: 120) } }.frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 10)) } } } }
+            if !item.images.isEmpty {
+                Section("图片") {
+                    ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in
+                        SavedLinkDetailImage(url: image.url)
+                    }
+                }
+            }
         }.navigationTitle("链接详情").navigationBarTitleDisplayMode(.inline)
+    }
+}
+private struct SavedLinkDetailImage: View {
+    let url: String
+    var body: some View {
+        Group {
+            if let imageURL = nativeImageURL(url) {
+                AsyncImage(url: imageURL) { phase in
+                    switch phase {
+                    case .success(let image): image.resizable().scaledToFit()
+                    case .failure: Image(systemName: "photo").frame(maxWidth: .infinity, minHeight: 120)
+                    default: ProgressView().frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                }
+            } else {
+                Image(systemName: "photo").frame(maxWidth: .infinity, minHeight: 120)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 private struct SavedLink: Codable, Identifiable {
