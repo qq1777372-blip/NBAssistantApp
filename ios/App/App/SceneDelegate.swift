@@ -34,6 +34,7 @@ private struct NativeRootView: View {
             else { NativeLoginView().environmentObject(session) }
         }
         .tint(Color(red: 0.08, green: 0.49, blue: 0.96))
+        .task { await session.restoreSession() }
     }
 }
 
@@ -90,14 +91,46 @@ private struct NativeLoginView: View {
 }
 
 private struct NativeTabView: View {
+    @State private var selected = 0
     var body: some View {
-        TabView {
-            NativeHomeView().tabItem { Label("首页", systemImage: "house") }
-            NativeTaskView().tabItem { Label("任务", systemImage: "checklist") }
-            NativeLedgerView().tabItem { Label("记账", systemImage: "wallet.pass") }
-            NativeLinksView().tabItem { Label("链接", systemImage: "link") }
-            NativeMineView().tabItem { Label("我的", systemImage: "person") }
+        VStack(spacing: 0) {
+            Group {
+                switch selected {
+                case 1: NativeTaskView()
+                case 2: NativeLedgerView()
+                case 3: NativeLinksView()
+                case 4: NativeMineView()
+                default: NativeHomeView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            NativeBottomBar(selected: $selected)
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
+}
+
+private struct NativeBottomBar: View {
+    @Binding var selected: Int
+    private let items: [(String, String)] = [("首页", "house"), ("任务", "checklist"), ("记账", "wallet.pass"), ("链接", "link"), ("我的", "person")]
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(items.indices, id: \.self) { index in
+                Button { selected = index } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: items[index].1).font(.system(size: 19, weight: selected == index ? .semibold : .regular))
+                        Text(items[index].0).font(.system(size: 10, weight: selected == index ? .semibold : .regular))
+                    }
+                    .frame(maxWidth: .infinity).frame(height: 58)
+                    .foregroundStyle(selected == index ? Color.blue : Color(.secondaryLabel))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 5)
+        .padding(.bottom, 4)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Divider() }
     }
 }
 
@@ -121,6 +154,29 @@ private struct NativeHomeView: View {
 
     var body: some View {
         NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack { Text("首页").font(.system(size: 25, weight: .bold)); Spacer(); Button { showingHistory = true } label: { Image(systemName: "moon") }; Button { } label: { Image(systemName: "bell.badge.fill") }; Button { } label: { Image(systemName: "magnifyingglass") } }.padding(.horizontal, 16)
+                    HStack { Text("常用功能").font(.headline); Spacer(); Text("自定义").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 12) {
+                        HomeShortcut("生意参谋", "chart.bar", .teal); HomeShortcut("任务记录", "doc.text", .indigo); HomeShortcut("店铺账号", "storefront", .mint); HomeShortcut("仓储管理", "cube.box", .orange); HomeShortcut("链接广场", "link", .blue); HomeShortcut("全部功能", "circle.grid.3x3", .gray)
+                    }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 3), spacing: 1) { HomeMetric("公司消费", "¥37284.34"); HomeMetric("累计利润", "¥80538.54"); HomeMetric("当月钉钉利润", "¥15377.97"); HomeMetric("待签收", "4"); HomeMetric("库存数量", "1356"); HomeMetric("库存成本", "¥121499.42") }.padding(1).background(Color(.separator)).clipShape(RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    HStack { Text("钉钉月度利润").font(.headline); Spacer(); Text("查看趋势 ›").font(.caption).foregroundStyle(.blue) }.padding(.horizontal, 16)
+                    HStack(alignment: .bottom, spacing: 18) { ForEach([72, 34, 68, 42, 55, 76], id: \.self) { height in RoundedRectangle(cornerRadius: 5).fill(.blue).frame(maxWidth: .infinity).frame(height: CGFloat(height)) } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    HStack { Text("待办提醒").font(.headline); Spacer(); Text("查看全部").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
+                    VStack(spacing: 0) { HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: "4"); Divider(); HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: "30") }.background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                }.padding(.vertical, 14)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationBarHidden(true)
+            .task { await loadModels(); await loadChats() }
+        }
+    }
+
+    /* AI chat remains available from the home shortcuts/history sheet. */
+    private var legacyChatBody: some View {
             VStack(spacing: 0) {
                 ScrollView {
                     LazyVStack(spacing: 16) {
@@ -1346,6 +1402,17 @@ private struct MultipartFile { let field: String; let filename: String; let data
     private let origin = URL(string: "https://xiaoxu666.asia")!
     private let decoder: JSONDecoder = { let value = JSONDecoder(); value.keyDecodingStrategy = .useDefaultKeys; return value }()
 
+    func restoreSession() async {
+        guard !loggedIn else { return }
+        do {
+            let user: CurrentUserSession = try await get("auth/me")
+            username = user.username
+            loggedIn = true
+        } catch {
+            loggedIn = false
+        }
+    }
+
     func login(username: String, password: String, totpCode: String = "", captchaCode: String = "") async {
         loading = true; error = nil; defer { loading = false }
         do {
@@ -1463,11 +1530,16 @@ private func nextStatus(_ value: String) -> String? { switch value { case "pendi
 private struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
+private struct CurrentUserSession: Decodable { let username: String }
 private struct CaptchaWebView: UIViewRepresentable {
     let data: String
     func makeUIView(context: Context) -> WKWebView { let view = WKWebView(); view.isOpaque = false; view.backgroundColor = .clear; return view }
     func updateUIView(_ view: WKWebView, context: Context) { view.loadHTMLString("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><body style=\"margin:0;background:transparent;overflow:hidden\">\(data.hasPrefix("data:") ? "<img src='\(data)' style='width:132px;height:44px'>" : "")</body>", baseURL: nil) }
 }
+
+private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; init(_ title: String, _ icon: String, _ color: Color) { self.title = title; self.icon = icon; self.color = color }; var body: some View { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1) } } }
+private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
+private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
