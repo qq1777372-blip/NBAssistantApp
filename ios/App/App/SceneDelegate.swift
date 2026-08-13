@@ -25,15 +25,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 }
 
 private struct NativeRootView: View {
-    @AppStorage("native_logged_in") private var loggedIn = false
+    @StateObject private var session = NativeSession()
     var body: some View {
-        Group { loggedIn ? AnyView(NativeTabView()) : AnyView(NativeLoginView(loggedIn: $loggedIn)) }
+        Group { session.loggedIn ? AnyView(NativeTabView().environmentObject(session)) : AnyView(NativeLoginView().environmentObject(session)) }
             .tint(Color(red: 0.08, green: 0.49, blue: 0.96))
     }
 }
 
 private struct NativeLoginView: View {
-    @Binding var loggedIn: Bool
+    @EnvironmentObject private var session: NativeSession
     @State private var account = "admin"
     @State private var password = ""
     var body: some View {
@@ -46,7 +46,8 @@ private struct NativeLoginView: View {
                 VStack(spacing: 14) {
                     TextField("账号", text: $account).textContentType(.username).padding().background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                     SecureField("密码", text: $password).textContentType(.password).padding().background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                    Button("登录") { loggedIn = true }.buttonStyle(.borderedProminent).controlSize(.large).frame(maxWidth: .infinity)
+                    Button(session.loading ? "登录中…" : "登录") { Task { await session.login(username: account, password: password) } }.buttonStyle(.borderedProminent).controlSize(.large).frame(maxWidth: .infinity).disabled(session.loading || account.isEmpty || password.isEmpty)
+                    if let error = session.error { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
                 .padding(20).background(.background, in: RoundedRectangle(cornerRadius: 22)).shadow(color: .black.opacity(0.08), radius: 18, y: 8)
                 Spacer()
@@ -68,19 +69,53 @@ private struct NativeTabView: View {
 }
 
 private struct NativeHomeView: View {
+    @EnvironmentObject private var session: NativeSession
     @State private var message = ""
     @State private var messages = ["你好！请告诉我需要处理什么问题。"]
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollView { LazyVStack(alignment: .leading, spacing: 16) { ForEach(messages, id: \.self) { text in Text(text).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16)) } }.padding() }
-                HStack(spacing: 10) { TextField("给 AI 发消息…", text: $message, axis: .vertical).lineLimit(1...4).padding(12).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18)); Button { let value = message.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; messages.append(value); message = "" } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 34)) } }.padding()
+                HStack(spacing: 10) { TextField("给 AI 发消息…", text: $message, axis: .vertical).lineLimit(1...4).padding(12).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18)); Button { let value = message.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; messages.append(value); message = ""; Task { if let answer = await session.chat(value) { messages.append(answer) } } } label: { Image(systemName: "arrow.up.circle.fill").font(.system(size: 34)) } }.padding()
             }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
         }
     }
 }
 
 private struct NativeMineView: View {
-    @AppStorage("native_logged_in") private var loggedIn = true
-    var body: some View { NavigationStack { List { Section("账户") { Label("管理员", systemImage: "person.circle"); Button("退出登录", role: .destructive) { loggedIn = false } } }.navigationTitle("我的") } }
+    @EnvironmentObject private var session: NativeSession
+    var body: some View { NavigationStack { List { Section("账户") { Label(session.username, systemImage: "person.circle"); Button("退出登录", role: .destructive) { Task { await session.logout() } } } }.navigationTitle("我的") } }
+}
+
+@MainActor private final class NativeSession: ObservableObject {
+    @Published var loggedIn = false
+    @Published var loading = false
+    @Published var error: String?
+    @Published var username = "管理员"
+    private let origin = URL(string: "https://xiaoxu666.asia")!
+
+    func login(username: String, password: String) async {
+        loading = true; error = nil; defer { loading = false }
+        do {
+            var request = URLRequest(url: origin.appendingPathComponent("auth/login")); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["username": username, "password": password, "totp_code": NSNull(), "captcha_id": NSNull(), "captcha_code": NSNull()])
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.userAuthenticationRequired) }
+            self.username = username; loggedIn = true
+        } catch { self.error = "登录失败，请检查账号、密码和网络" }
+    }
+
+    func chat(_ question: String) async -> String? {
+        do {
+            var request = URLRequest(url: origin.appendingPathComponent("ai-api/chat")); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["question": question])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "请求失败，请稍后重试。" }
+            return (object["content"] ?? object["answer"] ?? object["response"]) as? String
+        } catch { return "无法连接 AI 服务，请检查网络。" }
+    }
+
+    func logout() async {
+        var request = URLRequest(url: origin.appendingPathComponent("auth/logout")); request.httpMethod = "POST"; _ = try? await URLSession.shared.data(for: request); loggedIn = false
+    }
 }
