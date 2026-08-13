@@ -30,7 +30,11 @@ private struct NativeRootView: View {
 
     var body: some View {
         Group {
-            if session.loggedIn { NativeTabView().environmentObject(session) }
+            if session.restoring {
+                ProgressView("正在恢复登录状态…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.systemGroupedBackground))
+            } else if session.loggedIn { NativeTabView().environmentObject(session) }
             else { NativeLoginView().environmentObject(session) }
         }
         .tint(Color(red: 0.08, green: 0.49, blue: 0.96))
@@ -92,6 +96,7 @@ private struct NativeLoginView: View {
 
 private struct NativeTabView: View {
     @State private var selected = 0
+    @State private var destination: NativeDestination?
     var body: some View {
         VStack(spacing: 0) {
             Group {
@@ -100,14 +105,148 @@ private struct NativeTabView: View {
                 case 2: NativeLedgerView()
                 case 3: NativeLinksView()
                 case 4: NativeMineView()
-                default: NativeHomeView()
+                default: NativeHomeView(destination: $destination)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             NativeBottomBar(selected: $selected)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .sheet(item: $destination) { destination in
+            NavigationStack { destination.view }
+        }
     }
+}
+
+private enum NativeDestination: String, Identifiable {
+    case tasks, shops, warehouse, links, workbench, profits, expenses, owners
+    case peers, licenses, accountUsage, devices, users, licenseKeys
+    case aiWorkspace, aiModels, aiKnowledge, aiCapabilities, aiOperations
+    case sycm, server, alerts, search, systemSettings, appSettings, profile
+
+    var id: String { rawValue }
+
+    @ViewBuilder var view: some View {
+        switch self {
+        case .tasks: NativeTaskView()
+        case .shops: NativeShopsView()
+        case .warehouse: NativeWarehouseView()
+        case .links: NativeLinksView()
+        case .expenses: NativeLedgerView()
+        case .owners: NativeOwnersView()
+        case .peers: NativePeerShopsView()
+        case .licenses: NativeLicenseRecordsView()
+        case .accountUsage: NativeAccountUsageView()
+        case .devices: NativeDevicesView()
+        case .users: NativeUsersView()
+        case .licenseKeys: NativeLicensesView()
+        case .aiModels: NativeModelsView()
+        case .aiKnowledge: NativeKnowledgeView()
+        case .aiCapabilities: NativeCapabilitiesView()
+        case .aiOperations: NativeOperationsView()
+        case .aiWorkspace: NativeAIWorkspaceView()
+        case .workbench: NativeWorkbenchView()
+        case .profits: NativeProfitView()
+        case .sycm: NativeSycmView()
+        case .server: NativeServerView()
+        case .alerts: NativeAlertsView()
+        case .search: NativeSearchView()
+        case .systemSettings: NativeSystemSettingsView()
+        case .appSettings: NativeAppSettingsView()
+        case .profile: NativeProfileView()
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .aiWorkspace: "AI 工作台"
+        case .workbench: "全部功能"
+        case .profits: "钉钉利润"
+        default: "功能"
+        }
+    }
+}
+
+private struct NativeWorkbenchView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var query = ""
+    @State private var destination: NativeDestination?
+    private let groups: [(String, [(String, String, Color, NativeDestination)])] = [
+        ("任务记账", [("任务记录", "doc.text", .indigo, .tasks), ("负责人管理", "person.badge.plus", .cyan, .owners), ("钉钉利润", "chart.bar", .orange, .profits), ("公司记账", "creditcard", .blue, .expenses)]),
+        ("店铺管理", [("生意参谋", "chart.bar", .teal, .sycm), ("店铺账号", "storefront", .mint, .shops), ("同行店铺", "building.2", .green, .peers), ("执照档案", "doc.badge.gearshape", .pink, .licenses), ("账号使用", "person.text.rectangle", .teal, .accountUsage), ("手机设备", "iphone", .cyan, .devices)]),
+        ("仓储管理", [("仓储管理", "shippingbox", .orange, .warehouse)]),
+        ("AI 工具", [("AI 工作台", "sparkles", .blue, .aiWorkspace), ("模型管理", "cpu", .purple, .aiModels), ("知识库", "books.vertical", .brown, .aiKnowledge), ("AI 能力", "wand.and.stars", .indigo, .aiCapabilities), ("AI 运营", "chart.bar.xaxis", .green, .aiOperations)]),
+        ("系统管理", [("服务器运行", "server.rack", .green, .server), ("通知中心", "bell", .red, .alerts), ("账号与权限", "person.badge.key", .gray, .users), ("卡密管理", "key", .purple, .licenseKeys), ("系统设置", "gearshape", .gray, .systemSettings), ("链接广场", "link", .blue, .links)])
+    ]
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                ForEach(Array(filteredGroups.enumerated()), id: \.offset) { _, entry in
+                    VStack(alignment: .leading, spacing: 13) {
+                        Text(entry.0).font(.headline)
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 20) {
+                            ForEach(Array(entry.1.enumerated()), id: \.offset) { _, item in
+                                HomeShortcut(item.0, item.1, item.2) { destination = item.3 }
+                            }
+                        }
+                    }
+                }
+            }.padding(16)
+        }
+        .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
+        .searchable(text: $query, prompt: "搜索功能")
+        .sheet(item: $destination) { target in NavigationStack { target.view } }
+    }
+    private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
+        groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
+    }
+}
+
+private struct NativeProfitView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var summary: ProfitListSummary?
+    @State private var months: [ProfitMonth] = []
+    @State private var rows: [ProfitRecord] = []
+    @State private var query = ""
+    @State private var error: String?
+    private var filtered: [ProfitRecord] { rows.filter { query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query) } }
+    private var maximum: Double { max(months.map { abs($0.totalProfit) }.max() ?? 1, 1) }
+    var body: some View {
+        List {
+            if let error { Text(error).foregroundStyle(.red) }
+            Section { HStack { Metric(title: "累计利润", value: money(summary?.totalProfit ?? 0)); Metric(title: "店铺数", value: "\(summary?.uniqueStoreCount ?? 0) 家"); Metric(title: "报表人数", value: "\(summary?.uniqueReporterCount ?? 0) 人") } }
+            Section("月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(months) { item in VStack { Text(money(item.totalProfit)).font(.caption2).foregroundStyle(item.totalProfit < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.totalProfit < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.totalProfit) / maximum) * 115, 5)); Text(String(item.month.suffix(2)) + "月").font(.caption) } } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
+            Section("利润明细") { ForEach(filtered) { item in HStack { VStack(alignment: .leading, spacing: 4) { Text(item.storeName).fontWeight(.medium); Text("\(item.reportDate) · \(item.reporterName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(money(item.profit)).foregroundStyle(item.profit < 0 ? .red : .green) } } }
+        }.navigationTitle("钉钉利润").searchable(text: $query, prompt: "搜索店铺、上报人或日期").task { await load() }.refreshable { await load() }
+    }
+    private func load() async { do { async let a: ProfitListSummary = session.get("dingtalk-profits/summary"); async let b: [ProfitMonth] = session.get("dingtalk-profits/monthly-summary"); async let c: [ProfitRecord] = session.get("dingtalk-profits"); (summary, months, rows) = try await (a, b, c) } catch { self.error = session.message(for: error) } }
+}
+
+private struct NativeAIWorkspaceView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var question = ""; @State private var messages: [AIChatMessage] = []
+    @State private var models: [AIModel] = []; @State private var selectedModel = ""
+    @State private var sending = false; @State private var error: String?; @State private var streamTask: Task<Void, Never>?
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView { LazyVStack(spacing: 14) {
+                    if messages.isEmpty { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题开始与 AI 对话").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
+                    ForEach(messages) { item in HStack { if item.role == "user" { Spacer(minLength: 48) }; Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled).padding(13).foregroundStyle(item.role == "user" ? .white : .primary).background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15)); if item.role != "user" { Spacer(minLength: 48) } }.id(item.id) }
+                }.padding() }.onChange(of: messages.count) { _ in if let id = messages.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } } }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("给 AI 发消息…", text: $question, axis: .vertical).lineLimit(1...5).nativeField()
+                Button { sending ? stop() : send() } label: { Image(systemName: sending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.system(size: 34)) }.disabled(!sending && question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.padding()
+        }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItem(placement: .topBarTrailing) { Button { messages = []; error = nil } label: { Image(systemName: "square.and.pencil") } } }
+        .task { await loadModels() }.onDisappear { streamTask?.cancel() }
+    }
+    private func loadModels() async { do { let result: AIModelsResponse = try await session.get("ai-api/models"); models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }; if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" } } catch { self.error = session.message(for: error) } }
+    private func send() { let value = question.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; question = ""; error = nil; messages.append(AIChatMessage(role: "user", content: value)); let answerID = UUID().uuidString; messages.append(AIChatMessage(id: answerID, role: "assistant", content: "")); sending = true; streamTask = Task { do { try await session.streamChat(value, modelID: selectedModel) { chunk in if let index = messages.firstIndex(where: { $0.id == answerID }) { messages[index].content += chunk } } } catch is CancellationError { } catch { self.error = session.message(for: error) }; sending = false } }
+    private func stop() { streamTask?.cancel(); streamTask = nil; sending = false }
 }
 
 private struct NativeBottomBar: View {
@@ -136,6 +275,10 @@ private struct NativeBottomBar: View {
 
 private struct NativeHomeView: View {
     @EnvironmentObject private var session: NativeSession
+    @Binding var destination: NativeDestination?
+    @State private var dashboard = HomeDashboard()
+    @State private var dashboardLoading = false
+    @State private var dashboardError: String?
     @State private var message = ""
     @State private var chats: [AIChat] = []
     @State private var activeChatID = ""
@@ -156,23 +299,46 @@ private struct NativeHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("首页").font(.system(size: 25, weight: .bold)); Spacer(); Button { showingHistory = true } label: { Image(systemName: "moon") }; Button { } label: { Image(systemName: "bell.badge.fill") }; Button { } label: { Image(systemName: "magnifyingglass") } }.padding(.horizontal, 16)
+                    HStack { Text("首页").font(.system(size: 25, weight: .bold)); Spacer(); Button { destination = .appSettings } label: { Image(systemName: "moon") }; Button { destination = .alerts } label: { Image(systemName: "bell.badge.fill") }; Button { destination = .search } label: { Image(systemName: "magnifyingglass") } }.padding(.horizontal, 16)
                     HStack { Text("常用功能").font(.headline); Spacer(); Text("自定义").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 12) {
-                        HomeShortcut("生意参谋", "chart.bar", .teal); HomeShortcut("任务记录", "doc.text", .indigo); HomeShortcut("店铺账号", "storefront", .mint); HomeShortcut("仓储管理", "cube.box", .orange); HomeShortcut("链接广场", "link", .blue); HomeShortcut("全部功能", "circle.grid.3x3", .gray)
+                        HomeShortcut("生意参谋", "chart.bar", .teal) { destination = .sycm }
+                        HomeShortcut("任务记录", "doc.text", .indigo) { destination = .tasks }
+                        HomeShortcut("店铺账号", "storefront", .mint) { destination = .shops }
+                        HomeShortcut("仓储管理", "cube.box", .orange) { destination = .warehouse }
+                        HomeShortcut("链接广场", "link", .blue) { destination = .links }
+                        HomeShortcut("AI 工作台", "sparkles", .cyan) { destination = .aiWorkspace }
+                        HomeShortcut("全部功能", "circle.grid.3x3", .gray) { destination = .workbench }
                     }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 3), spacing: 1) { HomeMetric("公司消费", "¥37284.34"); HomeMetric("累计利润", "¥80538.54"); HomeMetric("当月钉钉利润", "¥15377.97"); HomeMetric("待签收", "4"); HomeMetric("库存数量", "1356"); HomeMetric("库存成本", "¥121499.42") }.padding(1).background(Color(.separator)).clipShape(RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 3), spacing: 1) { HomeMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--"); HomeMetric("累计利润", dashboard.profitTotal.map(money) ?? "--"); HomeMetric("当月钉钉利润", dashboard.monthProfit.map(money) ?? "--"); HomeMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--"); HomeMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--"); HomeMetric("库存成本", dashboard.stockCost.map(money) ?? "--") }.padding(1).background(Color(.separator)).clipShape(RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
                     HStack { Text("钉钉月度利润").font(.headline); Spacer(); Text("查看趋势 ›").font(.caption).foregroundStyle(.blue) }.padding(.horizontal, 16)
-                    HStack(alignment: .bottom, spacing: 18) { ForEach([72, 34, 68, 42, 55, 76], id: \.self) { height in RoundedRectangle(cornerRadius: 5).fill(.blue).frame(maxWidth: .infinity).frame(height: CGFloat(height)) } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    HStack(alignment: .bottom, spacing: 18) { ForEach(Array(dashboard.months.enumerated()), id: \.offset) { _, item in VStack { RoundedRectangle(cornerRadius: 5).fill(item.value < 0 ? Color.red : Color.blue).frame(maxWidth: .infinity).frame(height: item.height); Text(item.label).font(.system(size: 9)).foregroundStyle(.secondary) } } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
                     HStack { Text("待办提醒").font(.headline); Spacer(); Text("查看全部").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    VStack(spacing: 0) { HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: "4"); Divider(); HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: "30") }.background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    VStack(spacing: 0) { HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: dashboard.pendingSigned.map(String.init) ?? "--"); Divider(); HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: dashboard.pendingSettlement.map(String.init) ?? "--"); Divider(); HomeTodo(color: .blue, title: "库存预警", detail: "可用库存已达到预警值", value: dashboard.lowStock.map(String.init) ?? "--") }.background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    if let dashboardError { Text(dashboardError).font(.caption).foregroundStyle(.red).padding(.horizontal, 16) }
                 }.padding(.vertical, 14)
             }
             .background(Color(.systemGroupedBackground))
             .navigationBarHidden(true)
-            .task { await loadModels(); await loadChats() }
+            .task { await loadDashboard() }
+            .refreshable { await loadDashboard() }
         }
+    }
+
+    private func loadDashboard() async {
+        guard !dashboardLoading else { return }
+        dashboardLoading = true; dashboardError = nil
+        defer { dashboardLoading = false }
+        async let warehouse: WarehouseSummary? = try? session.get("warehouse/summary")
+        async let tasks: TaskSummary? = try? session.get("task-bookkeeping/summary")
+        async let expenses: ExpenseSummary? = try? session.get("company-expenses/summary")
+        async let profits: ProfitSummary? = try? session.get("dingtalk-profits/summary")
+        async let months: [MonthlyProfit]? = try? session.get("dingtalk-profits/monthly-summary")
+        let results: [HomeDashboard.Partial] = await [.warehouse(warehouse), .tasks(tasks), .expenses(expenses), .profits(profits), .months(months)]
+        var successes = 0
+        for result in results { if dashboard.apply(result) { successes += 1 } }
+        if successes == 0 { dashboardError = "经营数据加载失败，请下拉重试" }
     }
 
     /* AI chat actions remain available to the home view. */
@@ -732,33 +898,29 @@ private struct LinkForm: View {
 
 private struct NativeMineView: View {
     @EnvironmentObject private var session: NativeSession
+    @State private var destination: NativeDestination?
     var body: some View {
         NavigationStack {
-            List {
-                Section("账户") { Label(session.username, systemImage: "person.circle") }
-                Section("AI 管理") {
-                    NavigationLink { NativeModelsView() } label: { Label("模型", systemImage: "cpu") }
-                    NavigationLink { NativeKnowledgeView() } label: { Label("知识库", systemImage: "books.vertical") }
-                    NavigationLink { NativeCapabilitiesView() } label: { Label("AI 能力", systemImage: "wand.and.stars") }
-                    NavigationLink { NativeOperationsView() } label: { Label("AI 运营", systemImage: "chart.bar.xaxis") }
+            ScrollView {
+                VStack(spacing: 0) {
+                    VStack(spacing: 14) {
+                        HStack { Text("个人中心").font(.headline); Spacer(); Button { destination = .appSettings } label: { Image(systemName: "moon") }; Button { destination = .alerts } label: { Image(systemName: "bell") }; Button { destination = .appSettings } label: { Image(systemName: "gearshape") } }.font(.title3)
+                        Button { destination = .profile } label: { HStack(spacing: 13) { ZStack { RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.9)); Text(String((session.currentUser?.displayName ?? session.username).prefix(2))).fontWeight(.bold).foregroundStyle(.blue) }.frame(width: 58, height: 58); VStack(alignment: .leading, spacing: 6) { HStack { Text(session.currentUser?.displayName ?? session.username).font(.title3.bold()); Text(session.currentUser?.role == "superadmin" ? "超级管理员" : "当前账号").font(.caption2).padding(4).background(.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 4)) }; Text("账号 \(session.username)").font(.caption).opacity(0.8) }; Spacer(); Image(systemName: "chevron.right") } }.buttonStyle(.plain).padding(14).background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 12))
+                        HStack { MineStat(value: "18", title: "可用功能"); Divider().overlay(.white.opacity(0.3)); MineStat(value: "\(session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0)", title: "授权模块"); Divider().overlay(.white.opacity(0.3)); MineStat(value: session.currentUser?.role == "superadmin" ? "超级" : "普通", title: "账号身份") }.frame(height: 58).padding(.horizontal, 8).background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
+                    }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 22).foregroundStyle(.white).background(Color(red: 0.08, green: 0.55, blue: 0.95))
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("账号与系统").font(.headline)
+                        VStack(spacing: 0) { MineEntry("账号与权限", "person.badge.key", .gray) { destination = .users }; Divider(); MineEntry("卡密管理", "key", .purple) { destination = .licenseKeys }; Divider(); MineEntry("服务器运行", "server.rack", .green) { destination = .server }; Divider(); MineEntry("系统设置", "gearshape", .gray) { destination = .systemSettings }; Divider(); MineEntry("通知中心", "bell", .red) { destination = .alerts } }.background(.background, in: RoundedRectangle(cornerRadius: 12))
+                        Button("退出登录", role: .destructive) { Task { await session.logout() } }.frame(maxWidth: .infinity).padding().background(.background, in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(16)
                 }
-                Section("业务管理") {
-                    NavigationLink { NativeWarehouseView() } label: { Label("仓储管理", systemImage: "shippingbox") }
-                    NavigationLink { NativeShopsView() } label: { Label("店铺档案", systemImage: "storefront") }
-                    NavigationLink { NativeOwnersView() } label: { Label("负责人", systemImage: "person.2") }
-                    NavigationLink { NativeUsersView() } label: { Label("账号与权限", systemImage: "person.badge.key") }
-                    NavigationLink { NativeLicensesView() } label: { Label("授权码", systemImage: "key") }
-                    NavigationLink { NativePeerShopsView() } label: { Label("同行店铺", systemImage: "building.2") }
-                    NavigationLink { NativeLicenseRecordsView() } label: { Label("执照档案", systemImage: "doc.text") }
-                    NavigationLink { NativeAccountUsageView() } label: { Label("账号使用", systemImage: "person.text.rectangle") }
-                    NavigationLink { NativeDevicesView() } label: { Label("手机设备", systemImage: "iphone") }
-                }
-                Section { Button("退出登录", role: .destructive) { Task { await session.logout() } } }
-            }
-                .navigationTitle("我的")
+            }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).sheet(item: $destination) { NavigationStack { $0.view } }
         }
     }
 }
+
+private struct MineStat: View { let value: String; let title: String; var body: some View { VStack(spacing: 4) { Text(value).font(.headline); Text(title).font(.caption2).opacity(0.8) }.frame(maxWidth: .infinity) } }
+private struct MineEntry: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HStack { Image(systemName: icon).foregroundStyle(color).frame(width: 34, height: 34).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9)); Text(title).foregroundStyle(.primary); Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 13).frame(height: 56) }.buttonStyle(.plain) } }
 
 private struct NativeShopsView: View {
     @EnvironmentObject private var session: NativeSession
@@ -1170,7 +1332,7 @@ private struct ExpenseDetail: View {
     }
 }
 
-private struct Metric: View {
+struct Metric: View {
     let title: String; let value: String
     var body: some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).fontWeight(.semibold).lineLimit(1).minimumScaleFactor(0.75) }.frame(maxWidth: .infinity, alignment: .leading) }
 }
@@ -1391,29 +1553,39 @@ private struct SavedLink: Codable, Identifiable {
     enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case createdAt = "created_at"; case updatedAt = "updated_at" }
 }
 
-private enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
-private struct MultipartFile { let field: String; let filename: String; let data: Data; let mime: String }
+enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
+struct MultipartFile { let field: String; let filename: String; let data: Data; let mime: String }
 
-@MainActor private final class NativeSession: ObservableObject {
+@MainActor final class NativeSession: ObservableObject {
     @Published var loggedIn = false
+    @Published var restoring = true
     @Published var loading = false
     @Published var error: String?
     @Published var captchaImageData: String?
     @Published var needsTOTP = false
     @Published var username = "管理员"
+    @Published var currentUser: CurrentUserSession?
     private var captchaID: String?
     private let origin = URL(string: "https://xiaoxu666.asia")!
     private let decoder: JSONDecoder = { let value = JSONDecoder(); value.keyDecodingStrategy = .useDefaultKeys; return value }()
 
     func restoreSession() async {
-        guard !loggedIn else { return }
+        guard !loggedIn else { restoring = false; return }
+        defer { restoring = false }
         do {
             let user: CurrentUserSession = try await get("auth/me")
+            currentUser = user
             username = user.username
             loggedIn = true
         } catch {
             loggedIn = false
         }
+    }
+
+    func apply(_ user: CurrentUserSession) {
+        currentUser = user
+        username = user.username
+        loggedIn = true
     }
 
     func login(username: String, password: String, totpCode: String = "", captchaCode: String = "") async {
@@ -1435,7 +1607,8 @@ private struct MultipartFile { let field: String; let filename: String; let data
                 if http.value(forHTTPHeaderField: "X-Captcha-Required") == "true" { await loadCaptcha() }
                 throw NativeAPIError.server(http.statusCode, detail)
             }
-            self.username = username; captchaID = nil; captchaImageData = nil; loggedIn = true
+            let user = try decoder.decode(CurrentUserSession.self, from: data)
+            currentUser = user; self.username = user.username; captchaID = nil; captchaImageData = nil; needsTOTP = false; loggedIn = true
         } catch { self.error = message(for: error) }
     }
 
@@ -1457,7 +1630,6 @@ private struct MultipartFile { let field: String; let filename: String; let data
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String ?? "请求失败"
-            if http.statusCode == 401 { loggedIn = false }
             throw NativeAPIError.server(http.statusCode, detail)
         }
         if allowEmpty { return EmptyResponse() as! T }
@@ -1518,7 +1690,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
 
     func logout() async {
         let _: EmptyResponse? = try? await send("auth/logout", method: "POST", allowEmpty: true)
-        loggedIn = false
+        currentUser = nil; loggedIn = false
     }
 
     func message(for error: Error) -> String {
@@ -1530,21 +1702,47 @@ private struct MultipartFile { let field: String; let filename: String; let data
 private func lineSummary(_ items: [WarehouseLine]) -> String { items.map { "\($0.sku) × \($0.quantity)" }.joined(separator: "；") }
 private func outboundStatus(_ value: String) -> String { switch value { case "pending": return "待拣货"; case "picking": return "拣货中"; case "checked": return "已复核"; case "packed": return "已打包"; case "shipped": return "已发货"; case "cancelled": return "已取消"; default: return value } }
 private func nextStatus(_ value: String) -> String? { switch value { case "pending": return "picking"; case "picking": return "checked"; case "checked": return "packed"; case "packed": return "shipped"; default: return nil } }
-private struct EmptyResponse: Codable {}
+struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
-private struct CurrentUserSession: Decodable { let username: String }
+struct CurrentUserSession: Decodable {
+    let id: Int; let username: String; let displayName: String?; let role: String; let permissions: [String: String]
+    enum CodingKeys: String, CodingKey { case id, username, role, permissions; case displayName = "display_name" }
+}
 private struct CaptchaWebView: UIViewRepresentable {
     let data: String
     func makeUIView(context: Context) -> WKWebView { let view = WKWebView(); view.isOpaque = false; view.backgroundColor = .clear; return view }
     func updateUIView(_ view: WKWebView, context: Context) { view.loadHTMLString("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><body style=\"margin:0;background:transparent;overflow:hidden\">\(data.hasPrefix("data:") ? "<img src='\(data)' style='width:132px;height:44px'>" : "")</body>", baseURL: nil) }
 }
 
-private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; init(_ title: String, _ icon: String, _ color: Color) { self.title = title; self.icon = icon; self.color = color }; var body: some View { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1) } } }
+private struct ProfitSummary: Decodable { let totalProfit: Double; enum CodingKeys: String, CodingKey { case totalProfit = "total_profit" } }
+private struct MonthlyProfit: Decodable { let month: String; let totalProfit: Double; enum CodingKeys: String, CodingKey { case month; case totalProfit = "total_profit" } }
+private struct ProfitListSummary: Decodable { let totalProfit: Double; let uniqueStoreCount: Int; let uniqueReporterCount: Int; enum CodingKeys: String, CodingKey { case totalProfit = "total_profit"; case uniqueStoreCount = "unique_store_count"; case uniqueReporterCount = "unique_reporter_count" } }
+private struct ProfitMonth: Decodable, Identifiable { let month: String; let totalProfit: Double; var id: String { month }; enum CodingKeys: String, CodingKey { case month; case totalProfit = "total_profit" } }
+private struct ProfitRecord: Decodable, Identifiable { let sourceRecordID: Int; let reportDate: String; let storeName: String; let profit: Double; let reporterName: String; var id: Int { sourceRecordID }; enum CodingKeys: String, CodingKey { case profit; case sourceRecordID = "source_record_id"; case reportDate = "report_date"; case storeName = "store_name"; case reporterName = "reporter_name" } }
+
+private struct HomeDashboard {
+    var expenseTotal: Double?; var profitTotal: Double?; var monthProfit: Double?
+    var pendingSigned: Int?; var pendingSettlement: Int?; var stockQuantity: Int?
+    var stockCost: Double?; var lowStock: Int?; private var monthlyProfits: [MonthlyProfit] = []
+    struct ChartItem { let label: String; let value: Double; let height: CGFloat }
+    var months: [ChartItem] { let values = Array(monthlyProfits.prefix(6).reversed()); let maximum = max(values.map { abs($0.totalProfit) }.max() ?? 1, 1); return values.map { ChartItem(label: String($0.month.suffix(2)) + "月", value: $0.totalProfit, height: max(CGFloat(abs($0.totalProfit) / maximum) * 58, 5)) } }
+    enum Partial { case warehouse(WarehouseSummary?); case tasks(TaskSummary?); case expenses(ExpenseSummary?); case profits(ProfitSummary?); case months([MonthlyProfit]?) }
+    mutating func apply(_ partial: Partial) -> Bool { switch partial {
+        case .warehouse(let value): stockQuantity = value?.totalQuantity; stockCost = value?.totalCost; lowStock = value?.lowStockCount; return value != nil
+        case .tasks(let value): pendingSigned = value?.pendingSignedCount; pendingSettlement = value?.pendingSettlementCount; return value != nil
+        case .expenses(let value): expenseTotal = value?.monthTotal; return value != nil
+        case .profits(let value): profitTotal = value?.totalProfit; return value != nil
+        case .months(let value): monthlyProfits = value ?? []; monthProfit = value?.first(where: { $0.month == Self.currentMonth })?.totalProfit ?? (value == nil ? nil : 0); return value != nil
+    } }
+    private static var currentMonth: String { let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM"; return formatter.string(from: Date()) }
+}
+
+private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1).foregroundStyle(.primary) } }.buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
-private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
+func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
 private func jobStatus(_ value: String) -> String { switch value { case "queued": return "排队中"; case "running": return "运行中"; case "completed": return "已完成"; case "failed": return "失败"; case "cancelled": return "已取消"; default: return value } }
 private func jobColor(_ value: String) -> Color { switch value { case "completed": return .green; case "failed": return .red; case "queued", "running": return .blue; default: return .secondary } }
