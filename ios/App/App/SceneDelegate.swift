@@ -40,6 +40,7 @@ private struct NativeLoginView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var account = "admin"
     @State private var password = ""
+    @State private var showsPassword = false
     @State private var totpCode = ""
     @State private var captchaCode = ""
 
@@ -55,8 +56,14 @@ private struct NativeLoginView: View {
                     TextField("账号", text: $account)
                         .textContentType(.username).textInputAutocapitalization(.never)
                         .nativeField()
-                    SecureField("密码", text: $password)
-                        .textContentType(.password).nativeField()
+                    HStack(spacing: 8) {
+                        if showsPassword {
+                            TextField("密码", text: $password).textInputAutocapitalization(.never).autocorrectionDisabled().nativeField()
+                        } else {
+                            SecureField("密码", text: $password).textContentType(.password).nativeField()
+                        }
+                        Button { showsPassword.toggle() } label: { Image(systemName: showsPassword ? "eye.slash" : "eye") }.accessibilityLabel(showsPassword ? "隐藏密码" : "显示密码")
+                    }
                     TextField("动态验证码（未启用可留空）", text: $totpCode)
                         .keyboardType(.numberPad).textContentType(.oneTimeCode).nativeField()
                     if let image = session.captchaImage {
