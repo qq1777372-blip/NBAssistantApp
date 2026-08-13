@@ -1366,7 +1366,14 @@ private struct MultipartFile { let field: String; let filename: String; let data
         guard let url = URL(string: path, relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
-        for file in files { body.append(Data("--\(boundary)\r\n".utf8)); body.append(Data("Content-Disposition: form-data; name=\"\(file.field)\"; filename=\"\(file.filename.replacingOccurrences(of: \"\\\"\", with: \"\"))\"\r\n".utf8)); body.append(Data("Content-Type: \(file.mime)\r\n\r\n".utf8)); body.append(file.data); body.append(Data("\r\n".utf8)) }
+        for file in files {
+            let safeFilename = file.filename.replacingOccurrences(of: "\"", with: "")
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(file.field)\"; filename=\"\(safeFilename)\"\r\n".utf8))
+            body.append(Data("Content-Type: \(file.mime)\r\n\r\n".utf8))
+            body.append(file.data)
+            body.append(Data("\r\n".utf8))
+        }
         body.append(Data("--\(boundary)--\r\n".utf8))
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"); request.httpBody = body
         let (responseData, response) = try await URLSession.shared.data(for: request)
