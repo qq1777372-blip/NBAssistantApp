@@ -3,6 +3,7 @@ import Capacitor
 import SwiftUI
 import AVFoundation
 import UniformTypeIdentifiers
+import WebKit
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -38,7 +39,7 @@ private struct NativeRootView: View {
 
 private struct NativeLoginView: View {
     @EnvironmentObject private var session: NativeSession
-    @State private var account = "admin"
+    @State private var account = ""
     @State private var password = ""
     @State private var showsPassword = false
     @State private var totpCode = ""
@@ -65,8 +66,8 @@ private struct NativeLoginView: View {
                         Button { showsPassword.toggle() } label: { Image(systemName: showsPassword ? "eye.slash" : "eye") }.accessibilityLabel(showsPassword ? "隐藏密码" : "显示密码")
                     }.nativeField()
                     if session.needsTOTP { TextField("请输入6位动态验证码", text: $totpCode).keyboardType(.numberPad).textContentType(.oneTimeCode).nativeField() }
-                    if let image = session.captchaImage {
-                        HStack { Image(uiImage: image).resizable().scaledToFit().frame(height: 48); TextField("图形验证码", text: $captchaCode).textInputAutocapitalization(.never).nativeField(); Button { Task { await session.loadCaptcha() } } label: { Image(systemName: "arrow.clockwise") } }
+                    if let imageData = session.captchaImageData {
+                        HStack { CaptchaWebView(data: imageData).frame(width: 132, height: 44); TextField("图形验证码", text: $captchaCode).textInputAutocapitalization(.never).nativeField(); Button { Task { await session.loadCaptcha() } } label: { Image(systemName: "arrow.clockwise") } }
                     }
                     Button(session.loading ? "登录中..." : "登录") {
                         Task { await session.login(username: account, password: password, totpCode: totpCode, captchaCode: captchaCode) }
@@ -1338,7 +1339,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
     @Published var loggedIn = false
     @Published var loading = false
     @Published var error: String?
-    @Published var captchaImage: UIImage?
+    @Published var captchaImageData: String?
     @Published var needsTOTP = false
     @Published var username = "管理员"
     private var captchaID: String?
@@ -1364,7 +1365,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
                 if http.value(forHTTPHeaderField: "X-Captcha-Required") == "true" { await loadCaptcha() }
                 throw NativeAPIError.server(http.statusCode, detail)
             }
-            self.username = username; captchaID = nil; captchaImage = nil; loggedIn = true
+            self.username = username; captchaID = nil; captchaImageData = nil; loggedIn = true
         } catch { self.error = message(for: error) }
     }
 
@@ -1372,8 +1373,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
         do {
             let response: LoginCaptcha = try await get("auth/captcha")
             captchaID = response.captchaID
-            let encoded = response.imageData.components(separatedBy: ",").last ?? response.imageData
-            captchaImage = Data(base64Encoded: encoded).flatMap(UIImage.init(data:))
+            captchaImageData = response.imageData
         } catch { self.error = message(for: error) }
     }
 
@@ -1463,6 +1463,11 @@ private func nextStatus(_ value: String) -> String? { switch value { case "pendi
 private struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
+private struct CaptchaWebView: UIViewRepresentable {
+    let data: String
+    func makeUIView(context: Context) -> WKWebView { let view = WKWebView(); view.isOpaque = false; view.backgroundColor = .clear; return view }
+    func updateUIView(_ view: WKWebView, context: Context) { view.loadHTMLString("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><body style=\"margin:0;background:transparent;overflow:hidden\">\(data.hasPrefix("data:") ? "<img src='\(data)' style='width:132px;height:44px'>" : "")</body>", baseURL: nil) }
+}
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
