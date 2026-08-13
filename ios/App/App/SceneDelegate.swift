@@ -329,6 +329,7 @@ private struct NativeHomeView: View {
             do { try await recorder.start() } catch { voiceError = "无法使用麦克风，请在系统设置中允许麦克风权限。" }
         }
     }
+}
 
 private struct NativeTaskView: View {
     @EnvironmentObject private var session: NativeSession
