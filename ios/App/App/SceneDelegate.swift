@@ -58,14 +58,13 @@ private struct NativeLoginView: View {
                         .nativeField()
                     HStack(spacing: 8) {
                         if showsPassword {
-                            TextField("密码", text: $password).textInputAutocapitalization(.never).autocorrectionDisabled().nativeField()
+                            TextField("密码", text: $password).textInputAutocapitalization(.never).autocorrectionDisabled()
                         } else {
-                            SecureField("密码", text: $password).textContentType(.password).nativeField()
+                            SecureField("密码", text: $password).textContentType(.password)
                         }
                         Button { showsPassword.toggle() } label: { Image(systemName: showsPassword ? "eye.slash" : "eye") }.accessibilityLabel(showsPassword ? "隐藏密码" : "显示密码")
-                    }
-                    TextField("动态验证码（未启用可留空）", text: $totpCode)
-                        .keyboardType(.numberPad).textContentType(.oneTimeCode).nativeField()
+                    }.nativeField()
+                    if session.needsTOTP { TextField("请输入6位动态验证码", text: $totpCode).keyboardType(.numberPad).textContentType(.oneTimeCode).nativeField() }
                     if let image = session.captchaImage {
                         HStack { Image(uiImage: image).resizable().scaledToFit().frame(height: 48); TextField("图形验证码", text: $captchaCode).textInputAutocapitalization(.never).nativeField(); Button { Task { await session.loadCaptcha() } } label: { Image(systemName: "arrow.clockwise") } }
                     }
@@ -1340,6 +1339,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
     @Published var loading = false
     @Published var error: String?
     @Published var captchaImage: UIImage?
+    @Published var needsTOTP = false
     @Published var username = "管理员"
     private var captchaID: String?
     private let origin = URL(string: "https://xiaoxu666.asia")!
@@ -1354,9 +1354,18 @@ private struct MultipartFile { let field: String; let filename: String; let data
             let savedCaptchaID: Any = captchaID ?? NSNull()
             let savedCaptchaCode: Any = cleanCaptcha.isEmpty ? NSNull() : cleanCaptcha
             let body: [String: Any] = ["username": username, "password": password, "totp_code": savedTOTP, "captcha_id": savedCaptchaID, "captcha_code": savedCaptchaCode]
-            let _: EmptyResponse = try await send("auth/login", method: "POST", body: body, allowEmpty: true)
+            guard let url = URL(string: "auth/login", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
+            var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
+            guard (200..<300).contains(http.statusCode) else {
+                let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String ?? "登录失败"
+                if http.value(forHTTPHeaderField: "X-TOTP-Required") == "true" { needsTOTP = true }
+                if http.value(forHTTPHeaderField: "X-Captcha-Required") == "true" { await loadCaptcha() }
+                throw NativeAPIError.server(http.statusCode, detail)
+            }
             self.username = username; captchaID = nil; captchaImage = nil; loggedIn = true
-        } catch { self.error = message(for: error); if case NativeAPIError.server(428, _) = error { await loadCaptcha() } }
+        } catch { self.error = message(for: error) }
     }
 
     func loadCaptcha() async {
