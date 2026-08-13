@@ -707,7 +707,7 @@ private struct NativeLinksView: View {
     @State private var deleting: SavedLink?
     @State private var editing: SavedLink?
     @State private var showingForm = false
-    private let pageSize = 15
+    private let pageSize = 50
 
     private var filtered: [SavedLink] {
         let rows = query.isEmpty ? records : records.filter { "\($0.title) \($0.url ?? "") \($0.category ?? "") \($0.description ?? "") \($0.authorUsername)".localizedCaseInsensitiveContains(query) }
@@ -735,7 +735,7 @@ private struct NativeLinksView: View {
                         }
                         Text(item.title).font(.headline)
                         if let description = item.description, !description.isEmpty { Text(description).lineLimit(4).foregroundStyle(.secondary) }
-                        if let url = item.url, let destination = URL(string: url) { Link(destination: destination) { Label(destination.host ?? url, systemImage: "safari") }.font(.subheadline) }
+                        if let url = item.url, !url.isEmpty { Label(url, systemImage: "link").font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
                         if !item.images.isEmpty {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
@@ -760,7 +760,12 @@ private struct NativeLinksView: View {
             .searchable(text: $query, prompt: "搜索标题、用户或正文")
             .refreshable { await load() }.navigationTitle("链接广场")
             .task { if records.isEmpty { await load() } }
-            .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "square.and.pencil") } }
+            .toolbar {
+                Menu {
+                    Button("发布帖子", systemImage: "bubble.left.and.bubble.right") { editing = nil; showingForm = true }
+                    Button("发布文章", systemImage: "doc.text") { editing = nil; showingForm = true }
+                } label: { Image(systemName: "square.and.pencil") }
+            }
             .sheet(isPresented: $showingForm) { LinkForm(item: editing) { await load() } }
             .confirmationDialog("确定删除这个帖子吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
