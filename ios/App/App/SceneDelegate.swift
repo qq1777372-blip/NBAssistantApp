@@ -914,7 +914,9 @@ private struct NativeMineView: View {
                         Button("退出登录", role: .destructive) { Task { await session.logout() } }.frame(maxWidth: .infinity).padding().background(.background, in: RoundedRectangle(cornerRadius: 12))
                     }.padding(16)
                 }
-            }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).sheet(item: $destination) { NavigationStack { $0.view } }
+            }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).sheet(item: $destination) { target in
+                NavigationStack { target.view }
+            }
         }
     }
 }
