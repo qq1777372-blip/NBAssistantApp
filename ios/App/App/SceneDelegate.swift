@@ -585,6 +585,7 @@ private struct ExpenseForm: View {
     @State private var amount: String; @State private var category: String; @State private var account: String
     @State private var scope: String; @State private var description: String; @State private var employeePaid: Bool
     @State private var saving = false; @State private var error: String?
+    @State private var importing = false; @State private var attachment: URL?
     private let categories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
 
     init(item: CompanyExpense?, onSave: @escaping () async -> Void) {
@@ -601,9 +602,11 @@ private struct ExpenseForm: View {
                 Section("金额") { TextField("0.00", text: $amount).keyboardType(.decimalPad).font(.title2.bold()) }
                 Section("消费信息") { Picker("分类", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }; TextField("消费说明", text: $description); Toggle("员工垫付", isOn: $employeePaid) }
                 Section("补充信息") { TextField("付款账户", text: $account); TextField("费用归属", text: $scope) }
+                Section("票据") { Button(attachment?.lastPathComponent ?? "选择图片或 PDF") { importing = true } }
             }
             .navigationTitle(item == nil ? "记一笔" : "编辑记账").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || (Double(amount) ?? 0) <= 0) } }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.image, .pdf]) { result in attachment = try? result.get() }
         }
     }
 
@@ -611,7 +614,7 @@ private struct ExpenseForm: View {
         saving = true; error = nil; defer { saving = false }
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
         let body: [String: Any] = ["expense_date": item?.expenseDate ?? formatter.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": employeePaid ? "employee" : "company", "payment_account": account.isEmpty ? "公司卡" : account, "expense_scope": scope.isEmpty ? "公共费用" : scope, "description": description.isEmpty ? category : description]
-        do { let _: CompanyExpense = try await session.send(item.map { "company-expenses/\($0.id)" } ?? "company-expenses", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() }
+        do { let saved: CompanyExpense = try await session.send(item.map { "company-expenses/\($0.id)" } ?? "company-expenses", method: item == nil ? "POST" : "PUT", body: body); if let attachment { guard attachment.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { attachment.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: attachment); let _: CompanyExpense = try await session.upload(path: "company-expenses/\(saved.id)/attachment", field: "attachment", filename: attachment.lastPathComponent, data: data, mime: attachment.pathExtension.lowercased() == "pdf" ? "application/pdf" : "image/jpeg") }; await onSave(); dismiss() }
         catch { self.error = session.message(for: error) }
     }
 }
@@ -622,6 +625,7 @@ private struct LinkForm: View {
     let item: SavedLink?; let onSave: () async -> Void
     @State private var title: String; @State private var category: String; @State private var url: String
     @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
+    @State private var importing = false; @State private var images: [URL] = []
 
     init(item: SavedLink?, onSave: @escaping () async -> Void) {
         self.item = item; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
@@ -634,9 +638,11 @@ private struct LinkForm: View {
                 if let error { Text(error).foregroundStyle(.red) }
                 Section("帖子") { TextField("标题", text: $title); TextField("分类", text: $category); TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) }
                 Section("正文") { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }
+                Section("配图") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } }
             }
             .navigationTitle(item == nil ? "发布帖子" : "编辑帖子").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in images = (try? result.get()) ?? [] }
         }
     }
 
@@ -646,7 +652,7 @@ private struct LinkForm: View {
         let savedDescription: Any = description.isEmpty ? NSNull() : description
         let savedURL: Any = url.isEmpty ? NSNull() : url
         let body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
-        do { let _: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() }
+        do { let saved: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body); if !images.isEmpty { var files: [MultipartFile] = []; for image in images { guard image.startAccessingSecurityScopedResource() else { continue }; defer { image.stopAccessingSecurityScopedResource() }; files.append(MultipartFile(field: "images", filename: image.lastPathComponent, data: try Data(contentsOf: image), mime: "image/jpeg")) }; if !files.isEmpty { let _: SavedLink = try await session.uploadMany(path: "saved-links/\(saved.id)/images/append", files: files) } }; await onSave(); dismiss() }
         catch { self.error = session.message(for: error) }
     }
 }
@@ -1227,6 +1233,7 @@ private struct SavedLink: Codable, Identifiable {
 }
 
 private enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
+private struct MultipartFile { let field: String; let filename: String; let data: Data; let mime: String }
 
 @MainActor private final class NativeSession: ObservableObject {
     @Published var loggedIn = false
@@ -1267,10 +1274,15 @@ private enum NativeAPIError: Error { case invalidResponse; case microphoneDenied
     }
 
     func upload<T: Decodable>(path: String, field: String, filename: String, data: Data, mime: String) async throws -> T {
+        try await uploadMany(path: path, files: [MultipartFile(field: field, filename: filename, data: data, mime: mime)])
+    }
+
+    func uploadMany<T: Decodable>(path: String, files: [MultipartFile]) async throws -> T {
         guard let url = URL(string: path, relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         let boundary = "Boundary-\(UUID().uuidString)"
         var body = Data()
-        body.append(Data("--\(boundary)\r\n".utf8)); body.append(Data("Content-Disposition: form-data; name=\"\(field)\"; filename=\"\(filename.replacingOccurrences(of: \"\\\"\", with: \"\"))\"\r\n".utf8)); body.append(Data("Content-Type: \(mime)\r\n\r\n".utf8)); body.append(data); body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+        for file in files { body.append(Data("--\(boundary)\r\n".utf8)); body.append(Data("Content-Disposition: form-data; name=\"\(file.field)\"; filename=\"\(file.filename.replacingOccurrences(of: \"\\\"\", with: \"\"))\"\r\n".utf8)); body.append(Data("Content-Type: \(file.mime)\r\n\r\n".utf8)); body.append(file.data); body.append(Data("\r\n".utf8)) }
+        body.append(Data("--\(boundary)--\r\n".utf8))
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"); request.httpBody = body
         let (responseData, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
