@@ -660,6 +660,7 @@ private struct NativeMineView: View {
                 Section("AI 管理") {
                     NavigationLink { NativeModelsView() } label: { Label("模型", systemImage: "cpu") }
                     NavigationLink { NativeKnowledgeView() } label: { Label("知识库", systemImage: "books.vertical") }
+                    NavigationLink { NativeCapabilitiesView() } label: { Label("AI 能力", systemImage: "wand.and.stars") }
                 }
                 Section { Button("退出登录", role: .destructive) { Task { await session.logout() } } }
             }
@@ -678,6 +679,8 @@ private struct NativeModelsView: View {
     @State private var editingConnection: AIConnection?
     @State private var showingConnection = false
     @State private var notice: String?
+    @State private var editingModel: AIModel?
+    @State private var showingModel = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -692,7 +695,8 @@ private struct NativeModelsView: View {
                     VStack(alignment: .leading, spacing: 4) { Text(model.name).fontWeight(.medium); Text(model.baseModel).font(.caption).foregroundStyle(.secondary) }
                     Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary)
                     Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
-                }.padding(.vertical, 3).swipeActions(edge: .leading) { Button(model.enabled == 0 ? "启用" : "停用") { Task { await toggleModel(model) } }.tint(model.enabled == 0 ? .green : .orange) }
+                }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingModel = model; showingModel = true }
+                    .swipeActions { Button("删除", role: .destructive) { Task { await deleteModel(model) } }; Button(model.enabled == 0 ? "启用" : "停用") { Task { await toggleModel(model) } }.tint(model.enabled == 0 ? .green : .orange) }
             } } else { ForEach(connections) { connection in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack { Text(connection.name).fontWeight(.semibold); Spacer(); Circle().fill(connection.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8) }
@@ -705,8 +709,9 @@ private struct NativeModelsView: View {
         }
         .overlay { if loading && models.isEmpty { ProgressView() } }
         .navigationTitle("AI 模型").refreshable { await load() }.task { await load() }
-        .toolbar { Button { editingConnection = nil; showingConnection = true } label: { Image(systemName: "plus") } }
+        .toolbar { Menu { Button("新增模型") { editingModel = nil; showingModel = true }; Button("新增连接") { editingConnection = nil; showingConnection = true }; Button("同步全部模型") { Task { await syncAll() } } } label: { Image(systemName: "plus") } }
         .sheet(isPresented: $showingConnection) { ConnectionForm(item: editingConnection) { await load() } }
+        .sheet(isPresented: $showingModel) { ModelForm(item: editingModel, connections: connections) { await load() } }
     }
 
     private func load() async {
@@ -725,6 +730,8 @@ private struct NativeModelsView: View {
         let body: [String: Any] = ["id": item.id, "name": item.name, "base_model": item.baseModel, "model_type": item.modelType ?? "chat", "enabled": item.enabled == 0, "temperature": item.temperature ?? 0.7, "top_p": item.topP ?? 1, "max_tokens": item.maxTokens ?? 2048]
         do { let _: EmptyResponse = try await session.send("ai-api/models/update", method: "POST", body: body, allowEmpty: true); await load() } catch { self.error = session.message(for: error) }
     }
+    private func deleteModel(_ item: AIModel) async { do { let _: EmptyResponse = try await session.send("ai-api/models/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func syncAll() async { do { let result: AISyncResponse = try await session.send("ai-api/models/sync", method: "POST", body: [:]); notice = "同步完成，共 \(result.total ?? 0) 个模型"; await load() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeKnowledgeView: View {
@@ -815,6 +822,65 @@ private struct ConnectionForm: View {
     private func test() async { guard let item else { return }; testing = true; defer { testing = false }; do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); message = result.message ?? "连接成功" } catch { message = session.message(for: error) } }
 }
 
+private struct ModelForm: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let item: AIModel?; let connections: [AIConnection]; let onSave: () async -> Void
+    @State private var name: String; @State private var baseModel: String; @State private var type: String; @State private var connectionID: String
+    @State private var description: String; @State private var systemPrompt: String; @State private var temperature: Double; @State private var topP: Double; @State private var maxTokens: Int
+    @State private var enabled: Bool; @State private var saving = false; @State private var error: String?
+    init(item: AIModel?, connections: [AIConnection], onSave: @escaping () async -> Void) {
+        self.item = item; self.connections = connections; self.onSave = onSave
+        _name = State(initialValue: item?.name ?? ""); _baseModel = State(initialValue: item?.baseModel ?? ""); _type = State(initialValue: item?.modelType ?? "chat")
+        _connectionID = State(initialValue: item?.connectionID ?? connections.first?.id ?? ""); _description = State(initialValue: item?.description ?? ""); _systemPrompt = State(initialValue: item?.systemPrompt ?? "")
+        _temperature = State(initialValue: item?.temperature ?? 0.7); _topP = State(initialValue: item?.topP ?? 1); _maxTokens = State(initialValue: item?.maxTokens ?? 2048); _enabled = State(initialValue: item?.enabled != 0)
+    }
+    var body: some View { NavigationStack { Form {
+        if let error { Text(error).foregroundStyle(.red) }
+        Section("模型") { TextField("显示名称", text: $name); TextField("基础模型，例如 gpt-4.1", text: $baseModel).textInputAutocapitalization(.never); Picker("模型类型", selection: $type) { Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio"); Text("嵌入").tag("embedding") }; Picker("供应商连接", selection: $connectionID) { Text("未绑定").tag(""); ForEach(connections) { Text($0.name).tag($0.id) } }; Toggle("启用", isOn: $enabled) }
+        Section("说明") { TextField("模型用途", text: $description, axis: .vertical).lineLimit(2...5); TextField("系统提示词", text: $systemPrompt, axis: .vertical).lineLimit(4...10) }
+        if type == "chat" { Section("生成参数") { LabeledContent("Temperature", value: String(format: "%.1f", temperature)); Slider(value: $temperature, in: 0...2, step: 0.1); LabeledContent("Top P", value: String(format: "%.1f", topP)); Slider(value: $topP, in: 0...1, step: 0.1); Stepper("最大 Token：\(maxTokens)", value: $maxTokens, in: 128...128000, step: 128) } }
+    }.navigationTitle(item == nil ? "新增模型" : "编辑模型").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseModel.isEmpty) } } } }
+    private func save() async { saving = true; defer { saving = false }; let body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_model": baseModel, "model_type": type, "connection_id": connectionID, "description": description, "system_prompt": systemPrompt, "temperature": temperature, "top_p": topP, "max_tokens": maxTokens, "enabled": enabled, "capabilities": ["knowledge"]]; do { let _: EmptyResponse = try await session.send(item == nil ? "ai-api/models" : "ai-api/models/update", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+}
+
+private struct NativeCapabilitiesView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var kind: CapabilityKind = .prompts
+    @State private var items: [CapabilityItem] = []
+    @State private var query = ""; @State private var loading = false; @State private var error: String?
+    @State private var editing: CapabilityItem?; @State private var showingEditor = false; @State private var deleting: CapabilityItem?
+    private var filtered: [CapabilityItem] { query.isEmpty ? items : items.filter { "\($0.displayName) \($0.description ?? "") \($0.content ?? "")".localizedCaseInsensitiveContains(query) } }
+    var body: some View { VStack(spacing: 0) {
+        Picker("能力", selection: $kind) { ForEach(CapabilityKind.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).padding()
+        List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { item in
+            VStack(alignment: .leading, spacing: 5) { HStack { Text(item.displayName).fontWeight(.medium); Spacer(); if kind == .tools { Circle().fill(item.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8) } }; Text(kind == .prompts ? "/\(item.command ?? "")" : item.description ?? item.content ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                .contentShape(Rectangle()).onTapGesture { editing = item; showingEditor = true }.swipeActions { if !item.id.hasPrefix("builtin-") { Button("删除", role: .destructive) { deleting = item } } }
+        } }
+    }.navigationTitle("AI 能力").searchable(text: $query).overlay { if loading && items.isEmpty { ProgressView() } }.task(id: kind) { await load() }.refreshable { await load() }
+        .toolbar { Button { editing = nil; showingEditor = true } label: { Image(systemName: "plus") } }
+        .sheet(isPresented: $showingEditor) { CapabilityForm(kind: kind, item: editing) { await load() } }
+        .confirmationDialog("确定删除这项能力吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) { Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }; Button("取消", role: .cancel) { deleting = nil } }
+    }
+    private func load() async { loading = true; defer { loading = false }; do { let response: CapabilityResponse = try await session.get("ai-api/\(kind.path)\(kind == .tools ? "?all=1" : "")"); items = response.items(for: kind) } catch { self.error = session.message(for: error) } }
+    private func remove(_ item: CapabilityItem) async { do { let _: EmptyResponse = try await session.send("ai-api/\(kind.path)/delete", method: "POST", body: ["id": item.id], allowEmpty: true); deleting = nil; await load() } catch { self.error = session.message(for: error) } }
+}
+
+private struct CapabilityForm: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let kind: CapabilityKind; let item: CapabilityItem?; let onSave: () async -> Void
+    @State private var title: String; @State private var command: String; @State private var name: String; @State private var description: String; @State private var content: String; @State private var toolKind: String; @State private var enabled: Bool
+    @State private var saving = false; @State private var error: String?
+    init(kind: CapabilityKind, item: CapabilityItem?, onSave: @escaping () async -> Void) { self.kind = kind; self.item = item; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _command = State(initialValue: item?.command ?? ""); _name = State(initialValue: item?.name ?? ""); _description = State(initialValue: item?.description ?? ""); _content = State(initialValue: item?.content ?? ""); _toolKind = State(initialValue: item?.kind ?? "custom"); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }
+        if kind == .prompts { Section("Prompt") { TextField("标题", text: $title); TextField("斜杠命令", text: $command).textInputAutocapitalization(.never); TextField("Prompt 内容", text: $content, axis: .vertical).lineLimit(8...16) } }
+        else if kind == .notes { Section("笔记") { TextField("标题", text: $title); TextField("笔记内容", text: $content, axis: .vertical).lineLimit(8...16) } }
+        else { Section(kind == .skills ? "Skill" : "Tool") { TextField("名称", text: $name); TextField("说明", text: $description); if kind == .skills { TextField("技能指令", text: $content, axis: .vertical).lineLimit(8...16) } else { Picker("类型", selection: $toolKind) { Text("自定义").tag("custom"); Text("HTTP").tag("http"); Text("函数").tag("function") }; Toggle("启用", isOn: $enabled) } } }
+    }.navigationTitle(item == nil ? "新增 \(kind.title)" : "编辑 \(kind.title)").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving) } } } }
+    private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? ""]; if kind == .prompts { body.merge(["title": title, "command": command, "content": content]) { _, new in new } } else if kind == .notes { body.merge(["title": title, "content": content]) { _, new in new } } else if kind == .skills { body.merge(["name": name, "description": description, "content": content]) { _, new in new } } else { let config: [String: Any] = [:]; body.merge(["name": name, "description": description, "kind": toolKind, "enabled": enabled, "config": config]) { _, new in new } }; do { let path = "ai-api/\(kind.path)\(item == nil ? "" : "/update")"; let _: EmptyResponse = try await session.send(path, method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+}
+
 private struct ExpenseDetail: View {
     let item: CompanyExpense
     var body: some View {
@@ -866,7 +932,8 @@ private struct AIChatsResponse: Codable { let chats: [AIChat] }
 private struct AIModel: Codable, Identifiable {
     let id: String; let name: String; let baseModel: String; let modelType: String?; let enabled: Int; let hidden: Int?
     let temperature: Double?; let topP: Double?; let maxTokens: Int?
-    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden, temperature; case baseModel = "base_model"; case modelType = "model_type"; case topP = "top_p"; case maxTokens = "max_tokens" }
+    let description: String?; let systemPrompt: String?; let connectionID: String?
+    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden, temperature, description; case baseModel = "base_model"; case modelType = "model_type"; case topP = "top_p"; case maxTokens = "max_tokens"; case systemPrompt = "system_prompt"; case connectionID = "connection_id" }
 }
 private struct AIModelsResponse: Codable { let models: [AIModel] }
 private struct AIConnection: Codable, Identifiable {
@@ -887,6 +954,15 @@ private struct KnowledgeFilesResponse: Codable { let files: [KnowledgeFile] }
 private struct KnowledgeChunk: Codable, Identifiable { let id: String; let chunkIndex: Int; let content: String; enum CodingKeys: String, CodingKey { case id, content; case chunkIndex = "chunk_index" } }
 private struct KnowledgeFileDetail: Codable { let file: KnowledgeFile; let chunks: [KnowledgeChunk] }
 private struct ImportFileResponse: Codable { let file: KnowledgeFile }
+private enum CapabilityKind: String, CaseIterable, Identifiable { case prompts, skills, tools, notes; var id: String { rawValue }; var path: String { rawValue }; var title: String { switch self { case .prompts: return "Prompts"; case .skills: return "Skills"; case .tools: return "Tools"; case .notes: return "Notes" } } }
+private struct CapabilityItem: Codable, Identifiable {
+    let id: String; let title: String?; let command: String?; let name: String?; let description: String?; let content: String?; let kind: String?; let enabled: Int?
+    var displayName: String { title ?? name ?? "未命名" }
+}
+private struct CapabilityResponse: Codable {
+    let prompts: [CapabilityItem]?; let skills: [CapabilityItem]?; let tools: [CapabilityItem]?; let notes: [CapabilityItem]?
+    func items(for kind: CapabilityKind) -> [CapabilityItem] { switch kind { case .prompts: return prompts ?? []; case .skills: return skills ?? []; case .tools: return tools ?? []; case .notes: return notes ?? [] } }
+}
 
 @MainActor private final class NativeAudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var recording = false
