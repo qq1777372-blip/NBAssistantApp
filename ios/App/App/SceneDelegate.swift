@@ -2,6 +2,7 @@ import UIKit
 import Capacitor
 import SwiftUI
 import AVFoundation
+import UniformTypeIdentifiers
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -672,28 +673,57 @@ private struct NativeModelsView: View {
     @State private var models: [AIModel] = []
     @State private var loading = false
     @State private var error: String?
+    @State private var connections: [AIConnection] = []
+    @State private var segment = 0
+    @State private var editingConnection: AIConnection?
+    @State private var showingConnection = false
+    @State private var notice: String?
 
     var body: some View {
-        List {
+        VStack(spacing: 0) {
+            Picker("类型", selection: $segment) { Text("模型").tag(0); Text("连接").tag(1) }.pickerStyle(.segmented).padding()
+            List {
             if let error { Text(error).foregroundStyle(.red) }
-            ForEach(models) { model in
+            if let notice { Text(notice).foregroundStyle(.green) }
+            if segment == 0 { ForEach(models) { model in
                 HStack(spacing: 12) {
                     Image(systemName: model.modelType == "audio" ? "waveform" : model.modelType == "image" ? "photo" : "cpu")
                         .frame(width: 34, height: 34).background(Color.blue.opacity(0.12), in: Circle())
                     VStack(alignment: .leading, spacing: 4) { Text(model.name).fontWeight(.medium); Text(model.baseModel).font(.caption).foregroundStyle(.secondary) }
                     Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary)
                     Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
-                }.padding(.vertical, 3)
+                }.padding(.vertical, 3).swipeActions(edge: .leading) { Button(model.enabled == 0 ? "启用" : "停用") { Task { await toggleModel(model) } }.tint(model.enabled == 0 ? .green : .orange) }
+            } } else { ForEach(connections) { connection in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack { Text(connection.name).fontWeight(.semibold); Spacer(); Circle().fill(connection.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8) }
+                    Text(connection.baseURL).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text("\(connection.providerType ?? "openai") · \(connection.hasKey == true ? "Key 已配置" : "未配置 Key")").font(.caption2).foregroundStyle(.secondary)
+                }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingConnection = connection; showingConnection = true }
+                    .swipeActions { Button(connection.enabled == 0 ? "启用" : "停用") { Task { await toggleConnection(connection) } }.tint(connection.enabled == 0 ? .green : .orange); Button("同步") { Task { await sync(connection) } }.tint(.blue) }
+            } }
             }
         }
         .overlay { if loading && models.isEmpty { ProgressView() } }
         .navigationTitle("AI 模型").refreshable { await load() }.task { await load() }
+        .toolbar { Button { editingConnection = nil; showingConnection = true } label: { Image(systemName: "plus") } }
+        .sheet(isPresented: $showingConnection) { ConnectionForm(item: editingConnection) { await load() } }
     }
 
     private func load() async {
         loading = true; defer { loading = false }
-        do { let response: AIModelsResponse = try await session.get("ai-api/models"); models = response.models }
+        do {
+            async let modelRequest: AIModelsResponse = session.get("ai-api/models")
+            async let connectionRequest: AIConnectionsResponse = session.get("ai-api/connections")
+            let result = try await (modelRequest, connectionRequest); models = result.0.models; connections = result.1.connections
+        }
         catch { self.error = session.message(for: error) }
+    }
+
+    private func toggleConnection(_ item: AIConnection) async { do { let _: EmptyResponse = try await session.send("ai-api/connections/toggle", method: "POST", body: ["id": item.id, "enabled": item.enabled == 0], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func sync(_ item: AIConnection) async { do { let result: AISyncResponse = try await session.send("ai-api/connections/sync", method: "POST", body: ["id": item.id]); notice = "同步完成，共 \(result.total ?? 0) 个模型"; await load() } catch { self.error = session.message(for: error) } }
+    private func toggleModel(_ item: AIModel) async {
+        let body: [String: Any] = ["id": item.id, "name": item.name, "base_model": item.baseModel, "model_type": item.modelType ?? "chat", "enabled": item.enabled == 0, "temperature": item.temperature ?? 0.7, "top_p": item.topP ?? 1, "max_tokens": item.maxTokens ?? 2048]
+        do { let _: EmptyResponse = try await session.send("ai-api/models/update", method: "POST", body: body, allowEmpty: true); await load() } catch { self.error = session.message(for: error) }
     }
 }
 
@@ -705,6 +735,10 @@ private struct NativeKnowledgeView: View {
     @State private var newName = ""
     @State private var loading = false
     @State private var error: String?
+    @State private var importing = false
+    @State private var selectedFile: KnowledgeFile?
+    @State private var detail: KnowledgeFileDetail?
+    @State private var deletingFile: KnowledgeFile?
 
     var body: some View {
         List {
@@ -717,13 +751,22 @@ private struct NativeKnowledgeView: View {
             }
             Section("文件") {
                 ForEach(files.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { file in
-                    VStack(alignment: .leading, spacing: 4) { Text(file.name); Text(file.status ?? "已导入").font(.caption).foregroundStyle(.secondary) }
+                    Button { selectedFile = file; Task { await preview(file) } } label: {
+                        VStack(alignment: .leading, spacing: 4) { Text(file.name).foregroundStyle(.primary); Text(file.status ?? "已导入").font(.caption).foregroundStyle(.secondary) }
+                    }.swipeActions {
+                        Button("删除", role: .destructive) { deletingFile = file }
+                        Button("重解析") { Task { await reprocess(file) } }.tint(.blue)
+                    }
                 }
             }
         }
         .overlay { if loading && collections.isEmpty && files.isEmpty { ProgressView() } }
         .navigationTitle("知识库").searchable(text: $query, prompt: "搜索文件")
         .refreshable { await load() }.task { await load() }
+        .toolbar { Button { importing = true } label: { Image(systemName: "doc.badge.plus") } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importFile(result) } }
+        .sheet(item: $selectedFile) { file in NavigationStack { List { if let detail { Section("内容") { Text(detail.file.content ?? "无可读取内容").textSelection(.enabled) }; Section("分块") { ForEach(detail.chunks) { chunk in VStack(alignment: .leading) { Text("第 \(chunk.chunkIndex + 1) 块").font(.caption).foregroundStyle(.secondary); Text(chunk.content).textSelection(.enabled) } } } } else { ProgressView() } }.navigationTitle(file.name).toolbar { Button("关闭") { selectedFile = nil; detail = nil } } } }
+        .confirmationDialog("确定删除这个知识文件吗？", isPresented: Binding(get: { deletingFile != nil }, set: { if !$0 { deletingFile = nil } }), titleVisibility: .visible) { Button("删除", role: .destructive) { if let file = deletingFile { Task { await remove(file) } } }; Button("取消", role: .cancel) { deletingFile = nil } }
     }
 
     private func load() async {
@@ -740,6 +783,36 @@ private struct NativeKnowledgeView: View {
         do { let _: EmptyResponse = try await session.send("ai-api/knowledge", method: "POST", body: ["name": newName], allowEmpty: true); newName = ""; await load() }
         catch { self.error = session.message(for: error) }
     }
+
+    private func importFile(_ result: Result<URL, Error>) async {
+        do {
+            let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }
+            let data = try Data(contentsOf: url); guard data.count <= 15_000_000 else { throw NativeAPIError.server(400, "单个文件不能超过 15MB") }
+            let response: ImportFileResponse = try await session.send("ai-api/documents/import-file", method: "POST", body: ["title": url.deletingPathExtension().lastPathComponent, "filename": url.lastPathComponent, "data": data.base64EncodedString()])
+            if let collection = collections.first { let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": response.file.id, "knowledge_id": collection.id], allowEmpty: true) }
+            await load()
+        } catch { self.error = session.message(for: error) }
+    }
+    private func preview(_ file: KnowledgeFile) async { do { detail = try await session.get("ai-api/files/detail?id=\(file.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? file.id)") } catch { self.error = session.message(for: error) } }
+    private func reprocess(_ file: KnowledgeFile) async { do { let _: EmptyResponse = try await session.send("ai-api/files/reprocess", method: "POST", body: ["id": file.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func remove(_ file: KnowledgeFile) async { do { let _: EmptyResponse = try await session.send("ai-api/files/delete", method: "POST", body: ["id": file.id], allowEmpty: true); deletingFile = nil; await load() } catch { self.error = session.message(for: error) } }
+}
+
+private struct ConnectionForm: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let item: AIConnection?; let onSave: () async -> Void
+    @State private var name: String; @State private var baseURL: String; @State private var apiKey = ""; @State private var provider: String; @State private var purpose: String
+    @State private var saving = false; @State private var testing = false; @State private var message: String?
+    init(item: AIConnection?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? "OpenAI"); _baseURL = State(initialValue: item?.baseURL ?? "https://api.openai.com/v1"); _provider = State(initialValue: item?.providerType ?? "openai"); _purpose = State(initialValue: item?.purpose ?? "general") }
+    var body: some View { NavigationStack { Form {
+        if let message { Text(message).foregroundStyle(.secondary) }
+        Section("连接") { TextField("名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never) }
+        Section("类型") { Picker("协议", selection: $provider) { Text("OpenAI 兼容").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }; Picker("用途", selection: $purpose) { Text("通用").tag("general"); Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio") } }
+        if item != nil { Button(testing ? "测试中..." : "测试连接") { Task { await test() } }.disabled(testing) }
+    }.navigationTitle(item == nil ? "新增连接" : "编辑连接").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseURL.isEmpty || (item == nil && apiKey.isEmpty && provider != "ollama")) } } } }
+    private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_url": baseURL, "provider_type": provider, "provider_id": provider, "purpose": purpose, "enabled": true]; if !apiKey.isEmpty { body["api_key"] = apiKey }; do { let _: EmptyResponse = try await session.send("ai-api/connections/save", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { message = session.message(for: error) } }
+    private func test() async { guard let item else { return }; testing = true; defer { testing = false }; do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); message = result.message ?? "连接成功" } catch { message = session.message(for: error) } }
 }
 
 private struct ExpenseDetail: View {
@@ -792,17 +865,28 @@ private struct AIChatsResponse: Codable { let chats: [AIChat] }
 
 private struct AIModel: Codable, Identifiable {
     let id: String; let name: String; let baseModel: String; let modelType: String?; let enabled: Int; let hidden: Int?
-    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden; case baseModel = "base_model"; case modelType = "model_type" }
+    let temperature: Double?; let topP: Double?; let maxTokens: Int?
+    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden, temperature; case baseModel = "base_model"; case modelType = "model_type"; case topP = "top_p"; case maxTokens = "max_tokens" }
 }
 private struct AIModelsResponse: Codable { let models: [AIModel] }
+private struct AIConnection: Codable, Identifiable {
+    let id: String; let name: String; let baseURL: String; let providerType: String?; let purpose: String?; let enabled: Int; let hasKey: Bool?
+    enum CodingKeys: String, CodingKey { case id, name, purpose, enabled; case baseURL = "base_url"; case providerType = "provider_type"; case hasKey = "has_key" }
+}
+private struct AIConnectionsResponse: Codable { let connections: [AIConnection] }
+private struct AISyncResponse: Codable { let total: Int? }
+private struct ConnectionTestResponse: Codable { let message: String? }
 private struct TranscriptionResponse: Codable { let text: String }
 private struct KnowledgeCollection: Codable, Identifiable { let id: String; let name: String; let description: String? }
 private struct KnowledgeFile: Codable, Identifiable {
-    let id: String; let name: String; let knowledgeID: String?; let status: String?
-    enum CodingKeys: String, CodingKey { case id, name, status; case knowledgeID = "knowledge_id" }
+    let id: String; let name: String; let knowledgeID: String?; let status: String?; let content: String?
+    enum CodingKeys: String, CodingKey { case id, name, status, content; case knowledgeID = "knowledge_id" }
 }
 private struct KnowledgeResponse: Codable { let knowledge: [KnowledgeCollection] }
 private struct KnowledgeFilesResponse: Codable { let files: [KnowledgeFile] }
+private struct KnowledgeChunk: Codable, Identifiable { let id: String; let chunkIndex: Int; let content: String; enum CodingKeys: String, CodingKey { case id, content; case chunkIndex = "chunk_index" } }
+private struct KnowledgeFileDetail: Codable { let file: KnowledgeFile; let chunks: [KnowledgeChunk] }
+private struct ImportFileResponse: Codable { let file: KnowledgeFile }
 
 @MainActor private final class NativeAudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var recording = false
