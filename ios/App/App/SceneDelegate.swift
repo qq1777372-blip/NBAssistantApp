@@ -1,6 +1,7 @@
 import UIKit
 import Capacitor
 import SwiftUI
+import AVFoundation
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -90,6 +91,11 @@ private struct NativeHomeView: View {
     @State private var message = ""
     @State private var messages = [ChatMessage(text: "你好！请告诉我需要处理什么问题。", sent: false)]
     @State private var sending = false
+    @State private var models: [AIModel] = []
+    @State private var selectedModel = ""
+    @State private var audioModel = ""
+    @StateObject private var recorder = NativeAudioRecorder()
+    @State private var voiceError: String?
 
     var body: some View {
         NavigationStack {
@@ -109,13 +115,30 @@ private struct NativeHomeView: View {
                     }.padding()
                 }
                 HStack(spacing: 10) {
+                    Button {
+                        Task { await toggleRecording() }
+                    } label: {
+                        Image(systemName: recorder.recording ? "stop.circle.fill" : "mic.circle.fill").font(.system(size: 34)).foregroundStyle(recorder.recording ? .red : .blue)
+                    }.disabled(recorder.transcribing)
                     TextField("给 AI 发消息...", text: $message, axis: .vertical)
                         .lineLimit(1...4).nativeField()
                     Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 34)) }
                         .disabled(sending || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.padding()
+                if recorder.transcribing { Label("正在转写语音...", systemImage: "waveform").font(.caption).foregroundStyle(.secondary).padding(.bottom, 8) }
+                if let voiceError { Text(voiceError).font(.caption).foregroundStyle(.red).padding(.horizontal).padding(.bottom, 8) }
             }
             .navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        ForEach(models.filter { $0.modelType != "audio" }) { model in
+                            Button { selectedModel = model.id } label: { if selectedModel == model.id { Label(model.name, systemImage: "checkmark") } else { Text(model.name) } }
+                        }
+                    } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") }
+                }
+            }
+            .task { await loadModels() }
         }
     }
 
@@ -124,8 +147,31 @@ private struct NativeHomeView: View {
         guard !value.isEmpty else { return }
         messages.append(ChatMessage(text: value, sent: true)); message = ""; sending = true
         Task {
-            let answer = await session.chat(value) ?? "服务没有返回内容。"
+            let answer = await session.chat(value, modelID: selectedModel) ?? "服务没有返回内容。"
             messages.append(ChatMessage(text: answer, sent: false)); sending = false
+        }
+    }
+
+    private func loadModels() async {
+        do {
+            let result: AIModelsResponse = try await session.get("ai-api/models")
+            models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }
+            if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" }
+            audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? ""
+        } catch { voiceError = session.message(for: error) }
+    }
+
+    private func toggleRecording() async {
+        voiceError = nil
+        if recorder.recording {
+            guard let recording = recorder.stop() else { return }
+            recorder.transcribing = true; defer { recorder.transcribing = false }
+            do {
+                let response: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": "recording.m4a", "data": recording.base64EncodedString(), "model_id": audioModel])
+                message = [message, response.text].filter { !$0.isEmpty }.joined(separator: " ")
+            } catch { voiceError = session.message(for: error) }
+        } else {
+            do { try await recorder.start() } catch { voiceError = "无法使用麦克风，请在系统设置中允许麦克风权限。" }
         }
     }
 }
@@ -527,9 +573,91 @@ private struct NativeMineView: View {
     @EnvironmentObject private var session: NativeSession
     var body: some View {
         NavigationStack {
-            List { Section("账户") { Label(session.username, systemImage: "person.circle"); Button("退出登录", role: .destructive) { Task { await session.logout() } } } }
+            List {
+                Section("账户") { Label(session.username, systemImage: "person.circle") }
+                Section("AI 管理") {
+                    NavigationLink { NativeModelsView() } label: { Label("模型", systemImage: "cpu") }
+                    NavigationLink { NativeKnowledgeView() } label: { Label("知识库", systemImage: "books.vertical") }
+                }
+                Section { Button("退出登录", role: .destructive) { Task { await session.logout() } } }
+            }
                 .navigationTitle("我的")
         }
+    }
+}
+
+private struct NativeModelsView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var models: [AIModel] = []
+    @State private var loading = false
+    @State private var error: String?
+
+    var body: some View {
+        List {
+            if let error { Text(error).foregroundStyle(.red) }
+            ForEach(models) { model in
+                HStack(spacing: 12) {
+                    Image(systemName: model.modelType == "audio" ? "waveform" : model.modelType == "image" ? "photo" : "cpu")
+                        .frame(width: 34, height: 34).background(Color.blue.opacity(0.12), in: Circle())
+                    VStack(alignment: .leading, spacing: 4) { Text(model.name).fontWeight(.medium); Text(model.baseModel).font(.caption).foregroundStyle(.secondary) }
+                    Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary)
+                    Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
+                }.padding(.vertical, 3)
+            }
+        }
+        .overlay { if loading && models.isEmpty { ProgressView() } }
+        .navigationTitle("AI 模型").refreshable { await load() }.task { await load() }
+    }
+
+    private func load() async {
+        loading = true; defer { loading = false }
+        do { let response: AIModelsResponse = try await session.get("ai-api/models"); models = response.models }
+        catch { self.error = session.message(for: error) }
+    }
+}
+
+private struct NativeKnowledgeView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var collections: [KnowledgeCollection] = []
+    @State private var files: [KnowledgeFile] = []
+    @State private var query = ""
+    @State private var newName = ""
+    @State private var loading = false
+    @State private var error: String?
+
+    var body: some View {
+        List {
+            if let error { Text(error).foregroundStyle(.red) }
+            Section("新建知识集合") {
+                HStack { TextField("集合名称", text: $newName); Button("创建") { Task { await create() } }.disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty) }
+            }
+            Section("集合") {
+                ForEach(collections) { item in HStack { Label(item.name, systemImage: "folder"); Spacer(); Text("\(files.filter { $0.knowledgeID == item.id }.count) 个文件").font(.caption).foregroundStyle(.secondary) } }
+            }
+            Section("文件") {
+                ForEach(files.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { file in
+                    VStack(alignment: .leading, spacing: 4) { Text(file.name); Text(file.status ?? "已导入").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }
+        .overlay { if loading && collections.isEmpty && files.isEmpty { ProgressView() } }
+        .navigationTitle("知识库").searchable(text: $query, prompt: "搜索文件")
+        .refreshable { await load() }.task { await load() }
+    }
+
+    private func load() async {
+        loading = true; defer { loading = false }
+        do {
+            async let collectionRequest: KnowledgeResponse = session.get("ai-api/knowledge")
+            async let fileRequest: KnowledgeFilesResponse = session.get("ai-api/files")
+            let (collectionResult, fileResult) = try await (collectionRequest, fileRequest)
+            collections = collectionResult.knowledge; files = fileResult.files
+        } catch { self.error = session.message(for: error) }
+    }
+
+    private func create() async {
+        do { let _: EmptyResponse = try await session.send("ai-api/knowledge", method: "POST", body: ["name": newName], allowEmpty: true); newName = ""; await load() }
+        catch { self.error = session.message(for: error) }
     }
 }
 
@@ -561,6 +689,50 @@ private extension View {
 
 private struct ChatMessage: Identifiable { let id = UUID(); let text: String; let sent: Bool }
 
+private struct AIModel: Codable, Identifiable {
+    let id: String; let name: String; let baseModel: String; let modelType: String?; let enabled: Int; let hidden: Int?
+    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden; case baseModel = "base_model"; case modelType = "model_type" }
+}
+private struct AIModelsResponse: Codable { let models: [AIModel] }
+private struct TranscriptionResponse: Codable { let text: String }
+private struct KnowledgeCollection: Codable, Identifiable { let id: String; let name: String; let description: String? }
+private struct KnowledgeFile: Codable, Identifiable {
+    let id: String; let name: String; let knowledgeID: String?; let status: String?
+    enum CodingKeys: String, CodingKey { case id, name, status; case knowledgeID = "knowledge_id" }
+}
+private struct KnowledgeResponse: Codable { let knowledge: [KnowledgeCollection] }
+private struct KnowledgeFilesResponse: Codable { let files: [KnowledgeFile] }
+
+@MainActor private final class NativeAudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
+    @Published var recording = false
+    @Published var transcribing = false
+    private var recorder: AVAudioRecorder?
+    private var fileURL: URL?
+
+    func start() async throws {
+        let granted = await withCheckedContinuation { continuation in
+            AVAudioSession.sharedInstance().requestRecordPermission { continuation.resume(returning: $0) }
+        }
+        guard granted else { throw NativeAPIError.microphoneDenied }
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.record, mode: .spokenAudio, options: [.duckOthers])
+        try session.setActive(true)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-voice-\(UUID().uuidString).m4a")
+        let settings: [String: Any] = [AVFormatIDKey: Int(kAudioFormatMPEG4AAC), AVSampleRateKey: 16_000, AVNumberOfChannelsKey: 1, AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue]
+        let audioRecorder = try AVAudioRecorder(url: url, settings: settings); audioRecorder.delegate = self
+        guard audioRecorder.record() else { throw NativeAPIError.invalidResponse }
+        recorder = audioRecorder; fileURL = url; recording = true
+    }
+
+    func stop() -> Data? {
+        recorder?.stop(); recording = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        guard let url = fileURL else { return nil }
+        let data = try? Data(contentsOf: url); try? FileManager.default.removeItem(at: url)
+        recorder = nil; fileURL = nil; return data
+    }
+}
+
 private struct TaskRecord: Codable, Identifiable {
     let id: Int; let orderNo: String; let taskTime: String?; let shopName: String; let ownerName: String
     let principalAmount: Double; let orderCount: Int; let commissionAmount: Double; let giftAmount: Double
@@ -591,7 +763,7 @@ private struct SavedLink: Codable, Identifiable {
     enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case createdAt = "created_at"; case updatedAt = "updated_at" }
 }
 
-private enum NativeAPIError: Error { case invalidResponse; case server(Int, String) }
+private enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
 
 @MainActor private final class NativeSession: ObservableObject {
     @Published var loggedIn = false
@@ -631,9 +803,11 @@ private enum NativeAPIError: Error { case invalidResponse; case server(Int, Stri
         let _: EmptyResponse = try await send(path, method: "DELETE", allowEmpty: true)
     }
 
-    func chat(_ question: String) async -> String? {
+    func chat(_ question: String, modelID: String = "") async -> String? {
         do {
-            let response: ChatResponse = try await send("ai-api/chat", method: "POST", body: ["question": question])
+            var body: [String: Any] = ["question": question]
+            if !modelID.isEmpty { body["model_id"] = modelID }
+            let response: ChatResponse = try await send("ai-api/chat", method: "POST", body: body)
             return response.content ?? response.answer ?? response.response
         } catch { return message(for: error) }
     }
