@@ -1,4 +1,4 @@
-﻿import UIKit
+import UIKit
 import Capacitor
 import SwiftUI
 import AVFoundation
@@ -47,15 +47,15 @@ private struct NativeLoginView: View {
                 Spacer()
                 Image(systemName: "sparkles.rectangle.stack.fill")
                     .font(.system(size: 54)).foregroundStyle(.blue)
-                Text("鍐呴儴绠＄悊 App").font(.title.bold())
-                Text("鍘熺敓 iOS 宸ヤ綔鍙?).foregroundStyle(.secondary)
+                Text("内部管理 App").font(.title.bold())
+                Text("原生 iOS 工作台").foregroundStyle(.secondary)
                 VStack(spacing: 14) {
-                    TextField("璐﹀彿", text: $account)
+                    TextField("账号", text: $account)
                         .textContentType(.username).textInputAutocapitalization(.never)
                         .nativeField()
-                    SecureField("瀵嗙爜", text: $password)
+                    SecureField("密码", text: $password)
                         .textContentType(.password).nativeField()
-                    Button(session.loading ? "鐧诲綍涓?.." : "鐧诲綍") {
+                    Button(session.loading ? "登录中..." : "登录") {
                         Task { await session.login(username: account, password: password) }
                     }
                     .buttonStyle(.borderedProminent).controlSize(.large)
@@ -78,11 +78,11 @@ private struct NativeLoginView: View {
 private struct NativeTabView: View {
     var body: some View {
         TabView {
-            NativeHomeView().tabItem { Label("棣栭〉", systemImage: "house") }
-            NativeTaskView().tabItem { Label("浠诲姟", systemImage: "checklist") }
-            NativeLedgerView().tabItem { Label("璁拌处", systemImage: "wallet.pass") }
-            NativeLinksView().tabItem { Label("閾炬帴", systemImage: "link") }
-            NativeMineView().tabItem { Label("鎴戠殑", systemImage: "person") }
+            NativeHomeView().tabItem { Label("首页", systemImage: "house") }
+            NativeTaskView().tabItem { Label("任务", systemImage: "checklist") }
+            NativeLedgerView().tabItem { Label("记账", systemImage: "wallet.pass") }
+            NativeLinksView().tabItem { Label("链接", systemImage: "link") }
+            NativeMineView().tabItem { Label("我的", systemImage: "person") }
         }
     }
 }
@@ -111,7 +111,7 @@ private struct NativeHomeView: View {
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         if activeChat?.messages.isEmpty != false {
-                            VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("寮€濮嬫柊瀵硅瘽").font(.headline); Text("杈撳叆闂鎴栦娇鐢ㄩ害鍏嬮寮€濮?).font(.subheadline).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.top, 80)
+                            VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用麦克风开始").font(.subheadline).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.top, 80)
                         }
                         ForEach(activeChat?.messages ?? []) { item in
                             HStack {
@@ -136,22 +136,22 @@ private struct NativeHomeView: View {
                     } label: {
                         Image(systemName: recorder.recording ? "stop.circle.fill" : "mic.circle.fill").font(.system(size: 34)).foregroundStyle(recorder.recording ? .red : .blue)
                     }.disabled(recorder.transcribing)
-                    TextField("缁?AI 鍙戞秷鎭?..", text: $message, axis: .vertical)
+                    TextField("给 AI 发消息...", text: $message, axis: .vertical)
                         .lineLimit(1...4).nativeField()
                     Button(action: sending ? stop : send) { Image(systemName: sending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.system(size: 34)) }
                         .disabled(!sending && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.padding()
-                if recorder.transcribing { Label("姝ｅ湪杞啓璇煶...", systemImage: "waveform").font(.caption).foregroundStyle(.secondary).padding(.bottom, 8) }
+                if recorder.transcribing { Label("正在转写语音...", systemImage: "waveform").font(.caption).foregroundStyle(.secondary).padding(.bottom, 8) }
                 if let voiceError { Text(voiceError).font(.caption).foregroundStyle(.red).padding(.horizontal).padding(.bottom, 8) }
             }
-            .navigationTitle("AI 宸ヤ綔鍙?).navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
                         ForEach(models.filter { $0.modelType != "audio" }) { model in
                             Button { selectedModel = model.id } label: { if selectedModel == model.id { Label(model.name, systemImage: "checkmark") } else { Text(model.name) } }
                         }
-                    } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "閫夋嫨妯″瀷", systemImage: "cpu") }
+                    } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingHistory = true } label: { Image(systemName: "sidebar.left") }
@@ -164,13 +164,13 @@ private struct NativeHomeView: View {
                         ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in
                             Button { activeChatID = chat.id; selectedModel = chat.modelID ?? selectedModel; showingHistory = false } label: {
                                 VStack(alignment: .leading, spacing: 4) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) }
-                            }.swipeActions { Button("鍒犻櫎", role: .destructive) { deletingChat = chat } }
+                            }.swipeActions { Button("删除", role: .destructive) { deletingChat = chat } }
                         }
-                    }.navigationTitle("鍘嗗彶浼氳瘽").toolbar { Button("鍏抽棴") { showingHistory = false } }
+                    }.navigationTitle("历史会话").toolbar { Button("关闭") { showingHistory = false } }
                 }
             }
-            .confirmationDialog("纭畾鍒犻櫎杩欎釜浼氳瘽鍚楋紵", isPresented: Binding(get: { deletingChat != nil }, set: { if !$0 { deletingChat = nil } }), titleVisibility: .visible) {
-                Button("鍒犻櫎", role: .destructive) { if let chat = deletingChat { Task { await delete(chat) } } }; Button("鍙栨秷", role: .cancel) { deletingChat = nil }
+            .confirmationDialog("确定删除这个会话吗？", isPresented: Binding(get: { deletingChat != nil }, set: { if !$0 { deletingChat = nil } }), titleVisibility: .visible) {
+                Button("删除", role: .destructive) { if let chat = deletingChat { Task { await delete(chat) } } }; Button("取消", role: .cancel) { deletingChat = nil }
             }
             .task { await loadModels(); await loadChats() }
         }
@@ -209,7 +209,7 @@ private struct NativeHomeView: View {
 
     private func createChat() {
         let now = Date().timeIntervalSince1970
-        let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "鏂板璇?, messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now)
+        let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now)
         chats.insert(chat, at: 0); activeChatID = chat.id
     }
 
@@ -253,7 +253,7 @@ private struct NativeHomeView: View {
                 message = [message, response.text].filter { !$0.isEmpty }.joined(separator: " ")
             } catch { voiceError = session.message(for: error) }
         } else {
-            do { try await recorder.start() } catch { voiceError = "鏃犳硶浣跨敤楹﹀厠椋庯紝璇峰湪绯荤粺璁剧疆涓厑璁搁害鍏嬮鏉冮檺銆? }
+            do { try await recorder.start() } catch { voiceError = "无法使用麦克风，请在系统设置中允许麦克风权限。" }
         }
     }
 }
@@ -279,38 +279,38 @@ private struct NativeTaskView: View {
                 if let summary {
                     Section {
                         HStack {
-                            Metric(title: "浠诲姟", value: "\(summary.totalRecords)")
-                            Metric(title: "寰呯鏀?, value: "\(summary.pendingSignedCount)")
-                            Metric(title: "寰呯粨绠?, value: "\(summary.pendingSettlementCount)")
+                            Metric(title: "任务", value: "\(summary.totalRecords)")
+                            Metric(title: "待签收", value: "\(summary.pendingSignedCount)")
+                            Metric(title: "待结算", value: "\(summary.pendingSettlementCount)")
                         }
                         HStack {
-                            Text("鏈噾鍚堣").foregroundStyle(.secondary)
+                            Text("本金合计").foregroundStyle(.secondary)
                             Spacer(); Text(money(summary.principalTotal)).fontWeight(.semibold)
                         }
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("浠诲姟璁板綍") {
+                Section("任务记录") {
                     ForEach(filtered) { item in
                         NavigationLink {
                             TaskDetail(item: item) { await load() }
                         } label: { VStack(alignment: .leading, spacing: 8) {
                             HStack { Text(item.shopName).font(.headline); Spacer(); Text(money(item.principalAmount)).fontWeight(.semibold) }
-                            Text("\(item.orderNo) 路 \(item.ownerName)").font(.subheadline).foregroundStyle(.secondary)
+                            Text("\(item.orderNo) · \(item.ownerName)").font(.subheadline).foregroundStyle(.secondary)
                             HStack {
-                                StatusBadge(text: item.signedStatus == "completed" ? "宸茬鏀? : "寰呯鏀?, done: item.signedStatus == "completed")
-                                StatusBadge(text: item.settlementStatus == "completed" ? "宸茬粨绠? : "寰呯粨绠?, done: item.settlementStatus == "completed")
+                                StatusBadge(text: item.signedStatus == "completed" ? "已签收" : "待签收", done: item.signedStatus == "completed")
+                                StatusBadge(text: item.settlementStatus == "completed" ? "已结算" : "待结算", done: item.settlementStatus == "completed")
                                 Spacer(); Text(shortDate(item.taskTime)).font(.caption).foregroundStyle(.secondary)
                             }
                         }.padding(.vertical, 4) }
-                        .swipeActions(edge: .leading) { Button("缂栬緫") { editing = item; showingForm = true }.tint(.blue) }
+                        .swipeActions(edge: .leading) { Button("编辑") { editing = item; showingForm = true }.tint(.blue) }
                     }
                 }
             }
             .overlay { if loading && records.isEmpty { ProgressView() } }
-            .searchable(text: $query, prompt: "鎼滅储璁㈠崟銆佸簵閾烘垨璐熻矗浜?)
+            .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
             .refreshable { await load() }
-            .navigationTitle("浠诲姟")
+            .navigationTitle("任务")
             .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
             .sheet(isPresented: $showingForm) { TaskForm(item: editing) { await load() } }
             .task { if records.isEmpty { await load() } }
@@ -349,14 +349,14 @@ private struct NativeLedgerView: View {
                 if let summary {
                     Section {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("鏈湀娑堣垂").font(.caption).foregroundStyle(.secondary)
+                            Text("本月消费").font(.caption).foregroundStyle(.secondary)
                             Text(money(summary.monthTotal)).font(.title.bold())
-                            HStack { Metric(title: "鏈湀绗旀暟", value: "\(summary.monthRecordCount)"); Metric(title: "寰呮姤閿€", value: money(summary.pendingReimbursementTotal)) }
+                            HStack { Metric(title: "本月笔数", value: "\(summary.monthRecordCount)"); Metric(title: "待报销", value: money(summary.pendingReimbursementTotal)) }
                         }.padding(.vertical, 5)
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("娴佹按") {
+                Section("流水") {
                     ForEach(filtered) { item in
                         NavigationLink { ExpenseDetail(item: item) } label: {
                             HStack(spacing: 12) {
@@ -364,28 +364,28 @@ private struct NativeLedgerView: View {
                                     .frame(width: 34, height: 34).background(Color.blue.opacity(0.12), in: Circle())
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(item.category).fontWeight(.medium)
-                                    Text("\(item.paymentAccount) 路 \(item.submitterName)").font(.caption).foregroundStyle(.secondary)
+                                    Text("\(item.paymentAccount) · \(item.submitterName)").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 4) { Text(money(item.amount)).fontWeight(.semibold); Text(item.expenseDate).font(.caption).foregroundStyle(.secondary) }
                             }
                         }
                         .swipeActions {
-                            Button("鍒犻櫎", role: .destructive) { deleting = item }
-                            Button("缂栬緫") { editing = item; showingForm = true }.tint(.blue)
+                            Button("删除", role: .destructive) { deleting = item }
+                            Button("编辑") { editing = item; showingForm = true }.tint(.blue)
                         }
                     }
                 }
             }
             .overlay { if loading && records.isEmpty { ProgressView() } }
-            .searchable(text: $query, prompt: "鎼滅储鍒嗙被銆佽处鎴锋垨璇存槑")
-            .refreshable { await load() }.navigationTitle("鍏徃璁拌处")
+            .searchable(text: $query, prompt: "搜索分类、账户或说明")
+            .refreshable { await load() }.navigationTitle("公司记账")
             .task { if records.isEmpty { await load() } }
             .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
             .sheet(isPresented: $showingForm) { ExpenseForm(item: editing) { await load() } }
-            .confirmationDialog("纭畾鍒犻櫎杩欐潯璁拌处璁板綍鍚楋紵", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-                Button("鍒犻櫎", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
-                Button("鍙栨秷", role: .cancel) { deleting = nil }
+            .confirmationDialog("确定删除这条记账记录吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+                Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
+                Button("取消", role: .cancel) { deleting = nil }
             }
         }
     }
@@ -436,30 +436,30 @@ private struct NativeLinksView: View {
                             Spacer()
                             if item.isPinned { Image(systemName: "pin.fill").foregroundStyle(.orange) }
                             Menu {
-                                Button("缂栬緫") { editing = item; showingForm = true }
-                                Button(item.isPinned ? "鍙栨秷缃《" : "缃《") { Task { await togglePin(item) } }
-                                Button("鍒犻櫎", role: .destructive) { deleting = item }
+                                Button("编辑") { editing = item; showingForm = true }
+                                Button(item.isPinned ? "取消置顶" : "置顶") { Task { await togglePin(item) } }
+                                Button("删除", role: .destructive) { deleting = item }
                             } label: { Image(systemName: "ellipsis") }
                         }
                         Text(item.title).font(.headline)
                         if let description = item.description, !description.isEmpty { Text(description).lineLimit(4).foregroundStyle(.secondary) }
                         if let url = item.url, let destination = URL(string: url) { Link(destination: destination) { Label(destination.host ?? url, systemImage: "safari") }.font(.subheadline) }
-                        if !item.images.isEmpty { Label("\(item.images.count) 寮犲浘鐗?, systemImage: "photo.on.rectangle").font(.caption).foregroundStyle(.secondary) }
+                        if !item.images.isEmpty { Label("\(item.images.count) 张图片", systemImage: "photo.on.rectangle").font(.caption).foregroundStyle(.secondary) }
                     }.padding(.vertical, 6)
                 }
                 if hasMore && query.isEmpty {
-                    Button { Task { await loadMore() } } label: { HStack { Spacer(); if loadingMore { ProgressView() } else { Text("鍔犺浇鏇村") }; Spacer() } }.disabled(loadingMore)
+                    Button { Task { await loadMore() } } label: { HStack { Spacer(); if loadingMore { ProgressView() } else { Text("加载更多") }; Spacer() } }.disabled(loadingMore)
                 }
             }
             .overlay { if loading && records.isEmpty { ProgressView() } }
-            .searchable(text: $query, prompt: "鎼滅储鏍囬銆佺敤鎴锋垨姝ｆ枃")
-            .refreshable { await load() }.navigationTitle("閾炬帴骞垮満")
+            .searchable(text: $query, prompt: "搜索标题、用户或正文")
+            .refreshable { await load() }.navigationTitle("链接广场")
             .task { if records.isEmpty { await load() } }
             .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "square.and.pencil") } }
             .sheet(isPresented: $showingForm) { LinkForm(item: editing) { await load() } }
-            .confirmationDialog("纭畾鍒犻櫎杩欎釜甯栧瓙鍚楋紵", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-                Button("鍒犻櫎", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
-                Button("鍙栨秷", role: .cancel) { deleting = nil }
+            .confirmationDialog("确定删除这个帖子吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+                Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
+                Button("取消", role: .cancel) { deleting = nil }
             }
         }
     }
@@ -501,19 +501,19 @@ private struct TaskDetail: View {
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
-            Section("浠诲姟淇℃伅") {
-                LabeledContent("璁㈠崟鍙?, value: item.orderNo); LabeledContent("搴楅摵", value: item.shopName)
-                LabeledContent("璐熻矗浜?, value: item.ownerName); LabeledContent("浠诲姟鏃堕棿", value: shortDate(item.taskTime))
-                LabeledContent("鍒峰崟鏁伴噺", value: "\(item.orderCount)")
+            Section("任务信息") {
+                LabeledContent("订单号", value: item.orderNo); LabeledContent("店铺", value: item.shopName)
+                LabeledContent("负责人", value: item.ownerName); LabeledContent("任务时间", value: shortDate(item.taskTime))
+                LabeledContent("刷单数量", value: "\(item.orderCount)")
             }
-            Section("閲戦") {
-                LabeledContent("鏈噾", value: money(item.principalAmount)); LabeledContent("浣ｉ噾", value: money(item.commissionAmount)); LabeledContent("绀煎搧", value: money(item.giftAmount))
+            Section("金额") {
+                LabeledContent("本金", value: money(item.principalAmount)); LabeledContent("佣金", value: money(item.commissionAmount)); LabeledContent("礼品", value: money(item.giftAmount))
             }
-            Section("鐘舵€?) {
-                Toggle("宸茬鏀?, isOn: Binding(get: { item.signedStatus == "completed" }, set: { value in Task { await update("signed_status", value) } })).disabled(updating)
-                Toggle("宸茬粨绠?, isOn: Binding(get: { item.settlementStatus == "completed" }, set: { value in Task { await update("settlement_status", value) } })).disabled(updating)
+            Section("状态") {
+                Toggle("已签收", isOn: Binding(get: { item.signedStatus == "completed" }, set: { value in Task { await update("signed_status", value) } })).disabled(updating)
+                Toggle("已结算", isOn: Binding(get: { item.settlementStatus == "completed" }, set: { value in Task { await update("settlement_status", value) } })).disabled(updating)
             }
-            if let note = item.note, !note.isEmpty { Section("澶囨敞") { Text(note) } }
+            if let note = item.note, !note.isEmpty { Section("备注") { Text(note) } }
         }.navigationTitle(item.shopName).navigationBarTitleDisplayMode(.inline)
     }
 
@@ -556,15 +556,15 @@ private struct TaskForm: View {
         NavigationStack {
             Form {
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("鍩烘湰淇℃伅") { TextField("搴楅摵鍚嶇О", text: $shopName); TextField("璐熻矗浜?, text: $ownerName); Stepper("鍒峰崟鏁伴噺锛歕(orderCount)", value: $orderCount, in: 1...9999) }
-                Section("閲戦") {
-                    TextField("鏈噾", text: $principal).keyboardType(.decimalPad); TextField("浣ｉ噾", text: $commission).keyboardType(.decimalPad); TextField("绀煎搧鑺辫垂", text: $gift).keyboardType(.decimalPad)
+                Section("基本信息") { TextField("店铺名称", text: $shopName); TextField("负责人", text: $ownerName); Stepper("刷单数量：\(orderCount)", value: $orderCount, in: 1...9999) }
+                Section("金额") {
+                    TextField("本金", text: $principal).keyboardType(.decimalPad); TextField("佣金", text: $commission).keyboardType(.decimalPad); TextField("礼品花费", text: $gift).keyboardType(.decimalPad)
                 }
-                Section("鐘舵€?) { Toggle("宸茬鏀?, isOn: $signed); Toggle("宸茬粨绠?, isOn: $settled) }
-                Section("澶囨敞") { TextField("浠诲姟璇存槑", text: $note, axis: .vertical).lineLimit(3...8) }
+                Section("状态") { Toggle("已签收", isOn: $signed); Toggle("已结算", isOn: $settled) }
+                Section("备注") { TextField("任务说明", text: $note, axis: .vertical).lineLimit(3...8) }
             }
-            .navigationTitle(item == nil ? "鏂板浠诲姟" : "缂栬緫浠诲姟").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "淇濆瓨涓?.." : "淇濆瓨") { Task { await save() } }.disabled(saving || shopName.isEmpty || ownerName.isEmpty) } }
+            .navigationTitle(item == nil ? "新增任务" : "编辑任务").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || shopName.isEmpty || ownerName.isEmpty) } }
         }
     }
 
@@ -586,12 +586,12 @@ private struct ExpenseForm: View {
     @State private var scope: String; @State private var description: String; @State private var employeePaid: Bool
     @State private var saving = false; @State private var error: String?
     @State private var importing = false; @State private var attachment: URL?
-    private let categories = ["鍔炲叕鐢ㄥ搧", "蹇€掔墿娴?, "椁愰ギ鎷涘緟", "宸梾浜ら€?, "杞欢鏈嶅姟", "骞垮憡鎺ㄥ箍", "閲囪喘璐ф", "鍏朵粬娑堣垂"]
+    private let categories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
 
     init(item: CompanyExpense?, onSave: @escaping () async -> Void) {
         self.item = item; self.onSave = onSave; _amount = State(initialValue: item.map { String($0.amount) } ?? "")
-        _category = State(initialValue: item?.category ?? "鍔炲叕鐢ㄥ搧"); _account = State(initialValue: item?.paymentAccount ?? "鍏徃鍗?)
-        _scope = State(initialValue: item?.expenseScope ?? "鍏叡璐圭敤"); _description = State(initialValue: item?.description ?? "")
+        _category = State(initialValue: item?.category ?? "办公用品"); _account = State(initialValue: item?.paymentAccount ?? "公司卡")
+        _scope = State(initialValue: item?.expenseScope ?? "公共费用"); _description = State(initialValue: item?.description ?? "")
         _employeePaid = State(initialValue: item?.paymentType == "employee")
     }
 
@@ -599,13 +599,13 @@ private struct ExpenseForm: View {
         NavigationStack {
             Form {
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("閲戦") { TextField("0.00", text: $amount).keyboardType(.decimalPad).font(.title2.bold()) }
-                Section("娑堣垂淇℃伅") { Picker("鍒嗙被", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }; TextField("娑堣垂璇存槑", text: $description); Toggle("鍛樺伐鍨粯", isOn: $employeePaid) }
-                Section("琛ュ厖淇℃伅") { TextField("浠樻璐︽埛", text: $account); TextField("璐圭敤褰掑睘", text: $scope) }
-                Section("绁ㄦ嵁") { Button(attachment?.lastPathComponent ?? "閫夋嫨鍥剧墖鎴?PDF") { importing = true } }
+                Section("金额") { TextField("0.00", text: $amount).keyboardType(.decimalPad).font(.title2.bold()) }
+                Section("消费信息") { Picker("分类", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }; TextField("消费说明", text: $description); Toggle("员工垫付", isOn: $employeePaid) }
+                Section("补充信息") { TextField("付款账户", text: $account); TextField("费用归属", text: $scope) }
+                Section("票据") { Button(attachment?.lastPathComponent ?? "选择图片或 PDF") { importing = true } }
             }
-            .navigationTitle(item == nil ? "璁颁竴绗? : "缂栬緫璁拌处").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "淇濆瓨涓?.." : "淇濆瓨") { Task { await save() } }.disabled(saving || (Double(amount) ?? 0) <= 0) } }
+            .navigationTitle(item == nil ? "记一笔" : "编辑记账").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || (Double(amount) ?? 0) <= 0) } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.image, .pdf]) { result in attachment = try? result.get() }
         }
     }
@@ -613,7 +613,7 @@ private struct ExpenseForm: View {
     private func save() async {
         saving = true; error = nil; defer { saving = false }
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
-        let body: [String: Any] = ["expense_date": item?.expenseDate ?? formatter.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": employeePaid ? "employee" : "company", "payment_account": account.isEmpty ? "鍏徃鍗? : account, "expense_scope": scope.isEmpty ? "鍏叡璐圭敤" : scope, "description": description.isEmpty ? category : description]
+        let body: [String: Any] = ["expense_date": item?.expenseDate ?? formatter.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": employeePaid ? "employee" : "company", "payment_account": account.isEmpty ? "公司卡" : account, "expense_scope": scope.isEmpty ? "公共费用" : scope, "description": description.isEmpty ? category : description]
         do { let saved: CompanyExpense = try await session.send(item.map { "company-expenses/\($0.id)" } ?? "company-expenses", method: item == nil ? "POST" : "PUT", body: body); if let attachment { guard attachment.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { attachment.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: attachment); let _: CompanyExpense = try await session.upload(path: "company-expenses/\(saved.id)/attachment", field: "attachment", filename: attachment.lastPathComponent, data: data, mime: attachment.pathExtension.lowercased() == "pdf" ? "application/pdf" : "image/jpeg") }; await onSave(); dismiss() }
         catch { self.error = session.message(for: error) }
     }
@@ -636,12 +636,12 @@ private struct LinkForm: View {
         NavigationStack {
             Form {
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("甯栧瓙") { TextField("鏍囬", text: $title); TextField("鍒嗙被", text: $category); TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("缃《", isOn: $pinned) }
-                Section("姝ｆ枃") { TextField("杈撳叆姝ｆ枃鍐呭", text: $description, axis: .vertical).lineLimit(8...16) }
-                Section("閰嶅浘") { Button(images.isEmpty ? "閫夋嫨鍥剧墖" : "宸查€夋嫨 \(images.count) 寮?) { importing = true } }
+                Section("帖子") { TextField("标题", text: $title); TextField("分类", text: $category); TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) }
+                Section("正文") { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }
+                Section("配图") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } }
             }
-            .navigationTitle(item == nil ? "鍙戝竷甯栧瓙" : "缂栬緫甯栧瓙").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "鍙戝竷涓?.." : "淇濆瓨") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
+            .navigationTitle(item == nil ? "发布帖子" : "编辑帖子").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in images = (try? result.get()) ?? [] }
         }
     }
@@ -662,27 +662,27 @@ private struct NativeMineView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("璐︽埛") { Label(session.username, systemImage: "person.circle") }
-                Section("AI 绠＄悊") {
-                    NavigationLink { NativeModelsView() } label: { Label("妯″瀷", systemImage: "cpu") }
-                    NavigationLink { NativeKnowledgeView() } label: { Label("鐭ヨ瘑搴?, systemImage: "books.vertical") }
-                    NavigationLink { NativeCapabilitiesView() } label: { Label("AI 鑳藉姏", systemImage: "wand.and.stars") }
-                    NavigationLink { NativeOperationsView() } label: { Label("AI 杩愯惀", systemImage: "chart.bar.xaxis") }
+                Section("账户") { Label(session.username, systemImage: "person.circle") }
+                Section("AI 管理") {
+                    NavigationLink { NativeModelsView() } label: { Label("模型", systemImage: "cpu") }
+                    NavigationLink { NativeKnowledgeView() } label: { Label("知识库", systemImage: "books.vertical") }
+                    NavigationLink { NativeCapabilitiesView() } label: { Label("AI 能力", systemImage: "wand.and.stars") }
+                    NavigationLink { NativeOperationsView() } label: { Label("AI 运营", systemImage: "chart.bar.xaxis") }
                 }
-                Section("涓氬姟绠＄悊") {
-                    NavigationLink { NativeWarehouseView() } label: { Label("浠撳偍绠＄悊", systemImage: "shippingbox") }
-                    NavigationLink { NativeShopsView() } label: { Label("搴楅摵妗ｆ", systemImage: "storefront") }
-                    NavigationLink { NativeOwnersView() } label: { Label("璐熻矗浜?, systemImage: "person.2") }
-                    NavigationLink { NativeUsersView() } label: { Label("璐﹀彿涓庢潈闄?, systemImage: "person.badge.key") }
-                    NavigationLink { NativeLicensesView() } label: { Label("鎺堟潈鐮?, systemImage: "key") }
-                    NavigationLink { NativePeerShopsView() } label: { Label("鍚岃搴楅摵", systemImage: "building.2") }
-                    NavigationLink { NativeLicenseRecordsView() } label: { Label("鎵х収妗ｆ", systemImage: "doc.text") }
-                    NavigationLink { NativeAccountUsageView() } label: { Label("璐﹀彿浣跨敤", systemImage: "person.text.rectangle") }
-                    NavigationLink { NativeDevicesView() } label: { Label("鎵嬫満璁惧", systemImage: "iphone") }
+                Section("业务管理") {
+                    NavigationLink { NativeWarehouseView() } label: { Label("仓储管理", systemImage: "shippingbox") }
+                    NavigationLink { NativeShopsView() } label: { Label("店铺档案", systemImage: "storefront") }
+                    NavigationLink { NativeOwnersView() } label: { Label("负责人", systemImage: "person.2") }
+                    NavigationLink { NativeUsersView() } label: { Label("账号与权限", systemImage: "person.badge.key") }
+                    NavigationLink { NativeLicensesView() } label: { Label("授权码", systemImage: "key") }
+                    NavigationLink { NativePeerShopsView() } label: { Label("同行店铺", systemImage: "building.2") }
+                    NavigationLink { NativeLicenseRecordsView() } label: { Label("执照档案", systemImage: "doc.text") }
+                    NavigationLink { NativeAccountUsageView() } label: { Label("账号使用", systemImage: "person.text.rectangle") }
+                    NavigationLink { NativeDevicesView() } label: { Label("手机设备", systemImage: "iphone") }
                 }
-                Section { Button("閫€鍑虹櫥褰?, role: .destructive) { Task { await session.logout() } } }
+                Section { Button("退出登录", role: .destructive) { Task { await session.logout() } } }
             }
-                .navigationTitle("鎴戠殑")
+                .navigationTitle("我的")
         }
     }
 }
@@ -693,27 +693,27 @@ private struct NativeShopsView: View {
     @State private var editing: ShopRecord?; @State private var showingForm = false
     private var visibleFields: [ShopField] { fields.filter(\.isVisible).sorted { $0.sortOrder < $1.sortOrder } }
     private var filtered: [ShopRecord] { query.isEmpty ? records : records.filter { $0.values.values.map(\.display).joined(separator: " ").localizedCaseInsensitiveContains(query) } }
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { record in NavigationLink { ShopDetail(record: record, fields: visibleFields) } label: { VStack(alignment: .leading, spacing: 5) { Text(title(record)).fontWeight(.medium); Text(visibleFields.prefix(3).compactMap { field in record.values[field.fieldName].map { "\(field.label)锛歕($0.display)" } }.joined(separator: " 路 ")).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await remove(record) } }; Button("缂栬緫") { editing = record; showingForm = true }.tint(.blue) } } }.navigationTitle("搴楅摵妗ｆ").searchable(text: $query).overlay { if loading && records.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingForm) { ShopForm(item: editing, fields: visibleFields) { await load() } } }
-    private func title(_ record: ShopRecord) -> String { for key in ["shop_name", "store_name", "name"] { if let value = record.values[key], !value.display.isEmpty { return value.display } }; return visibleFields.compactMap { record.values[$0.fieldName]?.display }.first ?? "搴楅摵 #\(record.id)" }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { record in NavigationLink { ShopDetail(record: record, fields: visibleFields) } label: { VStack(alignment: .leading, spacing: 5) { Text(title(record)).fontWeight(.medium); Text(visibleFields.prefix(3).compactMap { field in record.values[field.fieldName].map { "\(field.label)：\($0.display)" } }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(record) } }; Button("编辑") { editing = record; showingForm = true }.tint(.blue) } } }.navigationTitle("店铺档案").searchable(text: $query).overlay { if loading && records.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingForm) { ShopForm(item: editing, fields: visibleFields) { await load() } } }
+    private func title(_ record: ShopRecord) -> String { for key in ["shop_name", "store_name", "name"] { if let value = record.values[key], !value.display.isEmpty { return value.display } }; return visibleFields.compactMap { record.values[$0.fieldName]?.display }.first ?? "店铺 #\(record.id)" }
     private func load() async { loading = true; defer { loading = false }; do { async let fieldRequest: [ShopField] = session.get("custom-fields"); async let recordRequest: [ShopRecord] = session.get("shop-records"); let result = try await (fieldRequest, recordRequest); fields = result.0; records = result.1 } catch { self.error = session.message(for: error) } }
     private func remove(_ record: ShopRecord) async { do { try await session.delete("shop-records/\(record.id)"); records.removeAll { $0.id == record.id } } catch { self.error = session.message(for: error) } }
 }
 
-private struct ShopDetail: View { let record: ShopRecord; let fields: [ShopField]; var body: some View { List { ForEach(fields) { field in LabeledContent(field.label, value: record.values[field.fieldName]?.display ?? "-") } }.navigationTitle("搴楅摵璇︽儏").navigationBarTitleDisplayMode(.inline) } }
+private struct ShopDetail: View { let record: ShopRecord; let fields: [ShopField]; var body: some View { List { ForEach(fields) { field in LabeledContent(field.label, value: record.values[field.fieldName]?.display ?? "-") } }.navigationTitle("店铺详情").navigationBarTitleDisplayMode(.inline) } }
 
 private struct ShopForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
     let item: ShopRecord?; let fields: [ShopField]; let onSave: () async -> Void
     @State private var values: [String: String]; @State private var saving = false; @State private var error: String?
     init(item: ShopRecord?, fields: [ShopField], onSave: @escaping () async -> Void) { self.item = item; self.fields = fields; self.onSave = onSave; _values = State(initialValue: Dictionary(uniqueKeysWithValues: fields.map { ($0.fieldName, item?.values[$0.fieldName]?.display == "-" ? "" : item?.values[$0.fieldName]?.display ?? "") })) }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; ForEach(fields) { field in TextField(field.label + (field.required ? " *" : ""), text: Binding(get: { values[field.fieldName] ?? "" }, set: { values[field.fieldName] = $0 })).keyboardType(field.fieldType == "number" ? .decimalPad : .default) } }.navigationTitle(item == nil ? "鏂板搴楅摵" : "缂栬緫搴楅摵").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving) } } } }
-    private func save() async { for field in fields where field.required && (values[field.fieldName] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.error = "璇峰～鍐橽(field.label)"; return }; saving = true; defer { saving = false }; var payload: [String: Any] = [:]; for field in fields { let value = values[field.fieldName] ?? ""; payload[field.fieldName] = field.fieldType == "number" && !value.isEmpty ? (Double(value) ?? 0) : value }; do { let _: ShopRecord = try await session.send(item.map { "shop-records/\($0.id)" } ?? "shop-records", method: item == nil ? "POST" : "PUT", body: ["values": payload]); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; ForEach(fields) { field in TextField(field.label + (field.required ? " *" : ""), text: Binding(get: { values[field.fieldName] ?? "" }, set: { values[field.fieldName] = $0 })).keyboardType(field.fieldType == "number" ? .decimalPad : .default) } }.navigationTitle(item == nil ? "新增店铺" : "编辑店铺").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving) } } } }
+    private func save() async { for field in fields where field.required && (values[field.fieldName] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { self.error = "请填写\(field.label)"; return }; saving = true; defer { saving = false }; var payload: [String: Any] = [:]; for field in fields { let value = values[field.fieldName] ?? ""; payload[field.fieldName] = field.fieldType == "number" && !value.isEmpty ? (Double(value) ?? 0) : value }; do { let _: ShopRecord = try await session.send(item.map { "shop-records/\($0.id)" } ?? "shop-records", method: item == nil ? "POST" : "PUT", body: ["values": payload]); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeOwnersView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var owners: [TaskOwner] = []; @State private var query = ""; @State private var newName = ""; @State private var showingAdd = false; @State private var error: String?
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(owners.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { owner in Label(owner.name, systemImage: "person.circle").swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await remove(owner) } } } } }.navigationTitle("璐熻矗浜?).searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }.alert("鏂板璐熻矗浜?, isPresented: $showingAdd) { TextField("璐熻矗浜哄悕绉?, text: $newName); Button("淇濆瓨") { Task { await add() } }; Button("鍙栨秷", role: .cancel) {} } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(owners.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { owner in Label(owner.name, systemImage: "person.circle").swipeActions { Button("删除", role: .destructive) { Task { await remove(owner) } } } } }.navigationTitle("负责人").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }.alert("新增负责人", isPresented: $showingAdd) { TextField("负责人名称", text: $newName); Button("保存") { Task { await add() } }; Button("取消", role: .cancel) {} } }
     private func load() async { do { owners = try await session.get("task-bookkeeping/owners") } catch { self.error = session.message(for: error) } }
     private func add() async { let name = newName.trimmingCharacters(in: .whitespacesAndNewlines); guard !name.isEmpty else { return }; do { let _: TaskOwner = try await session.send("task-bookkeeping/owners", method: "POST", body: ["name": name]); newName = ""; await load() } catch { self.error = session.message(for: error) } }
     private func remove(_ owner: TaskOwner) async { do { try await session.delete("task-bookkeeping/owners/\(owner.id)"); await load() } catch { self.error = session.message(for: error) } }
@@ -723,7 +723,7 @@ private struct NativeUsersView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var users: [AdminUserRecord] = []; @State private var query = ""; @State private var error: String?
     @State private var editing: AdminUserRecord?; @State private var showingForm = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(users.filter { query.isEmpty || "\($0.username) \($0.displayName ?? "")".localizedCaseInsensitiveContains(query) }) { user in HStack { VStack(alignment: .leading) { Text((user.displayName?.isEmpty == false ? user.displayName : nil) ?? user.username).fontWeight(.medium); Text("\(user.username) 路 \(roleLabel(user.role))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Toggle("", isOn: Binding(get: { user.isActive }, set: { active in Task { await toggle(user, active) } })).labelsHidden() }.contentShape(Rectangle()).onTapGesture { editing = user; showingForm = true } } }.navigationTitle("璐﹀彿涓庢潈闄?).searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingForm) { UserAccessForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(users.filter { query.isEmpty || "\($0.username) \($0.displayName ?? "")".localizedCaseInsensitiveContains(query) }) { user in HStack { VStack(alignment: .leading) { Text((user.displayName?.isEmpty == false ? user.displayName : nil) ?? user.username).fontWeight(.medium); Text("\(user.username) · \(roleLabel(user.role))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Toggle("", isOn: Binding(get: { user.isActive }, set: { active in Task { await toggle(user, active) } })).labelsHidden() }.contentShape(Rectangle()).onTapGesture { editing = user; showingForm = true } } }.navigationTitle("账号与权限").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingForm) { UserAccessForm(item: editing) { await load() } } }
     private func load() async { do { users = try await session.get("admin-users") } catch { self.error = session.message(for: error) } }
     private func toggle(_ user: AdminUserRecord, _ active: Bool) async { do { let _: EmptyResponse = try await session.send("admin-users/\(user.id)/status", method: "PATCH", body: ["is_active": active], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
 }
@@ -732,9 +732,9 @@ private struct UserAccessForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
     let item: AdminUserRecord?; let onSave: () async -> Void
     @State private var username = ""; @State private var password = ""; @State private var role: String; @State private var permissions: [String: String]; @State private var saving = false; @State private var error: String?
-    private let modules = ["dashboard": "杩愯惀宸ヤ綔鍙?, "links": "閾炬帴骞垮満", "task_bookkeeping": "浠诲姟璁拌处", "dingtalk_profits": "閽夐拤鍒╂鼎", "shop_records": "搴楅摵璐﹀彿", "peer_shops": "鍚岃搴楅摵", "licenses": "鎵х収妗ｆ", "account_usage": "璐﹀彿浣跨敤", "mobile_devices": "鎵嬫満璁惧", "warehouse": "浠撳偍鍙戣揣"]
+    private let modules = ["dashboard": "运营工作台", "links": "链接广场", "task_bookkeeping": "任务记账", "dingtalk_profits": "钉钉利润", "shop_records": "店铺账号", "peer_shops": "同行店铺", "licenses": "执照档案", "account_usage": "账号使用", "mobile_devices": "手机设备", "warehouse": "仓储发货"]
     init(item: AdminUserRecord?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _username = State(initialValue: item?.username ?? ""); _role = State(initialValue: item?.role ?? "editor"); _permissions = State(initialValue: item?.permissions ?? [:]) }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; Section("璐﹀彿") { TextField("鐢ㄦ埛鍚?, text: $username).disabled(item != nil); if item == nil { SecureField("鑷冲皯 8 浣嶅瘑鐮?, text: $password) }; Picker("瑙掕壊", selection: $role) { Text("瓒呯骇绠＄悊鍛?).tag("superadmin"); Text("缂栬緫鍛?).tag("editor"); Text("鍙璐﹀彿").tag("viewer") }.onChange(of: role) { value in applyDefaults(value) } }; if role != "superadmin" { Section("妯″潡鏉冮檺") { ForEach(modules.keys.sorted(), id: \.self) { key in Picker(modules[key] ?? key, selection: Binding(get: { permissions[key] ?? (role == "viewer" ? "read" : "write") }, set: { permissions[key] = $0 })) { Text("鏃犳潈闄?).tag("none"); Text("鍙").tag("read"); Text("鍙紪杈?).tag("write") } } } } }.navigationTitle(item == nil ? "鍒涘缓璐﹀彿" : "缂栬緫鏉冮檺").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || username.isEmpty || (item == nil && password.count < 8)) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; Section("账号") { TextField("用户名", text: $username).disabled(item != nil); if item == nil { SecureField("至少 8 位密码", text: $password) }; Picker("角色", selection: $role) { Text("超级管理员").tag("superadmin"); Text("编辑员").tag("editor"); Text("只读账号").tag("viewer") }.onChange(of: role) { value in applyDefaults(value) } }; if role != "superadmin" { Section("模块权限") { ForEach(modules.keys.sorted(), id: \.self) { key in Picker(modules[key] ?? key, selection: Binding(get: { permissions[key] ?? (role == "viewer" ? "read" : "write") }, set: { permissions[key] = $0 })) { Text("无权限").tag("none"); Text("只读").tag("read"); Text("可编辑").tag("write") } } } } }.navigationTitle(item == nil ? "创建账号" : "编辑权限").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || username.isEmpty || (item == nil && password.count < 8)) } } } }
     private func applyDefaults(_ value: String) { guard value != "superadmin" else { return }; permissions = Dictionary(uniqueKeysWithValues: modules.keys.map { ($0, value == "viewer" ? "read" : "write") }) }
     private func save() async { saving = true; defer { saving = false }; do { if let item { let _: AdminUserRecord = try await session.send("admin-users/\(item.id)", method: "PATCH", body: ["role": role, "permissions": permissions]) } else { let _: AdminUserRecord = try await session.send("admin-users", method: "POST", body: ["username": username, "password": password, "role": role, "permissions": permissions.isEmpty ? Dictionary(uniqueKeysWithValues: modules.keys.map { ($0, role == "viewer" ? "read" : "write") }) : permissions]) }; await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
@@ -743,77 +743,77 @@ private struct NativeLicensesView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var licenses: [LicenseRecord] = []; @State private var query = ""; @State private var error: String?
     @State private var showingCreate = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(licenses.filter { query.isEmpty || "\($0.licenseKey) \($0.planName)".localizedCaseInsensitiveContains(query) }) { item in NavigationLink { LicenseDetail(item: item) { await load() } } label: { VStack(alignment: .leading, spacing: 5) { HStack { Text(item.planName).fontWeight(.medium); Spacer(); StatusBadge(text: licenseStatus(item.status), done: item.status == "active") }; Text(item.licenseKey).font(.caption.monospaced()).foregroundStyle(.secondary); Text("\(item.devices.count) / \(item.maxDevices) 鍙拌澶?).font(.caption2).foregroundStyle(.secondary) } }.swipeActions { Button(item.status == "disabled" ? "鍚敤" : "鍋滅敤") { Task { await toggle(item) } }.tint(item.status == "disabled" ? .green : .orange) } } }.navigationTitle("鎺堟潈鐮?).searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { showingCreate = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingCreate) { LicenseCreateForm { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(licenses.filter { query.isEmpty || "\($0.licenseKey) \($0.planName)".localizedCaseInsensitiveContains(query) }) { item in NavigationLink { LicenseDetail(item: item) { await load() } } label: { VStack(alignment: .leading, spacing: 5) { HStack { Text(item.planName).fontWeight(.medium); Spacer(); StatusBadge(text: licenseStatus(item.status), done: item.status == "active") }; Text(item.licenseKey).font(.caption.monospaced()).foregroundStyle(.secondary); Text("\(item.devices.count) / \(item.maxDevices) 台设备").font(.caption2).foregroundStyle(.secondary) } }.swipeActions { Button(item.status == "disabled" ? "启用" : "停用") { Task { await toggle(item) } }.tint(item.status == "disabled" ? .green : .orange) } } }.navigationTitle("授权码").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { showingCreate = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingCreate) { LicenseCreateForm { await load() } } }
     private func load() async { do { licenses = try await session.get("license-admin/licenses") } catch { self.error = session.message(for: error) } }
     private func toggle(_ item: LicenseRecord) async { let key = item.licenseKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.licenseKey; do { let _: EmptyResponse = try await session.send("license-admin/licenses/\(key)/status", method: "POST", body: ["status": item.status == "disabled" ? "active" : "disabled"], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
 }
 
 private struct LicenseCreateForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
-    let onSave: () async -> Void; @State private var plan = "鏍囧噯鐗?; @State private var count = 5; @State private var days = 30; @State private var devices = 1; @State private var note = ""; @State private var saving = false; @State private var error: String?
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("濂楅鍚嶇О", text: $plan); Stepper("鐢熸垚鏁伴噺锛歕(count)", value: $count, in: 1...100); Stepper("鏈夋晥澶╂暟锛歕(days)", value: $days, in: 1...3650); Stepper("鏈€澶ц澶囷細\(devices)", value: $devices, in: 1...100); TextField("澶囨敞", text: $note) }.navigationTitle("鎵归噺鐢熸垚鎺堟潈鐮?).toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("鐢熸垚") { Task { await save() } }.disabled(saving || plan.isEmpty) } } } }
+    let onSave: () async -> Void; @State private var plan = "标准版"; @State private var count = 5; @State private var days = 30; @State private var devices = 1; @State private var note = ""; @State private var saving = false; @State private var error: String?
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("套餐名称", text: $plan); Stepper("生成数量：\(count)", value: $count, in: 1...100); Stepper("有效天数：\(days)", value: $days, in: 1...3650); Stepper("最大设备：\(devices)", value: $devices, in: 1...100); TextField("备注", text: $note) }.navigationTitle("批量生成授权码").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("生成") { Task { await save() } }.disabled(saving || plan.isEmpty) } } } }
     private func save() async { saving = true; defer { saving = false }; do { let _: [LicenseRecord] = try await session.send("license-admin/licenses", method: "POST", body: ["plan_name": plan, "count": count, "duration_days": days, "max_devices": devices, "note": note, "feature_flags": ["pro": true]]); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativePeerShopsView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [PeerShopRecord] = []; @State private var query = ""; @State private var error: String?; @State private var editing: PeerShopRecord?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.shopName) \($0.shopURL ?? "") \($0.remark ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { PeerShopDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.shopName).fontWeight(.medium); Text(row.shopURL ?? row.remark ?? "-").font(.caption).foregroundStyle(.secondary) } }.swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await remove(row) } }; Button("缂栬緫") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("鍚岃搴楅摵").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { PeerShopForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.shopName) \($0.shopURL ?? "") \($0.remark ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { PeerShopDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.shopName).fontWeight(.medium); Text(row.shopURL ?? row.remark ?? "-").font(.caption).foregroundStyle(.secondary) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("同行店铺").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { PeerShopForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("peer-shops") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: PeerShopRecord) async { do { try await session.delete("peer-shops/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
-private struct PeerShopDetail: View { let item: PeerShopRecord; var body: some View { List { LabeledContent("搴楅摵", value: item.shopName); LabeledContent("閾炬帴", value: item.shopURL ?? "-"); Section("澶囨敞") { Text(item.remark ?? "鏃?) } }.navigationTitle("鍚岃搴楅摵璇︽儏") } }
+private struct PeerShopDetail: View { let item: PeerShopRecord; var body: some View { List { LabeledContent("店铺", value: item.shopName); LabeledContent("链接", value: item.shopURL ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("同行店铺详情") } }
 private struct PeerShopForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: PeerShopRecord?; let onSave: () async -> Void; @State private var name: String; @State private var url: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
     init(item: PeerShopRecord?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.shopName ?? ""); _url = State(initialValue: item?.shopURL ?? ""); _remark = State(initialValue: item?.remark ?? "") }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("搴楅摵鍚嶇О", text: $name); TextField("搴楅摵閾炬帴", text: $url); TextField("澶囨敞", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { Button("閫夋嫨搴楅摵鍥剧墖") { importing = true } } }.navigationTitle(item == nil ? "鏂板鍚岃搴楅摵" : "缂栬緫鍚岃搴楅摵").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || name.isEmpty) } }.fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in Task { await uploadImage(result) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("店铺名称", text: $name); TextField("店铺链接", text: $url); TextField("备注", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { Button("选择店铺图片") { importing = true } } }.navigationTitle(item == nil ? "新增同行店铺" : "编辑同行店铺").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || name.isEmpty) } }.fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in Task { await uploadImage(result) } } } }
     private func save() async { saving = true; defer { saving = false }; let shopURL: Any = url.isEmpty ? NSNull() : url; let savedRemark: Any = remark.isEmpty ? NSNull() : remark; let extra: [String: Any] = [:]; let body: [String: Any] = ["shop_name": name, "shop_url": shopURL, "remark": savedRemark, "extra_fields": extra]; do { let _: PeerShopRecord = try await session.send(item.map { "peer-shops/\($0.id)" } ?? "peer-shops", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
     private func uploadImage(_ result: Result<URL, Error>) async { guard let item else { return }; do { let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: url); let _: PeerShopRecord = try await session.upload(path: "peer-shops/\(item.id)/image", field: "image", filename: url.lastPathComponent, data: data, mime: "image/jpeg"); await onSave() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeLicenseRecordsView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [LicenseRecordItem] = []; @State private var query = ""; @State private var error: String?; @State private var editing: LicenseRecordItem?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.subjectName) \($0.creditCode) \($0.legalRepresentative ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { LicenseRecordDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.subjectName).fontWeight(.medium); Text(row.creditCode).font(.caption).foregroundStyle(.secondary); Text(row.expiryDate ?? "鏈～鍐欏埌鏈熸棩").font(.caption2).foregroundStyle(.secondary) } }.swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await remove(row) } }; Button("缂栬緫") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("鎵х収妗ｆ").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { LicenseRecordForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.subjectName) \($0.creditCode) \($0.legalRepresentative ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { LicenseRecordDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.subjectName).fontWeight(.medium); Text(row.creditCode).font(.caption).foregroundStyle(.secondary); Text(row.expiryDate ?? "未填写到期日").font(.caption2).foregroundStyle(.secondary) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("执照档案").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { LicenseRecordForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("license-records") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: LicenseRecordItem) async { do { try await session.delete("license-records/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
-private struct LicenseRecordDetail: View { let item: LicenseRecordItem; var body: some View { List { LabeledContent("涓讳綋鍚嶇О", value: item.subjectName); LabeledContent("缁熶竴淇＄敤浠ｇ爜", value: item.creditCode); LabeledContent("娉曞畾浠ｈ〃浜?, value: item.legalRepresentative ?? "-"); LabeledContent("绛惧彂鏃ユ湡", value: item.issueDate ?? "-"); LabeledContent("鍒版湡鏃ユ湡", value: item.expiryDate ?? "-"); Section("澶囨敞") { Text(item.remark ?? "鏃?) } }.navigationTitle("鎵х収璇︽儏") } }
+private struct LicenseRecordDetail: View { let item: LicenseRecordItem; var body: some View { List { LabeledContent("主体名称", value: item.subjectName); LabeledContent("统一信用代码", value: item.creditCode); LabeledContent("法定代表人", value: item.legalRepresentative ?? "-"); LabeledContent("签发日期", value: item.issueDate ?? "-"); LabeledContent("到期日期", value: item.expiryDate ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("执照详情") } }
 private struct LicenseRecordForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: LicenseRecordItem?; let onSave: () async -> Void; @State private var subject: String; @State private var code: String; @State private var legal: String; @State private var issue: String; @State private var expiry: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
     init(item: LicenseRecordItem?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _subject = State(initialValue: item?.subjectName ?? ""); _code = State(initialValue: item?.creditCode ?? ""); _legal = State(initialValue: item?.legalRepresentative ?? ""); _issue = State(initialValue: item?.issueDate ?? ""); _expiry = State(initialValue: item?.expiryDate ?? ""); _remark = State(initialValue: item?.remark ?? "") }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("涓讳綋鍚嶇О", text: $subject); TextField("缁熶竴淇＄敤浠ｇ爜", text: $code); TextField("娉曞畾浠ｈ〃浜?, text: $legal); TextField("绛惧彂鏃ユ湡", text: $issue); TextField("鍒版湡鏃ユ湡", text: $expiry); TextField("澶囨敞", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { Button("閫夋嫨鎵х収鍥剧墖") { importing = true } } }.navigationTitle(item == nil ? "鏂板鎵х収" : "缂栬緫鎵х収").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || subject.isEmpty || code.isEmpty) } }.fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in Task { await uploadImage(result) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("主体名称", text: $subject); TextField("统一信用代码", text: $code); TextField("法定代表人", text: $legal); TextField("签发日期", text: $issue); TextField("到期日期", text: $expiry); TextField("备注", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { Button("选择执照图片") { importing = true } } }.navigationTitle(item == nil ? "新增执照" : "编辑执照").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || subject.isEmpty || code.isEmpty) } }.fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in Task { await uploadImage(result) } } } }
     private func save() async { saving = true; defer { saving = false }; let savedLegal: Any = legal.isEmpty ? NSNull() : legal; let savedIssue: Any = issue.isEmpty ? NSNull() : issue; let savedExpiry: Any = expiry.isEmpty ? NSNull() : expiry; let savedRemark: Any = remark.isEmpty ? NSNull() : remark; let extra: [String: Any] = [:]; let body: [String: Any] = ["subject_name": subject, "credit_code": code, "legal_representative": savedLegal, "issue_date": savedIssue, "expiry_date": savedExpiry, "remark": savedRemark, "extra_fields": extra]; do { let _: LicenseRecordItem = try await session.send(item.map { "license-records/\($0.id)" } ?? "license-records", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
     private func uploadImage(_ result: Result<URL, Error>) async { guard let item else { return }; do { let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: url); let _: LicenseRecordItem = try await session.upload(path: "license-records/\(item.id)/image", field: "image", filename: url.lastPathComponent, data: data, mime: "image/jpeg"); await onSave() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeDevicesView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [MobileDevice] = []; @State private var query = ""; @State private var error: String?; @State private var editing: MobileDevice?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.deviceName) \($0.primaryCard ?? "") \($0.secondaryCard ?? "")".localizedCaseInsensitiveContains(query) }) { row in VStack(alignment: .leading, spacing: 5) { Text(row.deviceName).fontWeight(.medium); Text([row.primaryCard, row.secondaryCard].compactMap { $0 }.joined(separator: " 路 ")).font(.caption).foregroundStyle(.secondary) }.swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await remove(row) } }; Button("缂栬緫") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("鎵嬫満璁惧").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { DeviceForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.deviceName) \($0.primaryCard ?? "") \($0.secondaryCard ?? "")".localizedCaseInsensitiveContains(query) }) { row in VStack(alignment: .leading, spacing: 5) { Text(row.deviceName).fontWeight(.medium); Text([row.primaryCard, row.secondaryCard].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("手机设备").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { DeviceForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("mobile-devices") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: MobileDevice) async { do { try await session.delete("mobile-devices/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
 private struct DeviceForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: MobileDevice?; let onSave: () async -> Void; @State private var name: String; @State private var primary: String; @State private var secondary: String; @State private var remark: String; @State private var saving = false; @State private var error: String?
     init(item: MobileDevice?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.deviceName ?? ""); _primary = State(initialValue: item?.primaryCard ?? ""); _secondary = State(initialValue: item?.secondaryCard ?? ""); _remark = State(initialValue: item?.remark ?? "") }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("璁惧鍚嶇О", text: $name); TextField("涓诲崱", text: $primary); TextField("鍓崱", text: $secondary); TextField("澶囨敞", text: $remark) }.navigationTitle(item == nil ? "鏂板璁惧" : "缂栬緫璁惧").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || name.isEmpty) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("设备名称", text: $name); TextField("主卡", text: $primary); TextField("副卡", text: $secondary); TextField("备注", text: $remark) }.navigationTitle(item == nil ? "新增设备" : "编辑设备").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || name.isEmpty) } } } }
     private func save() async { saving = true; defer { saving = false }; let body: [String: Any] = ["device_name": name, "primary_card": primary, "secondary_card": secondary, "remark": remark, "extra_fields": [String: Any]()]; do { let _: MobileDevice = try await session.send(item.map { "mobile-devices/\($0.id)" } ?? "mobile-devices", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeAccountUsageView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [AccountUsage] = []; @State private var query = ""; @State private var error: String?; @State private var editing: AccountUsage?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.accountName) \($0.phoneNumber ?? "") \($0.deviceName ?? "")".localizedCaseInsensitiveContains(query) }) { row in VStack(alignment: .leading, spacing: 5) { HStack { Text(row.accountName).fontWeight(.medium); Spacer(); StatusBadge(text: row.isBanned ? "宸插皝绂? : "姝ｅ父", done: !row.isBanned) }; Text([row.phoneNumber, row.deviceName].compactMap { $0 }.joined(separator: " 路 ")).font(.caption).foregroundStyle(.secondary) }.swipeActions { Button(row.isBanned ? "鎭㈠" : "灏佺") { Task { await setBanned(row, !row.isBanned) } }.tint(row.isBanned ? .green : .orange); Button("缂栬緫") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("璐﹀彿浣跨敤").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { AccountUsageForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.accountName) \($0.phoneNumber ?? "") \($0.deviceName ?? "")".localizedCaseInsensitiveContains(query) }) { row in VStack(alignment: .leading, spacing: 5) { HStack { Text(row.accountName).fontWeight(.medium); Spacer(); StatusBadge(text: row.isBanned ? "已封禁" : "正常", done: !row.isBanned) }; Text([row.phoneNumber, row.deviceName].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }.swipeActions { Button(row.isBanned ? "恢复" : "封禁") { Task { await setBanned(row, !row.isBanned) } }.tint(row.isBanned ? .green : .orange); Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("账号使用").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { AccountUsageForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("account-usage-records") } catch { self.error = session.message(for: error) } }
     private func setBanned(_ row: AccountUsage, _ banned: Bool) async { do { let _: EmptyResponse = try await session.send("account-usage-records/batch-status", method: "PATCH", body: ["record_ids": [row.id], "is_banned": banned], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
 }
 private struct AccountUsageForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: AccountUsage?; let onSave: () async -> Void; @State private var account: String; @State private var password = ""; @State private var phone: String; @State private var device: String; @State private var notes: String; @State private var reason: String; @State private var saving = false; @State private var error: String?
     init(item: AccountUsage?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _account = State(initialValue: item?.accountName ?? ""); _phone = State(initialValue: item?.phoneNumber ?? ""); _device = State(initialValue: item?.deviceName ?? ""); _notes = State(initialValue: item?.usageNotes ?? ""); _reason = State(initialValue: item?.bannedReason ?? "") }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("璐﹀彿鍚嶇О", text: $account); SecureField(item == nil ? "瀵嗙爜" : "鐣欑┖淇濈暀鍘熷瘑鐮?, text: $password); TextField("鎵嬫満鍙?, text: $phone).keyboardType(.phonePad); TextField("鎵嬫満璁惧", text: $device); TextField("浣跨敤璇存槑", text: $notes, axis: .vertical).lineLimit(3...6); TextField("灏佺鍘熷洜", text: $reason) }.navigationTitle(item == nil ? "鏂板璐﹀彿璁板綍" : "缂栬緫璐﹀彿璁板綍").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || (item == nil && account.isEmpty)) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("账号名称", text: $account); SecureField(item == nil ? "密码" : "留空保留原密码", text: $password); TextField("手机号", text: $phone).keyboardType(.phonePad); TextField("手机设备", text: $device); TextField("使用说明", text: $notes, axis: .vertical).lineLimit(3...6); TextField("封禁原因", text: $reason) }.navigationTitle(item == nil ? "新增账号记录" : "编辑账号记录").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || (item == nil && account.isEmpty)) } } } }
     private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["account_name": account, "phone_number": phone, "device_name": device, "usage_notes": notes, "banned_reason": reason, "is_banned": item?.isBanned ?? false, "extra_fields": [String: Any]()]; if !password.isEmpty { body["password"] = password }; do { let _: AccountUsage = try await session.send(item.map { "account-usage-records/\($0.id)" } ?? "account-usage-records", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
 private struct LicenseDetail: View {
     @EnvironmentObject private var session: NativeSession; let item: LicenseRecord; let onChange: () async -> Void; @State private var error: String?
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; Section("鎺堟潈") { LabeledContent("鎺堟潈鐮?, value: item.licenseKey); LabeledContent("濂楅", value: item.planName); LabeledContent("鐘舵€?, value: licenseStatus(item.status)); LabeledContent("鍒版湡", value: item.expiresAt ?? "-") }; Section("缁戝畾璁惧") { ForEach(item.devices) { device in HStack { VStack(alignment: .leading) { Text(device.deviceName ?? device.deviceID); Text("\(device.platform ?? "鏈煡骞冲彴") 路 \(device.appVersion ?? "鏈煡鐗堟湰")").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("瑙ｇ粦", role: .destructive) { Task { await unbind(device) } } } } } }.navigationTitle("鎺堟潈璇︽儏").navigationBarTitleDisplayMode(.inline) }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; Section("授权") { LabeledContent("授权码", value: item.licenseKey); LabeledContent("套餐", value: item.planName); LabeledContent("状态", value: licenseStatus(item.status)); LabeledContent("到期", value: item.expiresAt ?? "-") }; Section("绑定设备") { ForEach(item.devices) { device in HStack { VStack(alignment: .leading) { Text(device.deviceName ?? device.deviceID); Text("\(device.platform ?? "未知平台") · \(device.appVersion ?? "未知版本")").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("解绑", role: .destructive) { Task { await unbind(device) } } } } } }.navigationTitle("授权详情").navigationBarTitleDisplayMode(.inline) }
     private func unbind(_ device: LicenseDevice) async { let key = item.licenseKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.licenseKey; do { let _: EmptyResponse = try await session.send("license-admin/licenses/\(key)/unbind", method: "POST", body: ["device_id": device.deviceID], allowEmpty: true); await onChange() } catch { self.error = session.message(for: error) } }
 }
 
@@ -832,7 +832,7 @@ private struct NativeModelsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("绫诲瀷", selection: $segment) { Text("妯″瀷").tag(0); Text("杩炴帴").tag(1) }.pickerStyle(.segmented).padding()
+            Picker("类型", selection: $segment) { Text("模型").tag(0); Text("连接").tag(1) }.pickerStyle(.segmented).padding()
             List {
             if let error { Text(error).foregroundStyle(.red) }
             if let notice { Text(notice).foregroundStyle(.green) }
@@ -844,20 +844,20 @@ private struct NativeModelsView: View {
                     Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary)
                     Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
                 }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingModel = model; showingModel = true }
-                    .swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await deleteModel(model) } }; Button(model.enabled == 0 ? "鍚敤" : "鍋滅敤") { Task { await toggleModel(model) } }.tint(model.enabled == 0 ? .green : .orange) }
+                    .swipeActions { Button("删除", role: .destructive) { Task { await deleteModel(model) } }; Button(model.enabled == 0 ? "启用" : "停用") { Task { await toggleModel(model) } }.tint(model.enabled == 0 ? .green : .orange) }
             } } else { ForEach(connections) { connection in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack { Text(connection.name).fontWeight(.semibold); Spacer(); Circle().fill(connection.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8) }
                     Text(connection.baseURL).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text("\(connection.providerType ?? "openai") 路 \(connection.hasKey == true ? "Key 宸查厤缃? : "鏈厤缃?Key")").font(.caption2).foregroundStyle(.secondary)
+                    Text("\(connection.providerType ?? "openai") · \(connection.hasKey == true ? "Key 已配置" : "未配置 Key")").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingConnection = connection; showingConnection = true }
-                    .swipeActions { Button(connection.enabled == 0 ? "鍚敤" : "鍋滅敤") { Task { await toggleConnection(connection) } }.tint(connection.enabled == 0 ? .green : .orange); Button("鍚屾") { Task { await sync(connection) } }.tint(.blue) }
+                    .swipeActions { Button(connection.enabled == 0 ? "启用" : "停用") { Task { await toggleConnection(connection) } }.tint(connection.enabled == 0 ? .green : .orange); Button("同步") { Task { await sync(connection) } }.tint(.blue) }
             } }
             }
         }
         .overlay { if loading && models.isEmpty { ProgressView() } }
-        .navigationTitle("AI 妯″瀷").refreshable { await load() }.task { await load() }
-        .toolbar { Menu { Button("鏂板妯″瀷") { editingModel = nil; showingModel = true }; Button("鏂板杩炴帴") { editingConnection = nil; showingConnection = true }; Button("鍚屾鍏ㄩ儴妯″瀷") { Task { await syncAll() } } } label: { Image(systemName: "plus") } }
+        .navigationTitle("AI 模型").refreshable { await load() }.task { await load() }
+        .toolbar { Menu { Button("新增模型") { editingModel = nil; showingModel = true }; Button("新增连接") { editingConnection = nil; showingConnection = true }; Button("同步全部模型") { Task { await syncAll() } } } label: { Image(systemName: "plus") } }
         .sheet(isPresented: $showingConnection) { ConnectionForm(item: editingConnection) { await load() } }
         .sheet(isPresented: $showingModel) { ModelForm(item: editingModel, connections: connections) { await load() } }
     }
@@ -873,13 +873,13 @@ private struct NativeModelsView: View {
     }
 
     private func toggleConnection(_ item: AIConnection) async { do { let _: EmptyResponse = try await session.send("ai-api/connections/toggle", method: "POST", body: ["id": item.id, "enabled": item.enabled == 0], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
-    private func sync(_ item: AIConnection) async { do { let result: AISyncResponse = try await session.send("ai-api/connections/sync", method: "POST", body: ["id": item.id]); notice = "鍚屾瀹屾垚锛屽叡 \(result.total ?? 0) 涓ā鍨?; await load() } catch { self.error = session.message(for: error) } }
+    private func sync(_ item: AIConnection) async { do { let result: AISyncResponse = try await session.send("ai-api/connections/sync", method: "POST", body: ["id": item.id]); notice = "同步完成，共 \(result.total ?? 0) 个模型"; await load() } catch { self.error = session.message(for: error) } }
     private func toggleModel(_ item: AIModel) async {
         let body: [String: Any] = ["id": item.id, "name": item.name, "base_model": item.baseModel, "model_type": item.modelType ?? "chat", "enabled": item.enabled == 0, "temperature": item.temperature ?? 0.7, "top_p": item.topP ?? 1, "max_tokens": item.maxTokens ?? 2048]
         do { let _: EmptyResponse = try await session.send("ai-api/models/update", method: "POST", body: body, allowEmpty: true); await load() } catch { self.error = session.message(for: error) }
     }
     private func deleteModel(_ item: AIModel) async { do { let _: EmptyResponse = try await session.send("ai-api/models/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
-    private func syncAll() async { do { let result: AISyncResponse = try await session.send("ai-api/models/sync", method: "POST", body: [:]); notice = "鍚屾瀹屾垚锛屽叡 \(result.total ?? 0) 涓ā鍨?; await load() } catch { self.error = session.message(for: error) } }
+    private func syncAll() async { do { let result: AISyncResponse = try await session.send("ai-api/models/sync", method: "POST", body: [:]); notice = "同步完成，共 \(result.total ?? 0) 个模型"; await load() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeKnowledgeView: View {
@@ -898,30 +898,30 @@ private struct NativeKnowledgeView: View {
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
-            Section("鏂板缓鐭ヨ瘑闆嗗悎") {
-                HStack { TextField("闆嗗悎鍚嶇О", text: $newName); Button("鍒涘缓") { Task { await create() } }.disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty) }
+            Section("新建知识集合") {
+                HStack { TextField("集合名称", text: $newName); Button("创建") { Task { await create() } }.disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty) }
             }
-            Section("闆嗗悎") {
-                ForEach(collections) { item in HStack { Label(item.name, systemImage: "folder"); Spacer(); Text("\(files.filter { $0.knowledgeID == item.id }.count) 涓枃浠?).font(.caption).foregroundStyle(.secondary) } }
+            Section("集合") {
+                ForEach(collections) { item in HStack { Label(item.name, systemImage: "folder"); Spacer(); Text("\(files.filter { $0.knowledgeID == item.id }.count) 个文件").font(.caption).foregroundStyle(.secondary) } }
             }
-            Section("鏂囦欢") {
+            Section("文件") {
                 ForEach(files.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { file in
                     Button { selectedFile = file; Task { await preview(file) } } label: {
-                        VStack(alignment: .leading, spacing: 4) { Text(file.name).foregroundStyle(.primary); Text(file.status ?? "宸插鍏?).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 4) { Text(file.name).foregroundStyle(.primary); Text(file.status ?? "已导入").font(.caption).foregroundStyle(.secondary) }
                     }.swipeActions {
-                        Button("鍒犻櫎", role: .destructive) { deletingFile = file }
-                        Button("閲嶈В鏋?) { Task { await reprocess(file) } }.tint(.blue)
+                        Button("删除", role: .destructive) { deletingFile = file }
+                        Button("重解析") { Task { await reprocess(file) } }.tint(.blue)
                     }
                 }
             }
         }
         .overlay { if loading && collections.isEmpty && files.isEmpty { ProgressView() } }
-        .navigationTitle("鐭ヨ瘑搴?).searchable(text: $query, prompt: "鎼滅储鏂囦欢")
+        .navigationTitle("知识库").searchable(text: $query, prompt: "搜索文件")
         .refreshable { await load() }.task { await load() }
         .toolbar { Button { importing = true } label: { Image(systemName: "doc.badge.plus") } }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importFile(result) } }
-        .sheet(item: $selectedFile) { file in NavigationStack { List { if let detail { Section("鍐呭") { Text(detail.file.content ?? "鏃犲彲璇诲彇鍐呭").textSelection(.enabled) }; Section("鍒嗗潡") { ForEach(detail.chunks) { chunk in VStack(alignment: .leading) { Text("绗?\(chunk.chunkIndex + 1) 鍧?).font(.caption).foregroundStyle(.secondary); Text(chunk.content).textSelection(.enabled) } } } } else { ProgressView() } }.navigationTitle(file.name).toolbar { Button("鍏抽棴") { selectedFile = nil; detail = nil } } } }
-        .confirmationDialog("纭畾鍒犻櫎杩欎釜鐭ヨ瘑鏂囦欢鍚楋紵", isPresented: Binding(get: { deletingFile != nil }, set: { if !$0 { deletingFile = nil } }), titleVisibility: .visible) { Button("鍒犻櫎", role: .destructive) { if let file = deletingFile { Task { await remove(file) } } }; Button("鍙栨秷", role: .cancel) { deletingFile = nil } }
+        .sheet(item: $selectedFile) { file in NavigationStack { List { if let detail { Section("内容") { Text(detail.file.content ?? "无可读取内容").textSelection(.enabled) }; Section("分块") { ForEach(detail.chunks) { chunk in VStack(alignment: .leading) { Text("第 \(chunk.chunkIndex + 1) 块").font(.caption).foregroundStyle(.secondary); Text(chunk.content).textSelection(.enabled) } } } } else { ProgressView() } }.navigationTitle(file.name).toolbar { Button("关闭") { selectedFile = nil; detail = nil } } } }
+        .confirmationDialog("确定删除这个知识文件吗？", isPresented: Binding(get: { deletingFile != nil }, set: { if !$0 { deletingFile = nil } }), titleVisibility: .visible) { Button("删除", role: .destructive) { if let file = deletingFile { Task { await remove(file) } } }; Button("取消", role: .cancel) { deletingFile = nil } }
     }
 
     private func load() async {
@@ -942,7 +942,7 @@ private struct NativeKnowledgeView: View {
     private func importFile(_ result: Result<URL, Error>) async {
         do {
             let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }
-            let data = try Data(contentsOf: url); guard data.count <= 15_000_000 else { throw NativeAPIError.server(400, "鍗曚釜鏂囦欢涓嶈兘瓒呰繃 15MB") }
+            let data = try Data(contentsOf: url); guard data.count <= 15_000_000 else { throw NativeAPIError.server(400, "单个文件不能超过 15MB") }
             let response: ImportFileResponse = try await session.send("ai-api/documents/import-file", method: "POST", body: ["title": url.deletingPathExtension().lastPathComponent, "filename": url.lastPathComponent, "data": data.base64EncodedString()])
             if let collection = collections.first { let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": response.file.id, "knowledge_id": collection.id], allowEmpty: true) }
             await load()
@@ -962,12 +962,12 @@ private struct ConnectionForm: View {
     init(item: AIConnection?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? "OpenAI"); _baseURL = State(initialValue: item?.baseURL ?? "https://api.openai.com/v1"); _provider = State(initialValue: item?.providerType ?? "openai"); _purpose = State(initialValue: item?.purpose ?? "general") }
     var body: some View { NavigationStack { Form {
         if let message { Text(message).foregroundStyle(.secondary) }
-        Section("杩炴帴") { TextField("鍚嶇О", text: $name); TextField("鎺ュ彛鍦板潃", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "鐣欑┖淇濈暀宸叉湁 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never) }
-        Section("绫诲瀷") { Picker("鍗忚", selection: $provider) { Text("OpenAI 鍏煎").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }; Picker("鐢ㄩ€?, selection: $purpose) { Text("閫氱敤").tag("general"); Text("瀵硅瘽").tag("chat"); Text("鍥剧墖").tag("image"); Text("闊抽").tag("audio") } }
-        if item != nil { Button(testing ? "娴嬭瘯涓?.." : "娴嬭瘯杩炴帴") { Task { await test() } }.disabled(testing) }
-    }.navigationTitle(item == nil ? "鏂板杩炴帴" : "缂栬緫杩炴帴").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "淇濆瓨涓?.." : "淇濆瓨") { Task { await save() } }.disabled(saving || name.isEmpty || baseURL.isEmpty || (item == nil && apiKey.isEmpty && provider != "ollama")) } } } }
+        Section("连接") { TextField("名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never) }
+        Section("类型") { Picker("协议", selection: $provider) { Text("OpenAI 兼容").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }; Picker("用途", selection: $purpose) { Text("通用").tag("general"); Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio") } }
+        if item != nil { Button(testing ? "测试中..." : "测试连接") { Task { await test() } }.disabled(testing) }
+    }.navigationTitle(item == nil ? "新增连接" : "编辑连接").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseURL.isEmpty || (item == nil && apiKey.isEmpty && provider != "ollama")) } } } }
     private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_url": baseURL, "provider_type": provider, "provider_id": provider, "purpose": purpose, "enabled": true]; if !apiKey.isEmpty { body["api_key"] = apiKey }; do { let _: EmptyResponse = try await session.send("ai-api/connections/save", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { message = session.message(for: error) } }
-    private func test() async { guard let item else { return }; testing = true; defer { testing = false }; do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); message = result.message ?? "杩炴帴鎴愬姛" } catch { message = session.message(for: error) } }
+    private func test() async { guard let item else { return }; testing = true; defer { testing = false }; do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); message = result.message ?? "连接成功" } catch { message = session.message(for: error) } }
 }
 
 private struct ModelForm: View {
@@ -985,10 +985,10 @@ private struct ModelForm: View {
     }
     var body: some View { NavigationStack { Form {
         if let error { Text(error).foregroundStyle(.red) }
-        Section("妯″瀷") { TextField("鏄剧ず鍚嶇О", text: $name); TextField("鍩虹妯″瀷锛屼緥濡?gpt-4.1", text: $baseModel).textInputAutocapitalization(.never); Picker("妯″瀷绫诲瀷", selection: $type) { Text("瀵硅瘽").tag("chat"); Text("鍥剧墖").tag("image"); Text("闊抽").tag("audio"); Text("宓屽叆").tag("embedding") }; Picker("渚涘簲鍟嗚繛鎺?, selection: $connectionID) { Text("鏈粦瀹?).tag(""); ForEach(connections) { Text($0.name).tag($0.id) } }; Toggle("鍚敤", isOn: $enabled) }
-        Section("璇存槑") { TextField("妯″瀷鐢ㄩ€?, text: $description, axis: .vertical).lineLimit(2...5); TextField("绯荤粺鎻愮ず璇?, text: $systemPrompt, axis: .vertical).lineLimit(4...10) }
-        if type == "chat" { Section("鐢熸垚鍙傛暟") { LabeledContent("Temperature", value: String(format: "%.1f", temperature)); Slider(value: $temperature, in: 0...2, step: 0.1); LabeledContent("Top P", value: String(format: "%.1f", topP)); Slider(value: $topP, in: 0...1, step: 0.1); Stepper("鏈€澶?Token锛歕(maxTokens)", value: $maxTokens, in: 128...128000, step: 128) } }
-    }.navigationTitle(item == nil ? "鏂板妯″瀷" : "缂栬緫妯″瀷").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "淇濆瓨涓?.." : "淇濆瓨") { Task { await save() } }.disabled(saving || name.isEmpty || baseModel.isEmpty) } } } }
+        Section("模型") { TextField("显示名称", text: $name); TextField("基础模型，例如 gpt-4.1", text: $baseModel).textInputAutocapitalization(.never); Picker("模型类型", selection: $type) { Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio"); Text("嵌入").tag("embedding") }; Picker("供应商连接", selection: $connectionID) { Text("未绑定").tag(""); ForEach(connections) { Text($0.name).tag($0.id) } }; Toggle("启用", isOn: $enabled) }
+        Section("说明") { TextField("模型用途", text: $description, axis: .vertical).lineLimit(2...5); TextField("系统提示词", text: $systemPrompt, axis: .vertical).lineLimit(4...10) }
+        if type == "chat" { Section("生成参数") { LabeledContent("Temperature", value: String(format: "%.1f", temperature)); Slider(value: $temperature, in: 0...2, step: 0.1); LabeledContent("Top P", value: String(format: "%.1f", topP)); Slider(value: $topP, in: 0...1, step: 0.1); Stepper("最大 Token：\(maxTokens)", value: $maxTokens, in: 128...128000, step: 128) } }
+    }.navigationTitle(item == nil ? "新增模型" : "编辑模型").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseModel.isEmpty) } } } }
     private func save() async { saving = true; defer { saving = false }; let body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_model": baseModel, "model_type": type, "connection_id": connectionID, "description": description, "system_prompt": systemPrompt, "temperature": temperature, "top_p": topP, "max_tokens": maxTokens, "enabled": enabled, "capabilities": ["knowledge"]]; do { let _: EmptyResponse = try await session.send(item == nil ? "ai-api/models" : "ai-api/models/update", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
@@ -1000,15 +1000,15 @@ private struct NativeCapabilitiesView: View {
     @State private var editing: CapabilityItem?; @State private var showingEditor = false; @State private var deleting: CapabilityItem?
     private var filtered: [CapabilityItem] { query.isEmpty ? items : items.filter { "\($0.displayName) \($0.description ?? "") \($0.content ?? "")".localizedCaseInsensitiveContains(query) } }
     var body: some View { VStack(spacing: 0) {
-        Picker("鑳藉姏", selection: $kind) { ForEach(CapabilityKind.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).padding()
+        Picker("能力", selection: $kind) { ForEach(CapabilityKind.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).padding()
         List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { item in
             VStack(alignment: .leading, spacing: 5) { HStack { Text(item.displayName).fontWeight(.medium); Spacer(); if kind == .tools { Circle().fill(item.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8) } }; Text(kind == .prompts ? "/\(item.command ?? "")" : item.description ?? item.content ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-                .contentShape(Rectangle()).onTapGesture { editing = item; showingEditor = true }.swipeActions { if !item.id.hasPrefix("builtin-") { Button("鍒犻櫎", role: .destructive) { deleting = item } } }
+                .contentShape(Rectangle()).onTapGesture { editing = item; showingEditor = true }.swipeActions { if !item.id.hasPrefix("builtin-") { Button("删除", role: .destructive) { deleting = item } } }
         } }
-    }.navigationTitle("AI 鑳藉姏").searchable(text: $query).overlay { if loading && items.isEmpty { ProgressView() } }.task(id: kind) { await load() }.refreshable { await load() }
+    }.navigationTitle("AI 能力").searchable(text: $query).overlay { if loading && items.isEmpty { ProgressView() } }.task(id: kind) { await load() }.refreshable { await load() }
         .toolbar { Button { editing = nil; showingEditor = true } label: { Image(systemName: "plus") } }
         .sheet(isPresented: $showingEditor) { CapabilityForm(kind: kind, item: editing) { await load() } }
-        .confirmationDialog("纭畾鍒犻櫎杩欓」鑳藉姏鍚楋紵", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) { Button("鍒犻櫎", role: .destructive) { if let item = deleting { Task { await remove(item) } } }; Button("鍙栨秷", role: .cancel) { deleting = nil } }
+        .confirmationDialog("确定删除这项能力吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) { Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }; Button("取消", role: .cancel) { deleting = nil } }
     }
     private func load() async { loading = true; defer { loading = false }; do { let response: CapabilityResponse = try await session.get("ai-api/\(kind.path)\(kind == .tools ? "?all=1" : "")"); items = response.items(for: kind) } catch { self.error = session.message(for: error) } }
     private func remove(_ item: CapabilityItem) async { do { let _: EmptyResponse = try await session.send("ai-api/\(kind.path)/delete", method: "POST", body: ["id": item.id], allowEmpty: true); deleting = nil; await load() } catch { self.error = session.message(for: error) } }
@@ -1022,10 +1022,10 @@ private struct CapabilityForm: View {
     @State private var saving = false; @State private var error: String?
     init(kind: CapabilityKind, item: CapabilityItem?, onSave: @escaping () async -> Void) { self.kind = kind; self.item = item; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _command = State(initialValue: item?.command ?? ""); _name = State(initialValue: item?.name ?? ""); _description = State(initialValue: item?.description ?? ""); _content = State(initialValue: item?.content ?? ""); _toolKind = State(initialValue: item?.kind ?? "custom"); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
     var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }
-        if kind == .prompts { Section("Prompt") { TextField("鏍囬", text: $title); TextField("鏂滄潬鍛戒护", text: $command).textInputAutocapitalization(.never); TextField("Prompt 鍐呭", text: $content, axis: .vertical).lineLimit(8...16) } }
-        else if kind == .notes { Section("绗旇") { TextField("鏍囬", text: $title); TextField("绗旇鍐呭", text: $content, axis: .vertical).lineLimit(8...16) } }
-        else { Section(kind == .skills ? "Skill" : "Tool") { TextField("鍚嶇О", text: $name); TextField("璇存槑", text: $description); if kind == .skills { TextField("鎶€鑳芥寚浠?, text: $content, axis: .vertical).lineLimit(8...16) } else { Picker("绫诲瀷", selection: $toolKind) { Text("鑷畾涔?).tag("custom"); Text("HTTP").tag("http"); Text("鍑芥暟").tag("function") }; Toggle("鍚敤", isOn: $enabled) } } }
-    }.navigationTitle(item == nil ? "鏂板 \(kind.title)" : "缂栬緫 \(kind.title)").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "淇濆瓨涓?.." : "淇濆瓨") { Task { await save() } }.disabled(saving) } } } }
+        if kind == .prompts { Section("Prompt") { TextField("标题", text: $title); TextField("斜杠命令", text: $command).textInputAutocapitalization(.never); TextField("Prompt 内容", text: $content, axis: .vertical).lineLimit(8...16) } }
+        else if kind == .notes { Section("笔记") { TextField("标题", text: $title); TextField("笔记内容", text: $content, axis: .vertical).lineLimit(8...16) } }
+        else { Section(kind == .skills ? "Skill" : "Tool") { TextField("名称", text: $name); TextField("说明", text: $description); if kind == .skills { TextField("技能指令", text: $content, axis: .vertical).lineLimit(8...16) } else { Picker("类型", selection: $toolKind) { Text("自定义").tag("custom"); Text("HTTP").tag("http"); Text("函数").tag("function") }; Toggle("启用", isOn: $enabled) } } }
+    }.navigationTitle(item == nil ? "新增 \(kind.title)" : "编辑 \(kind.title)").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving) } } } }
     private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? ""]; if kind == .prompts { body.merge(["title": title, "command": command, "content": content]) { _, new in new } } else if kind == .notes { body.merge(["title": title, "content": content]) { _, new in new } } else if kind == .skills { body.merge(["name": name, "description": description, "content": content]) { _, new in new } } else { let config: [String: Any] = [:]; body.merge(["name": name, "description": description, "kind": toolKind, "enabled": enabled, "config": config]) { _, new in new } }; do { let path = "ai-api/\(kind.path)\(item == nil ? "" : "/update")"; let _: EmptyResponse = try await session.send(path, method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
@@ -1040,25 +1040,25 @@ private struct NativeOperationsView: View {
     @State private var runWorkflow: AIWorkflow?; @State private var runInput = ""
 
     var body: some View { VStack(spacing: 0) {
-        Picker("杩愯惀", selection: $section) { ForEach(OperationsSection.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).padding()
+        Picker("运营", selection: $section) { ForEach(OperationsSection.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).padding()
         List {
             if let error { Text(error).foregroundStyle(.red) }
             if section == .usage {
-                if let summary { Section { HStack { Metric(title: "璋冪敤", value: "\(summary.calls)"); Metric(title: "杈撳叆 Token", value: "\(summary.inputTokens)"); Metric(title: "杈撳嚭 Token", value: "\(summary.outputTokens)") }; LabeledContent("绱璐圭敤", value: String(format: "楼 %.4f", summary.cost)) } }
-                ForEach(usage) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.operation).fontWeight(.medium); Spacer(); Text("\(item.inputTokens + item.outputTokens) Token").font(.caption) }; Text("\(item.modelID.flatMap { $0.isEmpty ? nil : $0 } ?? "榛樿妯″瀷") 路 \(item.latencyMS) ms").font(.caption).foregroundStyle(.secondary) } }
+                if let summary { Section { HStack { Metric(title: "调用", value: "\(summary.calls)"); Metric(title: "输入 Token", value: "\(summary.inputTokens)"); Metric(title: "输出 Token", value: "\(summary.outputTokens)") }; LabeledContent("累计费用", value: String(format: "¥ %.4f", summary.cost)) } }
+                ForEach(usage) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.operation).fontWeight(.medium); Spacer(); Text("\(item.inputTokens + item.outputTokens) Token").font(.caption) }; Text("\(item.modelID.flatMap { $0.isEmpty ? nil : $0 } ?? "默认模型") · \(item.latencyMS) ms").font(.caption).foregroundStyle(.secondary) } }
             } else if section == .memory {
-                ForEach(memories) { item in VStack(alignment: .leading, spacing: 6) { Text(item.content); HStack { Text(item.sourceChatID.isEmpty ? "鎵嬪姩娣诲姞" : "鏉ヨ嚜浼氳瘽").font(.caption).foregroundStyle(.secondary); Spacer(); Toggle("", isOn: Binding(get: { item.enabled != 0 }, set: { enabled in Task { await toggleMemory(item, enabled) } })).labelsHidden() } }.contentShape(Rectangle()).onTapGesture { editingMemory = item; showingMemory = true }.swipeActions { Button("鍒犻櫎", role: .destructive) { Task { await deleteMemory(item) } } } }
+                ForEach(memories) { item in VStack(alignment: .leading, spacing: 6) { Text(item.content); HStack { Text(item.sourceChatID.isEmpty ? "手动添加" : "来自会话").font(.caption).foregroundStyle(.secondary); Spacer(); Toggle("", isOn: Binding(get: { item.enabled != 0 }, set: { enabled in Task { await toggleMemory(item, enabled) } })).labelsHidden() } }.contentShape(Rectangle()).onTapGesture { editingMemory = item; showingMemory = true }.swipeActions { Button("删除", role: .destructive) { Task { await deleteMemory(item) } } } }
             } else if section == .workflow {
-                ForEach(workflows) { item in VStack(alignment: .leading, spacing: 6) { HStack { Text(item.name).fontWeight(.medium); Spacer(); StatusBadge(text: item.enabled != 0 ? "鍚敤" : "鍋滅敤", done: item.enabled != 0) }; Text(item.description).font(.caption).foregroundStyle(.secondary) }.contentShape(Rectangle()).onTapGesture { editingWorkflow = item; showingWorkflow = true }.swipeActions { Button("杩愯") { runWorkflow = item }.tint(.green); Button("鍒犻櫎", role: .destructive) { Task { await deleteWorkflow(item) } } } }
+                ForEach(workflows) { item in VStack(alignment: .leading, spacing: 6) { HStack { Text(item.name).fontWeight(.medium); Spacer(); StatusBadge(text: item.enabled != 0 ? "启用" : "停用", done: item.enabled != 0) }; Text(item.description).font(.caption).foregroundStyle(.secondary) }.contentShape(Rectangle()).onTapGesture { editingWorkflow = item; showingWorkflow = true }.swipeActions { Button("运行") { runWorkflow = item }.tint(.green); Button("删除", role: .destructive) { Task { await deleteWorkflow(item) } } } }
             } else {
-                ForEach(jobs) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.kind).fontWeight(.medium); Spacer(); Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status)) }; Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3) }.swipeActions { if ["queued", "running"].contains(item.status) { Button("鍙栨秷") { Task { await jobAction(item, "cancel") } }.tint(.orange) } else { Button("閲嶈瘯") { Task { await jobAction(item, "retry") } }.tint(.blue); Button("鍒犻櫎", role: .destructive) { Task { await jobAction(item, "delete") } } } }
+                ForEach(jobs) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.kind).fontWeight(.medium); Spacer(); Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status)) }; Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3) }.swipeActions { if ["queued", "running"].contains(item.status) { Button("取消") { Task { await jobAction(item, "cancel") } }.tint(.orange) } else { Button("重试") { Task { await jobAction(item, "retry") } }.tint(.blue); Button("删除", role: .destructive) { Task { await jobAction(item, "delete") } } } }
             }
         }
-    }.navigationTitle("AI 杩愯惀").overlay { if loading && usage.isEmpty && memories.isEmpty && workflows.isEmpty && jobs.isEmpty { ProgressView() } }.task(id: section) { await load() }.refreshable { await load() }
+    }.navigationTitle("AI 运营").overlay { if loading && usage.isEmpty && memories.isEmpty && workflows.isEmpty && jobs.isEmpty { ProgressView() } }.task(id: section) { await load() }.refreshable { await load() }
         .toolbar { if section == .memory { Button { editingMemory = nil; showingMemory = true } label: { Image(systemName: "plus") } } else if section == .workflow { Button { editingWorkflow = nil; showingWorkflow = true } label: { Image(systemName: "plus") } } }
         .sheet(isPresented: $showingMemory) { MemoryForm(item: editingMemory) { await load() } }
         .sheet(isPresented: $showingWorkflow) { WorkflowForm(item: editingWorkflow) { await load() } }
-        .alert("杩愯宸ヤ綔娴?, isPresented: Binding(get: { runWorkflow != nil }, set: { if !$0 { runWorkflow = nil } })) { TextField("杈撳叆鍐呭", text: $runInput); Button("杩愯") { if let workflow = runWorkflow { Task { await run(workflow) } } }; Button("鍙栨秷", role: .cancel) { runWorkflow = nil } } message: { Text("杈撳叆宸ヤ綔娴佸鐞嗗唴瀹?) }
+        .alert("运行工作流", isPresented: Binding(get: { runWorkflow != nil }, set: { if !$0 { runWorkflow = nil } })) { TextField("输入内容", text: $runInput); Button("运行") { if let workflow = runWorkflow { Task { await run(workflow) } } }; Button("取消", role: .cancel) { runWorkflow = nil } } message: { Text("输入工作流处理内容") }
     }
     }
     private func load() async { loading = true; defer { loading = false }; do { switch section { case .usage: let result: UsageResponse = try await session.get("ai-api/usage"); usage = result.usage; summary = result.summary; case .memory: let result: MemoriesResponse = try await session.get("ai-api/memories"); memories = result.memories; case .workflow: let result: WorkflowsResponse = try await session.get("ai-api/workflows"); workflows = result.workflows; case .jobs: let result: JobsResponse = try await session.get("ai-api/jobs"); jobs = result.jobs } } catch { self.error = session.message(for: error) } }
@@ -1073,15 +1073,15 @@ private struct MemoryForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
     let item: AIMemory?; let onSave: () async -> Void; @State private var content: String; @State private var enabled: Bool; @State private var saving = false; @State private var error: String?
     init(item: AIMemory?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _content = State(initialValue: item?.content ?? ""); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("璁板繂鍐呭", text: $content, axis: .vertical).lineLimit(8...16); Toggle("鍚敤", isOn: $enabled) }.navigationTitle(item == nil ? "鏂板璁板繂" : "缂栬緫璁板繂").toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || content.isEmpty) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("记忆内容", text: $content, axis: .vertical).lineLimit(8...16); Toggle("启用", isOn: $enabled) }.navigationTitle(item == nil ? "新增记忆" : "编辑记忆").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || content.isEmpty) } } } }
     private func save() async { saving = true; defer { saving = false }; do { let _: EmptyResponse = try await session.send("ai-api/memories", method: "POST", body: ["id": item?.id ?? "", "content": content, "source_chat_id": item?.sourceChatID ?? "", "enabled": enabled], allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
 private struct WorkflowForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
     let item: AIWorkflow?; let onSave: () async -> Void; @State private var name: String; @State private var description: String; @State private var prompt: String; @State private var enabled: Bool; @State private var saving = false; @State private var error: String?
-    init(item: AIWorkflow?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? ""); _description = State(initialValue: item?.description ?? ""); _prompt = State(initialValue: item?.firstPrompt ?? "璇锋牴鎹互涓嬭緭鍏ュ畬鎴愪换鍔★細{{input}}"); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; Section("宸ヤ綔娴?) { TextField("鍚嶇О", text: $name); TextField("璇存槑", text: $description); Toggle("鍚敤", isOn: $enabled) }; Section("Prompt 姝ラ") { TextField("鏀寔 {{input}}", text: $prompt, axis: .vertical).lineLimit(8...16) } }.navigationTitle(item == nil ? "鏂板缓宸ヤ綔娴? : "缂栬緫宸ヤ綔娴?).toolbar { ToolbarItem(placement: .cancellationAction) { Button("鍙栨秷") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("淇濆瓨") { Task { await save() } }.disabled(saving || name.isEmpty || prompt.isEmpty) } } } }
+    init(item: AIWorkflow?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? ""); _description = State(initialValue: item?.description ?? ""); _prompt = State(initialValue: item?.firstPrompt ?? "请根据以下输入完成任务：{{input}}"); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; Section("工作流") { TextField("名称", text: $name); TextField("说明", text: $description); Toggle("启用", isOn: $enabled) }; Section("Prompt 步骤") { TextField("支持 {{input}}", text: $prompt, axis: .vertical).lineLimit(8...16) } }.navigationTitle(item == nil ? "新建工作流" : "编辑工作流").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || name.isEmpty || prompt.isEmpty) } } } }
     private func save() async { saving = true; defer { saving = false }; let steps: [[String: Any]] = [["type": "prompt", "content": prompt]]; do { let _: EmptyResponse = try await session.send("ai-api/workflows", method: "POST", body: ["id": item?.id ?? "", "name": name, "description": description, "steps": steps, "enabled": enabled], allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
@@ -1089,10 +1089,10 @@ private struct ExpenseDetail: View {
     let item: CompanyExpense
     var body: some View {
         List {
-            LabeledContent("閲戦", value: money(item.amount)); LabeledContent("鍒嗙被", value: item.category)
-            LabeledContent("浠樻璐︽埛", value: item.paymentAccount); LabeledContent("娑堣垂鏃ユ湡", value: item.expenseDate)
-            LabeledContent("鎻愪氦浜?, value: item.submitterName); LabeledContent("娑堣垂鑼冨洿", value: item.expenseScope)
-            Section("璇存槑") { Text(item.description.isEmpty ? "鏃? : item.description) }
+            LabeledContent("金额", value: money(item.amount)); LabeledContent("分类", value: item.category)
+            LabeledContent("付款账户", value: item.paymentAccount); LabeledContent("消费日期", value: item.expenseDate)
+            LabeledContent("提交人", value: item.submitterName); LabeledContent("消费范围", value: item.expenseScope)
+            Section("说明") { Text(item.description.isEmpty ? "无" : item.description) }
         }.navigationTitle(item.expenseNo).navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -1107,7 +1107,7 @@ private struct StatusBadge: View {
     var body: some View { Text(text).font(.caption).padding(.horizontal, 8).padding(.vertical, 4).foregroundStyle(done ? .green : .orange).background((done ? Color.green : Color.orange).opacity(0.12), in: Capsule()) }
 }
 
-private enum WarehouseTab: String, CaseIterable, Identifiable { case stocks = "搴撳瓨", outbound = "鍑哄簱", inbound = "鍏ュ簱", products = "鍟嗗搧", warehouses = "浠撳簱", movements = "娴佹按"; var id: String { rawValue } }
+private enum WarehouseTab: String, CaseIterable, Identifiable { case stocks = "库存", outbound = "出库", inbound = "入库", products = "商品", warehouses = "仓库", movements = "流水"; var id: String { rawValue } }
 private enum WarehouseSheet: Identifiable { case warehouse, product, inbound, outbound; var id: String { String(describing: self) } }
 
 private struct NativeWarehouseView: View {
@@ -1116,18 +1116,18 @@ private struct NativeWarehouseView: View {
     @State private var query = ""; @State private var loading = false; @State private var error: String?; @State private var sheet: WarehouseSheet?
     var body: some View {
         List {
-            if let summary { Section { ScrollView(.horizontal, showsIndicators: false) { HStack { WarehouseMetric("鎬诲簱瀛?, "\(summary.totalQuantity)"); WarehouseMetric("搴撳瓨鎴愭湰", money(summary.totalCost)); WarehouseMetric("浣庡簱瀛?, "\(summary.lowStockCount)"); WarehouseMetric("寰呭嚭搴?, "\(summary.pendingOutboundCount)") }.padding(.vertical, 4) } } }
-            Section { Picker("鍒嗙被", selection: $tab) { ForEach(WarehouseTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu) }
+            if let summary { Section { ScrollView(.horizontal, showsIndicators: false) { HStack { WarehouseMetric("总库存", "\(summary.totalQuantity)"); WarehouseMetric("库存成本", money(summary.totalCost)); WarehouseMetric("低库存", "\(summary.lowStockCount)"); WarehouseMetric("待出库", "\(summary.pendingOutboundCount)") }.padding(.vertical, 4) } } }
+            Section { Picker("分类", selection: $tab) { ForEach(WarehouseTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu) }
             if let error { Text(error).foregroundStyle(.red) }
             switch tab {
-            case .stocks: ForEach(stocks.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName).fontWeight(.medium); Text("\(row.sku) 路 \(row.warehouseName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(row.availableQuantity) \(row.unit)").foregroundStyle(row.isLowStock ? .red : .primary); if row.lockedQuantity > 0 { Text("閿佸畾 \(row.lockedQuantity)").font(.caption2).foregroundStyle(.orange) } } } }
-            case .products: ForEach(products.filter { matches("\($0.sku) \($0.name) \($0.barcode ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.sku) 路 \(row.specification ?? row.unit) 路 \(money(row.costPrice))", status: row.isActive ? "鍚敤" : "鍋滅敤") }
-            case .warehouses: ForEach(warehouses.filter { matches("\($0.code) \($0.name) \($0.address ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.code) 路 \(row.address ?? "鏈～鍐欏湴鍧€")", status: row.isActive ? "鍚敤" : "鍋滅敤") }
-            case .inbound: ForEach(inbound.filter { matches("\($0.orderNo) \($0.warehouseName) \(lineSummary($0.items))") }) { row in WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) 路 \(lineSummary(row.items))", status: row.status == "completed" ? "宸插叆搴? : "宸叉挙閿€").swipeActions { if row.status == "completed" { Button("鎾ら攢", role: .destructive) { Task { await cancel(row) } } } } }
-            case .outbound: ForEach(outbound.filter { matches("\($0.orderNo) \($0.warehouseName) \($0.trackingNo ?? "")") }) { row in NavigationLink { WarehouseOutboundDetail(row: row) } label: { WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) 路 \(lineSummary(row.items))", status: outboundStatus(row.status)) }.swipeActions { if let next = nextStatus(row.status) { Button("鎺ㄨ繘") { Task { await setStatus(row, next) } }.tint(.blue) }; if !["shipped","cancelled"].contains(row.status) { Button("鍙栨秷", role: .destructive) { Task { await setStatus(row, "cancelled") } } } } }
-            case .movements: ForEach(movements.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName) \($0.referenceNo)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName); Text("\(row.warehouseName) 路 \(row.referenceNo)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(row.quantityChange > 0 ? "+\(row.quantityChange)" : "\(row.quantityChange)").foregroundStyle(row.quantityChange > 0 ? .green : .red) } }
+            case .stocks: ForEach(stocks.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName).fontWeight(.medium); Text("\(row.sku) · \(row.warehouseName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(row.availableQuantity) \(row.unit)").foregroundStyle(row.isLowStock ? .red : .primary); if row.lockedQuantity > 0 { Text("锁定 \(row.lockedQuantity)").font(.caption2).foregroundStyle(.orange) } } } }
+            case .products: ForEach(products.filter { matches("\($0.sku) \($0.name) \($0.barcode ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.sku) · \(row.specification ?? row.unit) · \(money(row.costPrice))", status: row.isActive ? "启用" : "停用") }
+            case .warehouses: ForEach(warehouses.filter { matches("\($0.code) \($0.name) \($0.address ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.code) · \(row.address ?? "未填写地址")", status: row.isActive ? "启用" : "停用") }
+            case .inbound: ForEach(inbound.filter { matches("\($0.orderNo) \($0.warehouseName) \(lineSummary($0.items))") }) { row in WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: row.status == "completed" ? "已入库" : "已撤销").swipeActions { if row.status == "completed" { Button("撤销", role: .destructive) { Task { await cancel(row) } } } } }
+            case .outbound: ForEach(outbound.filter { matches("\($0.orderNo) \($0.warehouseName) \($0.trackingNo ?? "")") }) { row in NavigationLink { WarehouseOutboundDetail(row: row) } label: { WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: outboundStatus(row.status)) }.swipeActions { if let next = nextStatus(row.status) { Button("推进") { Task { await setStatus(row, next) } }.tint(.blue) }; if !["shipped","cancelled"].contains(row.status) { Button("取消", role: .destructive) { Task { await setStatus(row, "cancelled") } } } } }
+            case .movements: ForEach(movements.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName) \($0.referenceNo)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName); Text("\(row.warehouseName) · \(row.referenceNo)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(row.quantityChange > 0 ? "+\(row.quantityChange)" : "\(row.quantityChange)").foregroundStyle(row.quantityChange > 0 ? .green : .red) } }
             }
-        }.navigationTitle("浠撳偍绠＄悊").searchable(text: $query, prompt: "鎼滅储鍟嗗搧銆佸崟鍙锋垨浠撳簱").overlay { if loading && stocks.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }
+        }.navigationTitle("仓储管理").searchable(text: $query, prompt: "搜索商品、单号或仓库").overlay { if loading && stocks.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }
         .toolbar { if [.warehouses,.products,.inbound,.outbound].contains(tab) { Button { sheet = tab == .warehouses ? .warehouse : tab == .products ? .product : tab == .inbound ? .inbound : .outbound } label: { Image(systemName: "plus") } } }
         .sheet(item: $sheet) { value in switch value { case .warehouse: WarehouseBasicEditor(kind: .warehouse) { await load() }; case .product: WarehouseBasicEditor(kind: .product) { await load() }; case .inbound: WarehouseOrderEditor(outbound: false, warehouses: warehouses, products: products) { await load() }; case .outbound: WarehouseOrderEditor(outbound: true, warehouses: warehouses, products: products) { await load() } } }
     }
@@ -1138,18 +1138,18 @@ private struct NativeWarehouseView: View {
 }
 private struct WarehouseMetric: View { let title:String,value:String; init(_ title:String,_ value:String){self.title=title;self.value=value}; var body:some View{VStack(alignment:.leading){Text(title).font(.caption).foregroundStyle(.secondary);Text(value).font(.headline)}.padding(12).background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:8))} }
 private struct WarehouseTextRow: View { let title:String,detail:String,status:String; var body:some View{VStack(alignment:.leading,spacing:5){HStack{Text(title).fontWeight(.medium);Spacer();Text(status).foregroundStyle(.secondary)};Text(detail).font(.caption).foregroundStyle(.secondary)}} }
-private struct WarehouseOutboundDetail: View { let row: WarehouseOutbound; var body: some View { List { Section("璁㈠崟") { LabeledContent("鍑哄簱鍗曞彿", value: row.orderNo); LabeledContent("浠撳簱", value: row.warehouseName); LabeledContent("鐘舵€?, value: outboundStatus(row.status)); if let external = row.externalOrderNo, !external.isEmpty { LabeledContent("骞冲彴璁㈠崟", value: external) } }; Section("鏀惰揣淇℃伅") { LabeledContent("鏀朵欢浜?, value: row.recipientName ?? "-"); LabeledContent("鑱旂郴鐢佃瘽", value: row.recipientPhone ?? "-"); LabeledContent("鍦板潃", value: row.recipientAddress ?? "-"); LabeledContent("蹇€?, value: row.carrier ?? "-"); LabeledContent("鐗╂祦鍗曞彿", value: row.trackingNo ?? "-") }; Section("鍟嗗搧") { ForEach(row.items, id: \.productID) { item in LabeledContent("\(item.sku) 路 \(item.productName)", value: "脳 \(item.quantity) \(item.unit)") } } }.navigationTitle("鍑哄簱璇︽儏").navigationBarTitleDisplayMode(.inline) } }
+private struct WarehouseOutboundDetail: View { let row: WarehouseOutbound; var body: some View { List { Section("订单") { LabeledContent("出库单号", value: row.orderNo); LabeledContent("仓库", value: row.warehouseName); LabeledContent("状态", value: outboundStatus(row.status)); if let external = row.externalOrderNo, !external.isEmpty { LabeledContent("平台订单", value: external) } }; Section("收货信息") { LabeledContent("收件人", value: row.recipientName ?? "-"); LabeledContent("联系电话", value: row.recipientPhone ?? "-"); LabeledContent("地址", value: row.recipientAddress ?? "-"); LabeledContent("快递", value: row.carrier ?? "-"); LabeledContent("物流单号", value: row.trackingNo ?? "-") }; Section("商品") { ForEach(row.items, id: \.productID) { item in LabeledContent("\(item.sku) · \(item.productName)", value: "× \(item.quantity) \(item.unit)") } } }.navigationTitle("出库详情").navigationBarTitleDisplayMode(.inline) } }
 
 private struct WarehouseBasicEditor: View {
     enum Kind { case warehouse, product }; @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let kind:Kind; let onSave:() async->Void
-    @State private var code=""; @State private var name=""; @State private var extra=""; @State private var unit="浠?; @State private var price="0"; @State private var warning=0; @State private var error:String?
-    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};TextField(kind == .warehouse ? "浠撳簱缂栫爜":"SKU",text:$code).textInputAutocapitalization(.characters);TextField(kind == .warehouse ? "浠撳簱鍚嶇О":"鍟嗗搧鍚嶇О",text:$name);TextField(kind == .warehouse ? "鍦板潃":"鏉＄爜",text:$extra);if kind == .product{TextField("鍗曚綅",text:$unit);TextField("鎴愭湰浠?,text:$price).keyboardType(.decimalPad);Stepper("棰勮搴撳瓨锛歕(warning)",value:$warning,in:0...999999)}}.navigationTitle(kind == .warehouse ? "鏂板浠撳簱":"鏂板鍟嗗搧").toolbar{ToolbarItem(placement:.cancellationAction){Button("鍙栨秷"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("淇濆瓨"){Task{await save()}}.disabled(code.isEmpty || name.isEmpty)}}}}
+    @State private var code=""; @State private var name=""; @State private var extra=""; @State private var unit="件"; @State private var price="0"; @State private var warning=0; @State private var error:String?
+    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};TextField(kind == .warehouse ? "仓库编码":"SKU",text:$code).textInputAutocapitalization(.characters);TextField(kind == .warehouse ? "仓库名称":"商品名称",text:$name);TextField(kind == .warehouse ? "地址":"条码",text:$extra);if kind == .product{TextField("单位",text:$unit);TextField("成本价",text:$price).keyboardType(.decimalPad);Stepper("预警库存：\(warning)",value:$warning,in:0...999999)}}.navigationTitle(kind == .warehouse ? "新增仓库":"新增商品").toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("保存"){Task{await save()}}.disabled(code.isEmpty || name.isEmpty)}}}}
     private func save()async{do{if kind == .warehouse{let _:WarehouseRecord=try await session.send("warehouse/warehouses",method:"POST",body:["code":code,"name":name,"address":extra,"contact_name":"","contact_phone":"","is_active":true,"remark":""])}else{let _:WarehouseProduct=try await session.send("warehouse/products",method:"POST",body:["sku":code,"name":name,"barcode":extra,"specification":"","unit":unit,"cost_price":Double(price) ?? 0,"warning_quantity":warning,"is_active":true,"remark":""])};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
 }
 private struct WarehouseOrderEditor: View {
     @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let outbound:Bool; let warehouses:[WarehouseRecord]; let products:[WarehouseProduct]; let onSave:() async->Void
     @State private var warehouseID=0;@State private var productID=0;@State private var quantity=1;@State private var source="purchase";@State private var recipient="";@State private var phone="";@State private var address="";@State private var carrier="";@State private var trackingNo="";@State private var remark="";@State private var error:String?
-    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};Picker("浠撳簱",selection:$warehouseID){Text("璇烽€夋嫨").tag(0);ForEach(warehouses.filter(\.isActive)){Text($0.name).tag($0.id)}};Picker("鍟嗗搧",selection:$productID){Text("璇烽€夋嫨").tag(0);ForEach(products.filter(\.isActive)){Text("\($0.sku) 路 \($0.name)").tag($0.id)}};Stepper("鏁伴噺锛歕(quantity)",value:$quantity,in:1...999999);if outbound{TextField("鏀朵欢浜?,text:$recipient);TextField("鑱旂郴鐢佃瘽",text:$phone).keyboardType(.phonePad);TextField("鏀惰揣鍦板潃",text:$address);TextField("蹇€掑叕鍙革紙鍙€夛級",text:$carrier);TextField("鐗╂祦鍗曞彿锛堝彲閫夛級",text:$trackingNo)}else{Picker("鍏ュ簱绫诲瀷",selection:$source){Text("閲囪喘鍏ュ簱").tag("purchase");Text("閫€璐у叆搴?).tag("return");Text("鍏朵粬鍏ュ簱").tag("other")}};TextField("澶囨敞",text:$remark,axis:.vertical)}.navigationTitle(outbound ? "鏂板缓鍑哄簱鍗?:"鍟嗗搧鍏ュ簱").toolbar{ToolbarItem(placement:.cancellationAction){Button("鍙栨秷"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("鎻愪氦"){Task{await save()}}.disabled(warehouseID == 0 || productID == 0)}}}}
+    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};Picker("仓库",selection:$warehouseID){Text("请选择").tag(0);ForEach(warehouses.filter(\.isActive)){Text($0.name).tag($0.id)}};Picker("商品",selection:$productID){Text("请选择").tag(0);ForEach(products.filter(\.isActive)){Text("\($0.sku) · \($0.name)").tag($0.id)}};Stepper("数量：\(quantity)",value:$quantity,in:1...999999);if outbound{TextField("收件人",text:$recipient);TextField("联系电话",text:$phone).keyboardType(.phonePad);TextField("收货地址",text:$address);TextField("快递公司（可选）",text:$carrier);TextField("物流单号（可选）",text:$trackingNo)}else{Picker("入库类型",selection:$source){Text("采购入库").tag("purchase");Text("退货入库").tag("return");Text("其他入库").tag("other")}};TextField("备注",text:$remark,axis:.vertical)}.navigationTitle(outbound ? "新建出库单":"商品入库").toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("提交"){Task{await save()}}.disabled(warehouseID == 0 || productID == 0)}}}}
     private func save()async{var body:[String:Any]=["warehouse_id":warehouseID,"items":[["product_id":productID,"quantity":quantity]],"remark":remark];do{if outbound{body.merge(["external_order_no":"","delivery_method":"shipping","recipient_name":recipient,"recipient_phone":phone,"recipient_address":address,"carrier":carrier,"tracking_no":trackingNo]){_,new in new};let _:WarehouseOutbound=try await session.send("warehouse/outbound-orders",method:"POST",body:body)}else{body["source_type"]=source;body["supplier"]="";let _:WarehouseInbound=try await session.send("warehouse/inbound-orders",method:"POST",body:body)};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
 }
 
@@ -1207,13 +1207,13 @@ private struct ImportFileResponse: Codable { let file: KnowledgeFile }
 private enum CapabilityKind: String, CaseIterable, Identifiable { case prompts, skills, tools, notes; var id: String { rawValue }; var path: String { rawValue }; var title: String { switch self { case .prompts: return "Prompts"; case .skills: return "Skills"; case .tools: return "Tools"; case .notes: return "Notes" } } }
 private struct CapabilityItem: Codable, Identifiable {
     let id: String; let title: String?; let command: String?; let name: String?; let description: String?; let content: String?; let kind: String?; let enabled: Int?
-    var displayName: String { title ?? name ?? "鏈懡鍚? }
+    var displayName: String { title ?? name ?? "未命名" }
 }
 private struct CapabilityResponse: Codable {
     let prompts: [CapabilityItem]?; let skills: [CapabilityItem]?; let tools: [CapabilityItem]?; let notes: [CapabilityItem]?
     func items(for kind: CapabilityKind) -> [CapabilityItem] { switch kind { case .prompts: return prompts ?? []; case .skills: return skills ?? []; case .tools: return tools ?? []; case .notes: return notes ?? [] } }
 }
-private enum OperationsSection: String, CaseIterable, Identifiable { case usage, memory, workflow, jobs; var id: String { rawValue }; var title: String { switch self { case .usage: return "鐢ㄩ噺"; case .memory: return "璁板繂"; case .workflow: return "宸ヤ綔娴?; case .jobs: return "浠诲姟" } } }
+private enum OperationsSection: String, CaseIterable, Identifiable { case usage, memory, workflow, jobs; var id: String { rawValue }; var title: String { switch self { case .usage: return "用量"; case .memory: return "记忆"; case .workflow: return "工作流"; case .jobs: return "任务" } } }
 private struct UsageRecord: Codable, Identifiable {
     let id: Int; let operation: String; let modelID: String?; let inputTokens: Int; let outputTokens: Int; let latencyMS: Int
     enum CodingKeys: String, CodingKey { case id, operation; case modelID = "model_id"; case inputTokens = "input_tokens"; case outputTokens = "output_tokens"; case latencyMS = "latency_ms" }
@@ -1229,7 +1229,7 @@ private struct AIWorkflow: Codable, Identifiable {
 private struct WorkflowsResponse: Codable { let workflows: [AIWorkflow] }
 private struct AIJob: Codable, Identifiable {
     let id: String; let kind: String; let status: String; let output: String?; let error: String?
-    var resultText: String { if let error, !error.isEmpty { return error }; guard let output, !output.isEmpty else { return "鏆傛棤缁撴灉" }; if let data = output.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let result = object["result"] { return String(describing: result) }; return output }
+    var resultText: String { if let error, !error.isEmpty { return error }; guard let output, !output.isEmpty else { return "暂无结果" }; if let data = output.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let result = object["result"] { return String(describing: result) }; return output }
 }
 private struct JobsResponse: Codable { let jobs: [AIJob] }
 private struct JobActionResponse: Codable { let jobID: String?; let status: String?; enum CodingKeys: String, CodingKey { case status; case jobID = "job_id" } }
@@ -1239,7 +1239,7 @@ private enum JSONValue: Codable {
     case string(String), number(Double), bool(Bool), null
     init(from decoder: Decoder) throws { let value = try decoder.singleValueContainer(); if value.decodeNil() { self = .null } else if let item = try? value.decode(String.self) { self = .string(item) } else if let item = try? value.decode(Bool.self) { self = .bool(item) } else if let item = try? value.decode(Double.self) { self = .number(item) } else { self = .null } }
     func encode(to encoder: Encoder) throws { var value = encoder.singleValueContainer(); switch self { case .string(let item): try value.encode(item); case .number(let item): try value.encode(item); case .bool(let item): try value.encode(item); case .null: try value.encodeNil() } }
-    var display: String { switch self { case .string(let item): return item; case .number(let item): return item.rounded() == item ? String(Int(item)) : String(item); case .bool(let item): return item ? "鏄? : "鍚?; case .null: return "-" } }
+    var display: String { switch self { case .string(let item): return item; case .number(let item): return item.rounded() == item ? String(Int(item)) : String(item); case .bool(let item): return item ? "是" : "否"; case .null: return "-" } }
 }
 private struct TaskOwner: Codable, Identifiable { let id: Int; let name: String }
 private struct AdminUserRecord: Codable, Identifiable { let id: Int; let username: String; let displayName: String?; let role: String; let isActive: Bool; let permissions: [String: String]?; enum CodingKeys: String, CodingKey { case id, username, role, permissions; case displayName = "display_name"; case isActive = "is_active" } }
@@ -1325,7 +1325,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
     @Published var loggedIn = false
     @Published var loading = false
     @Published var error: String?
-    @Published var username = "绠＄悊鍛?
+    @Published var username = "管理员"
     private let origin = URL(string: "https://xiaoxu666.asia")!
     private let decoder: JSONDecoder = { let value = JSONDecoder(); value.keyDecodingStrategy = .useDefaultKeys; return value }()
 
@@ -1335,7 +1335,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
             let body: [String: Any] = ["username": username, "password": password, "totp_code": NSNull(), "captcha_id": NSNull(), "captcha_code": NSNull()]
             let _: EmptyResponse = try await send("auth/login", method: "POST", body: body, allowEmpty: true)
             self.username = username; loggedIn = true
-        } catch { self.error = "鐧诲綍澶辫触锛岃妫€鏌ヨ处鍙枫€佸瘑鐮佸拰缃戠粶銆? }
+        } catch { self.error = "登录失败，请检查账号、密码和网络。" }
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T { try await send(path, method: "GET") }
@@ -1347,7 +1347,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
-            let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String ?? "璇锋眰澶辫触"
+            let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String ?? "请求失败"
             if http.statusCode == 401 { loggedIn = false }
             throw NativeAPIError.server(http.statusCode, detail)
         }
@@ -1379,7 +1379,7 @@ private struct MultipartFile { let field: String; let filename: String; let data
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"); request.httpBody = body
         let (responseData, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { let detail = ((try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any])?["detail"] as? String ?? "涓婁紶澶辫触"; throw NativeAPIError.server(http.statusCode, detail) }
+        guard (200..<300).contains(http.statusCode) else { let detail = ((try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any])?["detail"] as? String ?? "上传失败"; throw NativeAPIError.server(http.statusCode, detail) }
         return try decoder.decode(T.self, from: responseData)
     }
 
@@ -1414,20 +1414,19 @@ private struct MultipartFile { let field: String; let filename: String; let data
 
     func message(for error: Error) -> String {
         if case let NativeAPIError.server(_, detail) = error { return detail }
-        return "鏁版嵁鍔犺浇澶辫触锛岃妫€鏌ョ綉缁滃悗閲嶈瘯銆?
+        return "数据加载失败，请检查网络后重试。"
     }
 }
 
-private func lineSummary(_ items: [WarehouseLine]) -> String { items.map { "\($0.sku) 脳 \($0.quantity)" }.joined(separator: "锛?) }
-private func outboundStatus(_ value: String) -> String { switch value { case "pending": return "寰呮嫞璐?; case "picking": return "鎷ｈ揣涓?; case "checked": return "宸插鏍?; case "packed": return "宸叉墦鍖?; case "shipped": return "宸插彂璐?; case "cancelled": return "宸插彇娑?; default: return value } }
+private func lineSummary(_ items: [WarehouseLine]) -> String { items.map { "\($0.sku) × \($0.quantity)" }.joined(separator: "；") }
+private func outboundStatus(_ value: String) -> String { switch value { case "pending": return "待拣货"; case "picking": return "拣货中"; case "checked": return "已复核"; case "packed": return "已打包"; case "shipped": return "已发货"; case "cancelled": return "已取消"; default: return value } }
 private func nextStatus(_ value: String) -> String? { switch value { case "pending": return "picking"; case "picking": return "checked"; case "checked": return "packed"; case "packed": return "shipped"; default: return nil } }
 private struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
-private func money(_ value: Double) -> String { String(format: "楼 %.2f", value) }
+private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
-private func jobStatus(_ value: String) -> String { switch value { case "queued": return "鎺掗槦涓?; case "running": return "杩愯涓?; case "completed": return "宸插畬鎴?; case "failed": return "澶辫触"; case "cancelled": return "宸插彇娑?; default: return value } }
+private func jobStatus(_ value: String) -> String { switch value { case "queued": return "排队中"; case "running": return "运行中"; case "completed": return "已完成"; case "failed": return "失败"; case "cancelled": return "已取消"; default: return value } }
 private func jobColor(_ value: String) -> Color { switch value { case "completed": return .green; case "failed": return .red; case "queued", "running": return .blue; default: return .secondary } }
-private func roleLabel(_ value: String) -> String { switch value { case "superadmin": return "瓒呯骇绠＄悊鍛?; case "editor": return "缂栬緫鍛?; default: return "鍙璐﹀彿" } }
-private func licenseStatus(_ value: String) -> String { switch value { case "active": return "鐢熸晥涓?; case "disabled": return "宸插仠鐢?; case "expired": return "宸茶繃鏈?; default: return "鏈縺娲? } }
-
+private func roleLabel(_ value: String) -> String { switch value { case "superadmin": return "超级管理员"; case "editor": return "编辑员"; default: return "只读账号" } }
+private func licenseStatus(_ value: String) -> String { switch value { case "active": return "生效中"; case "disabled": return "已停用"; case "expired": return "已过期"; default: return "未激活" } }
