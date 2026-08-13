@@ -102,7 +102,7 @@ private struct NativeTabView: View {
             Group {
                 switch selected {
                 case 1: NativeTaskView()
-                case 2: NativeLedgerView()
+                case 2: NativeQuickLedgerView()
                 case 3: NativeLinksView()
                 case 4: NativeMineView()
                 default: NativeHomeView(destination: $destination)
@@ -132,7 +132,7 @@ private enum NativeDestination: String, Identifiable {
         case .shops: NativeShopsView()
         case .warehouse: NativeWarehouseView()
         case .links: NativeLinksView()
-        case .expenses: NativeLedgerView()
+        case .expenses: NativeQuickLedgerView()
         case .owners: NativeOwnersView()
         case .peers: NativePeerShopsView()
         case .licenses: NativeLicenseRecordsView()
@@ -606,6 +606,29 @@ private struct NativeTaskView: View {
             let ids = Set(records.map(\.id)); records.append(contentsOf: more.filter { !ids.contains($0.id) }); hasMore = more.count == 30
         } catch { self.error = session.message(for: error) }
     }
+}
+
+private struct NativeQuickLedgerView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var amount = ""
+    @State private var category = "办公用品"
+    @State private var note = ""
+    @State private var saving = false
+    @State private var error: String?
+    private let categories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
+    var body: some View {
+        NavigationStack {
+            ScrollView { VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) { Text("公司消费").font(.caption); Text(amount.isEmpty ? "¥ 0.00" : "¥ \(amount)").font(.system(size: 36, weight: .bold)); TextField("输入金额", text: $amount).keyboardType(.decimalPad).textFieldStyle(.roundedBorder) }.padding(20).frame(maxWidth: .infinity, alignment: .leading).background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 16)).foregroundStyle(.white)
+                Text("消费分类").font(.headline)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], spacing: 10) { ForEach(categories, id: \.self) { value in Button(value) { category = value }.buttonStyle(.borderedProminent).tint(category == value ? .blue : .gray.opacity(0.25)) } }
+                TextField("写一句消费说明（可选）", text: $note).textFieldStyle(.roundedBorder)
+                if let error { Text(error).foregroundStyle(.red) }
+                Button { Task { await save() } } label: { Label(saving ? "保存中..." : "记账", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(saving || (Double(amount) ?? 0) <= 0)
+            }.padding() }.background(Color(.systemGroupedBackground)).navigationTitle("记一笔").toolbar { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") } }
+        }
+    }
+    private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch { error = session.message(for: error) } }
 }
 
 private struct NativeLedgerView: View {
