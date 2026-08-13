@@ -1651,13 +1651,7 @@ private struct SavedLinkDetailImage: View {
     var body: some View {
         Group {
             if let imageURL = nativeImageURL(url) {
-                AsyncImage(url: imageURL) { phase in
-                    switch phase {
-                    case .success(let image): image.resizable().scaledToFit()
-                    case .failure: Image(systemName: "photo").frame(maxWidth: .infinity, minHeight: 120)
-                    default: ProgressView().frame(maxWidth: .infinity, minHeight: 120)
-                    }
-                }
+                CachedRemoteImage(url: imageURL, contentMode: .fit, placeholder: ProgressView().frame(maxWidth: .infinity, minHeight: 120))
             } else {
                 Image(systemName: "photo").frame(maxWidth: .infinity, minHeight: 120)
             }
