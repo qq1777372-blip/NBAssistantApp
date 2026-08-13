@@ -739,7 +739,6 @@ private struct NativeLinksView: View {
                         }
                     }.padding(.vertical, 6)
                     }
-                    }
                 }
                 if hasMore && query.isEmpty {
                     Button { Task { await loadMore() } } label: { HStack { Spacer(); if loadingMore { ProgressView() } else { Text("加载更多") }; Spacer() } }.disabled(loadingMore)
