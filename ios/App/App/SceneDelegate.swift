@@ -661,6 +661,7 @@ private struct NativeMineView: View {
                     NavigationLink { NativeModelsView() } label: { Label("模型", systemImage: "cpu") }
                     NavigationLink { NativeKnowledgeView() } label: { Label("知识库", systemImage: "books.vertical") }
                     NavigationLink { NativeCapabilitiesView() } label: { Label("AI 能力", systemImage: "wand.and.stars") }
+                    NavigationLink { NativeOperationsView() } label: { Label("AI 运营", systemImage: "chart.bar.xaxis") }
                 }
                 Section { Button("退出登录", role: .destructive) { Task { await session.logout() } } }
             }
@@ -881,6 +882,61 @@ private struct CapabilityForm: View {
     private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? ""]; if kind == .prompts { body.merge(["title": title, "command": command, "content": content]) { _, new in new } } else if kind == .notes { body.merge(["title": title, "content": content]) { _, new in new } } else if kind == .skills { body.merge(["name": name, "description": description, "content": content]) { _, new in new } } else { let config: [String: Any] = [:]; body.merge(["name": name, "description": description, "kind": toolKind, "enabled": enabled, "config": config]) { _, new in new } }; do { let path = "ai-api/\(kind.path)\(item == nil ? "" : "/update")"; let _: EmptyResponse = try await session.send(path, method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
+private struct NativeOperationsView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var section: OperationsSection = .usage
+    @State private var usage: [UsageRecord] = []; @State private var summary: UsageSummary?
+    @State private var memories: [AIMemory] = []; @State private var workflows: [AIWorkflow] = []; @State private var jobs: [AIJob] = []
+    @State private var loading = false; @State private var error: String?
+    @State private var editingMemory: AIMemory?; @State private var showingMemory = false
+    @State private var editingWorkflow: AIWorkflow?; @State private var showingWorkflow = false
+    @State private var runWorkflow: AIWorkflow?; @State private var runInput = ""
+
+    var body: some View { VStack(spacing: 0) {
+        Picker("运营", selection: $section) { ForEach(OperationsSection.allCases) { Text($0.title).tag($0) } }.pickerStyle(.segmented).padding()
+        List {
+            if let error { Text(error).foregroundStyle(.red) }
+            if section == .usage {
+                if let summary { Section { HStack { Metric(title: "调用", value: "\(summary.calls)"); Metric(title: "输入 Token", value: "\(summary.inputTokens)"); Metric(title: "输出 Token", value: "\(summary.outputTokens)") }; LabeledContent("累计费用", value: String(format: "¥ %.4f", summary.cost)) } }
+                ForEach(usage) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.operation).fontWeight(.medium); Spacer(); Text("\(item.inputTokens + item.outputTokens) Token").font(.caption) }; Text("\(item.modelID.flatMap { $0.isEmpty ? nil : $0 } ?? "默认模型") · \(item.latencyMS) ms").font(.caption).foregroundStyle(.secondary) } }
+            } else if section == .memory {
+                ForEach(memories) { item in VStack(alignment: .leading, spacing: 6) { Text(item.content); HStack { Text(item.sourceChatID.isEmpty ? "手动添加" : "来自会话").font(.caption).foregroundStyle(.secondary); Spacer(); Toggle("", isOn: Binding(get: { item.enabled != 0 }, set: { enabled in Task { await toggleMemory(item, enabled) } })).labelsHidden() } }.contentShape(Rectangle()).onTapGesture { editingMemory = item; showingMemory = true }.swipeActions { Button("删除", role: .destructive) { Task { await deleteMemory(item) } } } }
+            } else if section == .workflow {
+                ForEach(workflows) { item in VStack(alignment: .leading, spacing: 6) { HStack { Text(item.name).fontWeight(.medium); Spacer(); StatusBadge(text: item.enabled != 0 ? "启用" : "停用", done: item.enabled != 0) }; Text(item.description).font(.caption).foregroundStyle(.secondary) }.contentShape(Rectangle()).onTapGesture { editingWorkflow = item; showingWorkflow = true }.swipeActions { Button("运行") { runWorkflow = item }.tint(.green); Button("删除", role: .destructive) { Task { await deleteWorkflow(item) } } } }
+            } else {
+                ForEach(jobs) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.kind).fontWeight(.medium); Spacer(); Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status)) }; Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3) }.swipeActions { if ["queued", "running"].contains(item.status) { Button("取消") { Task { await jobAction(item, "cancel") } }.tint(.orange) } else { Button("重试") { Task { await jobAction(item, "retry") } }.tint(.blue); Button("删除", role: .destructive) { Task { await jobAction(item, "delete") } } } }
+            }
+        }
+    }.navigationTitle("AI 运营").overlay { if loading && usage.isEmpty && memories.isEmpty && workflows.isEmpty && jobs.isEmpty { ProgressView() } }.task(id: section) { await load() }.refreshable { await load() }
+        .toolbar { if section == .memory { Button { editingMemory = nil; showingMemory = true } label: { Image(systemName: "plus") } } else if section == .workflow { Button { editingWorkflow = nil; showingWorkflow = true } label: { Image(systemName: "plus") } } }
+        .sheet(isPresented: $showingMemory) { MemoryForm(item: editingMemory) { await load() } }
+        .sheet(isPresented: $showingWorkflow) { WorkflowForm(item: editingWorkflow) { await load() } }
+        .alert("运行工作流", isPresented: Binding(get: { runWorkflow != nil }, set: { if !$0 { runWorkflow = nil } })) { TextField("输入内容", text: $runInput); Button("运行") { if let workflow = runWorkflow { Task { await run(workflow) } } }; Button("取消", role: .cancel) { runWorkflow = nil } } message: { Text("输入工作流处理内容") }
+    }
+    private func load() async { loading = true; defer { loading = false }; do { switch section { case .usage: let result: UsageResponse = try await session.get("ai-api/usage"); usage = result.usage; summary = result.summary; case .memory: let result: MemoriesResponse = try await session.get("ai-api/memories"); memories = result.memories; case .workflow: let result: WorkflowsResponse = try await session.get("ai-api/workflows"); workflows = result.workflows; case .jobs: let result: JobsResponse = try await session.get("ai-api/jobs"); jobs = result.jobs } } catch { self.error = session.message(for: error) } }
+    private func toggleMemory(_ item: AIMemory, _ enabled: Bool) async { do { let _: EmptyResponse = try await session.send("ai-api/memories", method: "POST", body: ["id": item.id, "content": item.content, "source_chat_id": item.sourceChatID, "enabled": enabled], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func deleteMemory(_ item: AIMemory) async { do { let _: EmptyResponse = try await session.send("ai-api/memories/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func deleteWorkflow(_ item: AIWorkflow) async { do { let _: EmptyResponse = try await session.send("ai-api/workflows/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func run(_ item: AIWorkflow) async { do { let _: JobActionResponse = try await session.send("ai-api/workflows/run", method: "POST", body: ["id": item.id, "input": runInput]); runWorkflow = nil; runInput = ""; section = .jobs; await load() } catch { self.error = session.message(for: error) } }
+    private func jobAction(_ item: AIJob, _ action: String) async { do { let _: EmptyResponse = try await session.send("ai-api/jobs/\(action)", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+}
+
+private struct MemoryForm: View {
+    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
+    let item: AIMemory?; let onSave: () async -> Void; @State private var content: String; @State private var enabled: Bool; @State private var saving = false; @State private var error: String?
+    init(item: AIMemory?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _content = State(initialValue: item?.content ?? ""); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("记忆内容", text: $content, axis: .vertical).lineLimit(8...16); Toggle("启用", isOn: $enabled) }.navigationTitle(item == nil ? "新增记忆" : "编辑记忆").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || content.isEmpty) } } } }
+    private func save() async { saving = true; defer { saving = false }; do { let _: EmptyResponse = try await session.send("ai-api/memories", method: "POST", body: ["id": item?.id ?? "", "content": content, "source_chat_id": item?.sourceChatID ?? "", "enabled": enabled], allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+}
+
+private struct WorkflowForm: View {
+    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
+    let item: AIWorkflow?; let onSave: () async -> Void; @State private var name: String; @State private var description: String; @State private var prompt: String; @State private var enabled: Bool; @State private var saving = false; @State private var error: String?
+    init(item: AIWorkflow?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? ""); _description = State(initialValue: item?.description ?? ""); _prompt = State(initialValue: item?.firstPrompt ?? "请根据以下输入完成任务：{{input}}"); _enabled = State(initialValue: (item?.enabled ?? 1) != 0) }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; Section("工作流") { TextField("名称", text: $name); TextField("说明", text: $description); Toggle("启用", isOn: $enabled) }; Section("Prompt 步骤") { TextField("支持 {{input}}", text: $prompt, axis: .vertical).lineLimit(8...16) } }.navigationTitle(item == nil ? "新建工作流" : "编辑工作流").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || name.isEmpty || prompt.isEmpty) } } } }
+    private func save() async { saving = true; defer { saving = false }; let steps: [[String: Any]] = [["type": "prompt", "content": prompt]]; do { let _: EmptyResponse = try await session.send("ai-api/workflows", method: "POST", body: ["id": item?.id ?? "", "name": name, "description": description, "steps": steps, "enabled": enabled], allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+}
+
 private struct ExpenseDetail: View {
     let item: CompanyExpense
     var body: some View {
@@ -963,6 +1019,26 @@ private struct CapabilityResponse: Codable {
     let prompts: [CapabilityItem]?; let skills: [CapabilityItem]?; let tools: [CapabilityItem]?; let notes: [CapabilityItem]?
     func items(for kind: CapabilityKind) -> [CapabilityItem] { switch kind { case .prompts: return prompts ?? []; case .skills: return skills ?? []; case .tools: return tools ?? []; case .notes: return notes ?? [] } }
 }
+private enum OperationsSection: String, CaseIterable, Identifiable { case usage, memory, workflow, jobs; var id: String { rawValue }; var title: String { switch self { case .usage: return "用量"; case .memory: return "记忆"; case .workflow: return "工作流"; case .jobs: return "任务" } } }
+private struct UsageRecord: Codable, Identifiable {
+    let id: Int; let operation: String; let modelID: String?; let inputTokens: Int; let outputTokens: Int; let latencyMS: Int
+    enum CodingKeys: String, CodingKey { case id, operation; case modelID = "model_id"; case inputTokens = "input_tokens"; case outputTokens = "output_tokens"; case latencyMS = "latency_ms" }
+}
+private struct UsageSummary: Codable { let calls: Int; let inputTokens: Int; let outputTokens: Int; let cost: Double; enum CodingKeys: String, CodingKey { case calls, cost; case inputTokens = "input_tokens"; case outputTokens = "output_tokens" } }
+private struct UsageResponse: Codable { let usage: [UsageRecord]; let summary: UsageSummary }
+private struct AIMemory: Codable, Identifiable { let id: String; let content: String; let sourceChatID: String; let enabled: Int; enum CodingKeys: String, CodingKey { case id, content, enabled; case sourceChatID = "source_chat_id" } }
+private struct MemoriesResponse: Codable { let memories: [AIMemory] }
+private struct AIWorkflow: Codable, Identifiable {
+    let id: String; let name: String; let description: String; let steps: String; let enabled: Int
+    var firstPrompt: String { guard let data = steps.data(using: .utf8), let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return "" }; return rows.first?["content"] as? String ?? "" }
+}
+private struct WorkflowsResponse: Codable { let workflows: [AIWorkflow] }
+private struct AIJob: Codable, Identifiable {
+    let id: String; let kind: String; let status: String; let output: String?; let error: String?
+    var resultText: String { if let error, !error.isEmpty { return error }; guard let output, !output.isEmpty else { return "暂无结果" }; if let data = output.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let result = object["result"] { return String(describing: result) }; return output }
+}
+private struct JobsResponse: Codable { let jobs: [AIJob] }
+private struct JobActionResponse: Codable { let jobID: String?; let status: String?; enum CodingKeys: String, CodingKey { case status; case jobID = "job_id" } }
 
 @MainActor private final class NativeAudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var recording = false
@@ -1104,3 +1180,5 @@ private struct ChatResponse: Codable { let content: String?; let answer: String?
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
+private func jobStatus(_ value: String) -> String { switch value { case "queued": return "排队中"; case "running": return "运行中"; case "completed": return "已完成"; case "failed": return "失败"; case "cancelled": return "已取消"; default: return value } }
+private func jobColor(_ value: String) -> Color { switch value { case "completed": return .green; case "failed": return .red; case "queued", "running": return .blue; default: return .secondary } }
