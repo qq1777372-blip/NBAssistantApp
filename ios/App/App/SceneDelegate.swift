@@ -663,11 +663,61 @@ private struct NativeMineView: View {
                     NavigationLink { NativeCapabilitiesView() } label: { Label("AI 能力", systemImage: "wand.and.stars") }
                     NavigationLink { NativeOperationsView() } label: { Label("AI 运营", systemImage: "chart.bar.xaxis") }
                 }
+                Section("业务管理") {
+                    NavigationLink { NativeShopsView() } label: { Label("店铺档案", systemImage: "storefront") }
+                    NavigationLink { NativeOwnersView() } label: { Label("负责人", systemImage: "person.2") }
+                    NavigationLink { NativeUsersView() } label: { Label("账号与权限", systemImage: "person.badge.key") }
+                    NavigationLink { NativeLicensesView() } label: { Label("授权码", systemImage: "key") }
+                }
                 Section { Button("退出登录", role: .destructive) { Task { await session.logout() } } }
             }
                 .navigationTitle("我的")
         }
     }
+}
+
+private struct NativeShopsView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var fields: [ShopField] = []; @State private var records: [ShopRecord] = []; @State private var query = ""; @State private var loading = false; @State private var error: String?
+    private var visibleFields: [ShopField] { fields.filter(\.isVisible).sorted { $0.sortOrder < $1.sortOrder } }
+    private var filtered: [ShopRecord] { query.isEmpty ? records : records.filter { $0.values.values.map(\.display).joined(separator: " ").localizedCaseInsensitiveContains(query) } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { record in NavigationLink { ShopDetail(record: record, fields: visibleFields) } label: { VStack(alignment: .leading, spacing: 5) { Text(title(record)).fontWeight(.medium); Text(visibleFields.prefix(3).compactMap { field in record.values[field.fieldName].map { "\(field.label)：\($0.display)" } }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(record) } } } } }.navigationTitle("店铺档案").searchable(text: $query).overlay { if loading && records.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() } }
+    private func title(_ record: ShopRecord) -> String { for key in ["shop_name", "store_name", "name"] { if let value = record.values[key], !value.display.isEmpty { return value.display } }; return visibleFields.compactMap { record.values[$0.fieldName]?.display }.first ?? "店铺 #\(record.id)" }
+    private func load() async { loading = true; defer { loading = false }; do { async let fieldRequest: [ShopField] = session.get("custom-fields"); async let recordRequest: [ShopRecord] = session.get("shop-records"); let result = try await (fieldRequest, recordRequest); fields = result.0; records = result.1 } catch { self.error = session.message(for: error) } }
+    private func remove(_ record: ShopRecord) async { do { try await session.delete("shop-records/\(record.id)"); records.removeAll { $0.id == record.id } } catch { self.error = session.message(for: error) } }
+}
+
+private struct ShopDetail: View { let record: ShopRecord; let fields: [ShopField]; var body: some View { List { ForEach(fields) { field in LabeledContent(field.label, value: record.values[field.fieldName]?.display ?? "-") } }.navigationTitle("店铺详情").navigationBarTitleDisplayMode(.inline) } }
+
+private struct NativeOwnersView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var owners: [TaskOwner] = []; @State private var query = ""; @State private var newName = ""; @State private var showingAdd = false; @State private var error: String?
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(owners.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { owner in Label(owner.name, systemImage: "person.circle").swipeActions { Button("删除", role: .destructive) { Task { await remove(owner) } } } } }.navigationTitle("负责人").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }.alert("新增负责人", isPresented: $showingAdd) { TextField("负责人名称", text: $newName); Button("保存") { Task { await add() } }; Button("取消", role: .cancel) {} } }
+    private func load() async { do { owners = try await session.get("task-bookkeeping/owners") } catch { self.error = session.message(for: error) } }
+    private func add() async { let name = newName.trimmingCharacters(in: .whitespacesAndNewlines); guard !name.isEmpty else { return }; do { let _: TaskOwner = try await session.send("task-bookkeeping/owners", method: "POST", body: ["name": name]); newName = ""; await load() } catch { self.error = session.message(for: error) } }
+    private func remove(_ owner: TaskOwner) async { do { try await session.delete("task-bookkeeping/owners/\(owner.id)"); await load() } catch { self.error = session.message(for: error) } }
+}
+
+private struct NativeUsersView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var users: [AdminUserRecord] = []; @State private var query = ""; @State private var error: String?
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(users.filter { query.isEmpty || "\($0.username) \($0.displayName ?? "")".localizedCaseInsensitiveContains(query) }) { user in HStack { VStack(alignment: .leading) { Text((user.displayName?.isEmpty == false ? user.displayName : nil) ?? user.username).fontWeight(.medium); Text("\(user.username) · \(roleLabel(user.role))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Toggle("", isOn: Binding(get: { user.isActive }, set: { active in Task { await toggle(user, active) } })).labelsHidden() } } }.navigationTitle("账号与权限").searchable(text: $query).task { await load() }.refreshable { await load() } }
+    private func load() async { do { users = try await session.get("admin-users") } catch { self.error = session.message(for: error) } }
+    private func toggle(_ user: AdminUserRecord, _ active: Bool) async { do { let _: EmptyResponse = try await session.send("admin-users/\(user.id)/status", method: "PATCH", body: ["is_active": active], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+}
+
+private struct NativeLicensesView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var licenses: [LicenseRecord] = []; @State private var query = ""; @State private var error: String?
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(licenses.filter { query.isEmpty || "\($0.licenseKey) \($0.planName)".localizedCaseInsensitiveContains(query) }) { item in NavigationLink { LicenseDetail(item: item) { await load() } } label: { VStack(alignment: .leading, spacing: 5) { HStack { Text(item.planName).fontWeight(.medium); Spacer(); StatusBadge(text: licenseStatus(item.status), done: item.status == "active") }; Text(item.licenseKey).font(.caption.monospaced()).foregroundStyle(.secondary); Text("\(item.devices.count) / \(item.maxDevices) 台设备").font(.caption2).foregroundStyle(.secondary) } }.swipeActions { Button(item.status == "disabled" ? "启用" : "停用") { Task { await toggle(item) } }.tint(item.status == "disabled" ? .green : .orange) } } }.navigationTitle("授权码").searchable(text: $query).task { await load() }.refreshable { await load() } }
+    private func load() async { do { licenses = try await session.get("license-admin/licenses") } catch { self.error = session.message(for: error) } }
+    private func toggle(_ item: LicenseRecord) async { let key = item.licenseKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.licenseKey; do { let _: EmptyResponse = try await session.send("license-admin/licenses/\(key)/status", method: "POST", body: ["status": item.status == "disabled" ? "active" : "disabled"], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+}
+
+private struct LicenseDetail: View {
+    @EnvironmentObject private var session: NativeSession; let item: LicenseRecord; let onChange: () async -> Void; @State private var error: String?
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; Section("授权") { LabeledContent("授权码", value: item.licenseKey); LabeledContent("套餐", value: item.planName); LabeledContent("状态", value: licenseStatus(item.status)); LabeledContent("到期", value: item.expiresAt ?? "-") }; Section("绑定设备") { ForEach(item.devices) { device in HStack { VStack(alignment: .leading) { Text(device.deviceName ?? device.deviceID); Text("\(device.platform ?? "未知平台") · \(device.appVersion ?? "未知版本")").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("解绑", role: .destructive) { Task { await unbind(device) } } } } } }.navigationTitle("授权详情").navigationBarTitleDisplayMode(.inline) }
+    private func unbind(_ device: LicenseDevice) async { let key = item.licenseKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.licenseKey; do { let _: EmptyResponse = try await session.send("license-admin/licenses/\(key)/unbind", method: "POST", body: ["device_id": device.deviceID], allowEmpty: true); await onChange() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeModelsView: View {
@@ -1039,6 +1089,18 @@ private struct AIJob: Codable, Identifiable {
 }
 private struct JobsResponse: Codable { let jobs: [AIJob] }
 private struct JobActionResponse: Codable { let jobID: String?; let status: String?; enum CodingKeys: String, CodingKey { case status; case jobID = "job_id" } }
+private struct ShopField: Codable, Identifiable { let id: Int; let fieldName: String; let label: String; let sortOrder: Int; let isVisible: Bool; enum CodingKeys: String, CodingKey { case id, label; case fieldName = "field_name"; case sortOrder = "sort_order"; case isVisible = "is_visible" } }
+private struct ShopRecord: Codable, Identifiable { let id: Int; let values: [String: JSONValue] }
+private enum JSONValue: Codable {
+    case string(String), number(Double), bool(Bool), null
+    init(from decoder: Decoder) throws { let value = try decoder.singleValueContainer(); if value.decodeNil() { self = .null } else if let item = try? value.decode(String.self) { self = .string(item) } else if let item = try? value.decode(Bool.self) { self = .bool(item) } else if let item = try? value.decode(Double.self) { self = .number(item) } else { self = .null } }
+    func encode(to encoder: Encoder) throws { var value = encoder.singleValueContainer(); switch self { case .string(let item): try value.encode(item); case .number(let item): try value.encode(item); case .bool(let item): try value.encode(item); case .null: try value.encodeNil() } }
+    var display: String { switch self { case .string(let item): return item; case .number(let item): return item.rounded() == item ? String(Int(item)) : String(item); case .bool(let item): return item ? "是" : "否"; case .null: return "-" } }
+}
+private struct TaskOwner: Codable, Identifiable { let id: Int; let name: String }
+private struct AdminUserRecord: Codable, Identifiable { let id: Int; let username: String; let displayName: String?; let role: String; let isActive: Bool; enum CodingKeys: String, CodingKey { case id, username, role; case displayName = "display_name"; case isActive = "is_active" } }
+private struct LicenseDevice: Codable, Identifiable { var id: String { deviceID }; let deviceID: String; let deviceName: String?; let platform: String?; let appVersion: String?; enum CodingKeys: String, CodingKey { case platform; case deviceID = "device_id"; case deviceName = "device_name"; case appVersion = "app_version" } }
+private struct LicenseRecord: Codable, Identifiable { var id: String { licenseKey }; let licenseKey: String; let planName: String; let status: String; let maxDevices: Int; let expiresAt: String?; let devices: [LicenseDevice]; enum CodingKeys: String, CodingKey { case status, devices; case licenseKey = "license_key"; case planName = "plan_name"; case maxDevices = "max_devices"; case expiresAt = "expires_at" } }
 
 @MainActor private final class NativeAudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     @Published var recording = false
@@ -1182,3 +1244,5 @@ private func shortDate(_ value: String?) -> String { guard let value else { retu
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
 private func jobStatus(_ value: String) -> String { switch value { case "queued": return "排队中"; case "running": return "运行中"; case "completed": return "已完成"; case "failed": return "失败"; case "cancelled": return "已取消"; default: return value } }
 private func jobColor(_ value: String) -> Color { switch value { case "completed": return .green; case "failed": return .red; case "queued", "running": return .blue; default: return .secondary } }
+private func roleLabel(_ value: String) -> String { switch value { case "superadmin": return "超级管理员"; case "editor": return "编辑员"; default: return "只读账号" } }
+private func licenseStatus(_ value: String) -> String { switch value { case "active": return "生效中"; case "disabled": return "已停用"; case "expired": return "已过期"; default: return "未激活" } }
