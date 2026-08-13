@@ -30,11 +30,34 @@ struct NativeSearchView: View {
         List {
             if loading { ProgressView("正在搜索…") }
             if let error { Text(error).foregroundStyle(.red) }
-            ForEach(result.all) { item in VStack(alignment: .leading, spacing: 4) { Text(item.title).fontWeight(.medium); Text("\(item.categoryLabel) · \(item.subtitle ?? item.detail ?? "查看详情")").font(.caption).foregroundStyle(.secondary) } }
+            ForEach(result.all) { item in
+                NavigationLink { SearchResultDetail(item: item) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title).fontWeight(.medium)
+                        Text("\(item.categoryLabel) · \(item.subtitle ?? item.detail ?? "查看详情")").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if !query.isEmpty && !loading && result.all.isEmpty && error == nil { ContentUnavailableViewCompat(title: "没有找到匹配数据", icon: "magnifyingglass") }
         }.navigationTitle("全局搜索").searchable(text: $query, prompt: "名称、账号、订单号或手机号").task(id: query) { try? await Task.sleep(nanoseconds: 280_000_000); guard !Task.isCancelled else { return }; await search() }
     }
     private func search() async { let value = query.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { result = GlobalSearchResponse(); return }; loading = true; error = nil; defer { loading = false }; do { result = try await session.get("global-search?q=\(value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? value)") } catch { self.error = session.message(for: error) } }
+}
+
+private struct SearchResultDetail: View {
+    let item: SearchItem
+    var body: some View {
+        List {
+            Section("基本信息") {
+                LabeledContent("类型", value: item.categoryLabel)
+                LabeledContent("标题", value: item.title)
+                if let subtitle = item.subtitle, !subtitle.isEmpty { LabeledContent("摘要", value: subtitle) }
+            }
+            if let detail = item.detail, !detail.isEmpty { Section("详细信息") { Text(detail).textSelection(.enabled) } }
+        }
+        .navigationTitle("搜索详情")
+        .navigationBarTitleDisplayMode(.inline)
+    }
 }
 
 struct NativeServerView: View {
