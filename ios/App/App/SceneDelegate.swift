@@ -175,8 +175,10 @@ private struct NativeHomeView: View {
         }
     }
 
-    /* AI chat remains available from the home shortcuts/history sheet. */
-    private var legacyChatBody: some View {
+    /* AI chat actions remain available to the home view. */
+    /* legacy chat presentation removed; the dashboard is the home body. */
+    private var legacyChatBody: some View { EmptyView() }
+    /*
             VStack(spacing: 0) {
                 ScrollView {
                     LazyVStack(spacing: 16) {
@@ -245,6 +247,7 @@ private struct NativeHomeView: View {
             .task { await loadModels(); await loadChats() }
         }
     }
+    */
 
     private func send() {
         let value = message.trimmingCharacters(in: .whitespacesAndNewlines)
