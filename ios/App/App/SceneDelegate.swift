@@ -628,7 +628,7 @@ private struct NativeQuickLedgerView: View {
             }.padding() }.background(Color(.systemGroupedBackground)).navigationTitle("记一笔").toolbar { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") } }
         }
     }
-    private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch { error = session.message(for: error) } }
+    private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch let requestError { error = session.message(for: requestError) } }
 }
 
 private struct NativeLedgerView: View {
