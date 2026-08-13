@@ -548,11 +548,11 @@ private struct NativeTaskView: View {
                         }.padding(.vertical, 4) }
                         .swipeActions(edge: .leading) { Button("编辑") { editing = item; showingForm = true }.tint(.blue) }
                     }
-                    if hasMore {
+                     if hasMore {
                         HStack { Spacer(); if loadingMore { ProgressView() } else { Text("加载更多") }; Spacer() }
-                            .onAppear { Task { await loadMore() } }
-                    }
-                }
+                             .onAppear { Task { await loadMore() } }
+                     }
+                 }
             }
             .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
