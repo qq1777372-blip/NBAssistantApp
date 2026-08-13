@@ -89,26 +89,41 @@ private struct NativeTabView: View {
 private struct NativeHomeView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var message = ""
-    @State private var messages = [ChatMessage(text: "你好！请告诉我需要处理什么问题。", sent: false)]
+    @State private var chats: [AIChat] = []
+    @State private var activeChatID = ""
     @State private var sending = false
     @State private var models: [AIModel] = []
     @State private var selectedModel = ""
     @State private var audioModel = ""
     @StateObject private var recorder = NativeAudioRecorder()
     @State private var voiceError: String?
+    @State private var streamTask: Task<Void, Never>?
+    @State private var showingHistory = false
+    @State private var deletingChat: AIChat?
+
+    private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
+    private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollView {
                     LazyVStack(spacing: 16) {
-                        ForEach(messages) { item in
+                        if activeChat?.messages.isEmpty != false {
+                            VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用麦克风开始").font(.subheadline).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.top, 80)
+                        }
+                        ForEach(activeChat?.messages ?? []) { item in
                             HStack {
-                                if item.sent { Spacer(minLength: 50) }
-                                Text(item.text).padding(14)
-                                    .foregroundStyle(item.sent ? Color.white : Color.primary)
-                                    .background(item.sent ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
-                                if !item.sent { Spacer(minLength: 50) }
+                                if item.role == "user" { Spacer(minLength: 50) }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(item.content.isEmpty ? "..." : item.content).textSelection(.enabled)
+                                    if item.role == "assistant" && !sending {
+                                        HStack { Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }; Button { regenerate(before: item.id) } label: { Image(systemName: "arrow.clockwise") } }.font(.caption)
+                                    }
+                                }
+                                .padding(14).foregroundStyle(item.role == "user" ? Color.white : Color.primary)
+                                .background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+                                if item.role != "user" { Spacer(minLength: 50) }
                             }
                         }
                         if sending { ProgressView().frame(maxWidth: .infinity, alignment: .leading) }
@@ -122,8 +137,8 @@ private struct NativeHomeView: View {
                     }.disabled(recorder.transcribing)
                     TextField("给 AI 发消息...", text: $message, axis: .vertical)
                         .lineLimit(1...4).nativeField()
-                    Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 34)) }
-                        .disabled(sending || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button(action: sending ? stop : send) { Image(systemName: sending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.system(size: 34)) }
+                        .disabled(!sending && message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }.padding()
                 if recorder.transcribing { Label("正在转写语音...", systemImage: "waveform").font(.caption).foregroundStyle(.secondary).padding(.bottom, 8) }
                 if let voiceError { Text(voiceError).font(.caption).foregroundStyle(.red).padding(.horizontal).padding(.bottom, 8) }
@@ -137,19 +152,85 @@ private struct NativeHomeView: View {
                         }
                     } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") }
                 }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showingHistory = true } label: { Image(systemName: "sidebar.left") }
+                    Button(action: createChat) { Image(systemName: "square.and.pencil") }
+                }
             }
-            .task { await loadModels() }
+            .sheet(isPresented: $showingHistory) {
+                NavigationStack {
+                    List {
+                        ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in
+                            Button { activeChatID = chat.id; selectedModel = chat.modelID ?? selectedModel; showingHistory = false } label: {
+                                VStack(alignment: .leading, spacing: 4) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) }
+                            }.swipeActions { Button("删除", role: .destructive) { deletingChat = chat } }
+                        }
+                    }.navigationTitle("历史会话").toolbar { Button("关闭") { showingHistory = false } }
+                }
+            }
+            .confirmationDialog("确定删除这个会话吗？", isPresented: Binding(get: { deletingChat != nil }, set: { if !$0 { deletingChat = nil } }), titleVisibility: .visible) {
+                Button("删除", role: .destructive) { if let chat = deletingChat { Task { await delete(chat) } } }; Button("取消", role: .cancel) { deletingChat = nil }
+            }
+            .task { await loadModels(); await loadChats() }
         }
     }
 
     private func send() {
         let value = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
-        messages.append(ChatMessage(text: value, sent: true)); message = ""; sending = true
-        Task {
-            let answer = await session.chat(value, modelID: selectedModel) ?? "服务没有返回内容。"
-            messages.append(ChatMessage(text: answer, sent: false)); sending = false
+        if activeIndex == nil { createChat() }
+        guard let index = activeIndex else { return }
+        chats[index].messages.append(AIChatMessage(id: UUID().uuidString, role: "user", content: value))
+        let answerID = UUID().uuidString
+        chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: ""))
+        if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }
+        chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970
+        message = ""; sending = true
+        streamTask = Task {
+            do {
+                try await session.streamChat(value, modelID: selectedModel) { chunk in
+                    guard let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }
+                    chats[chatIndex].messages[messageIndex].content += chunk
+                }
+            } catch is CancellationError { }
+            catch { if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = session.message(for: error) } }
+            sending = false; await saveActiveChat()
         }
+    }
+
+    private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
+
+    private func regenerate(before messageID: String) {
+        guard let index = activeIndex, let answerIndex = chats[index].messages.firstIndex(where: { $0.id == messageID }), answerIndex > 0 else { return }
+        let question = chats[index].messages[..<answerIndex].last(where: { $0.role == "user" })?.content ?? ""
+        chats[index].messages.removeSubrange((answerIndex - 1)...answerIndex); message = question; send()
+    }
+
+    private func createChat() {
+        let now = Date().timeIntervalSince1970
+        let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now)
+        chats.insert(chat, at: 0); activeChatID = chat.id
+    }
+
+    private func loadChats() async {
+        do {
+            let result: AIChatsResponse = try await session.get("ai-api/chats")
+            chats = result.chats
+            if let first = chats.first(where: { !$0.archived }) ?? chats.first { activeChatID = first.id; if let model = first.modelID, !model.isEmpty { selectedModel = model } } else { createChat() }
+        } catch { voiceError = session.message(for: error); if chats.isEmpty { createChat() } }
+    }
+
+    private func saveActiveChat() async {
+        guard let chat = activeChat else { return }
+        let messages = chat.messages.map { ["id": $0.id, "role": $0.role, "content": $0.content] }
+        let body: [String: Any] = ["id": chat.id, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)]
+        let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: body, allowEmpty: true)
+    }
+
+    private func delete(_ chat: AIChat) async {
+        let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id], allowEmpty: true)
+        chats.removeAll { $0.id == chat.id }; deletingChat = nil
+        if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } }
     }
 
     private func loadModels() async {
@@ -687,7 +768,27 @@ private extension View {
     func nativeField() -> some View { padding(12).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12)) }
 }
 
-private struct ChatMessage: Identifiable { let id = UUID(); let text: String; let sent: Bool }
+private struct AIChatMessage: Codable, Identifiable {
+    let id: String; let role: String; var content: String
+    init(id: String = UUID().uuidString, role: String, content: String) { self.id = id; self.role = role; self.content = content }
+}
+private struct AIChat: Decodable, Identifiable {
+    let id: String; var title: String; var messages: [AIChatMessage]; var modelID: String?; var favorite: Bool; var archived: Bool; var folder: String; let createdAt: TimeInterval; var updatedAt: TimeInterval
+    enum CodingKeys: String, CodingKey { case id, title, messages, favorite, archived, folder; case modelID = "model_id"; case createdAt = "created_at"; case updatedAt = "updated_at" }
+    init(id: String, title: String, messages: [AIChatMessage], modelID: String?, favorite: Bool, archived: Bool, folder: String, createdAt: TimeInterval, updatedAt: TimeInterval) { self.id = id; self.title = title; self.messages = messages; self.modelID = modelID; self.favorite = favorite; self.archived = archived; self.folder = folder; self.createdAt = createdAt; self.updatedAt = updatedAt }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id); title = try values.decode(String.self, forKey: .title)
+        messages = (try? values.decode([AIChatMessage].self, forKey: .messages)) ?? []
+        modelID = try? values.decode(String.self, forKey: .modelID)
+        favorite = (try? values.decode(Bool.self, forKey: .favorite)) ?? (((try? values.decode(Int.self, forKey: .favorite)) ?? 0) != 0)
+        archived = (try? values.decode(Bool.self, forKey: .archived)) ?? (((try? values.decode(Int.self, forKey: .archived)) ?? 0) != 0)
+        folder = (try? values.decode(String.self, forKey: .folder)) ?? ""
+        createdAt = TimeInterval((try? values.decode(Int.self, forKey: .createdAt)) ?? 0); updatedAt = TimeInterval((try? values.decode(Int.self, forKey: .updatedAt)) ?? 0)
+    }
+}
+private struct AIChatsResponse: Codable { let chats: [AIChat] }
 
 private struct AIModel: Codable, Identifiable {
     let id: String; let name: String; let baseModel: String; let modelType: String?; let enabled: Int; let hidden: Int?
@@ -812,6 +913,21 @@ private enum NativeAPIError: Error { case invalidResponse; case microphoneDenied
         } catch { return message(for: error) }
     }
 
+    func streamChat(_ question: String, modelID: String, onChunk: @escaping @MainActor (String) -> Void) async throws {
+        guard let url = URL(string: "ai-api/chat/stream", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["question": question]
+        if !modelID.isEmpty { body["model_id"] = modelID }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NativeAPIError.invalidResponse }
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            guard let data = line.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let content = object["content"] as? String else { continue }
+            onChunk(content)
+        }
+    }
+
     func logout() async {
         let _: EmptyResponse? = try? await send("auth/logout", method: "POST", allowEmpty: true)
         loggedIn = false
@@ -827,3 +943,4 @@ private struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
+private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
