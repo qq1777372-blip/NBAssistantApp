@@ -641,6 +641,7 @@ private struct NativeLedgerView: View {
                     }
                 }
             }
+            }
             .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }.navigationTitle("公司记账")
