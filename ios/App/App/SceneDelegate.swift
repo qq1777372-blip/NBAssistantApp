@@ -137,6 +137,8 @@ private struct NativeTaskView: View {
     @State private var query = ""
     @State private var loading = false
     @State private var error: String?
+    @State private var editing: TaskRecord?
+    @State private var showingForm = false
 
     private var filtered: [TaskRecord] {
         guard !query.isEmpty else { return records }
@@ -162,7 +164,9 @@ private struct NativeTaskView: View {
                 if let error { Text(error).foregroundStyle(.red) }
                 Section("任务记录") {
                     ForEach(filtered) { item in
-                        VStack(alignment: .leading, spacing: 8) {
+                        NavigationLink {
+                            TaskDetail(item: item) { await load() }
+                        } label: { VStack(alignment: .leading, spacing: 8) {
                             HStack { Text(item.shopName).font(.headline); Spacer(); Text(money(item.principalAmount)).fontWeight(.semibold) }
                             Text("\(item.orderNo) · \(item.ownerName)").font(.subheadline).foregroundStyle(.secondary)
                             HStack {
@@ -170,7 +174,8 @@ private struct NativeTaskView: View {
                                 StatusBadge(text: item.settlementStatus == "completed" ? "已结算" : "待结算", done: item.settlementStatus == "completed")
                                 Spacer(); Text(shortDate(item.taskTime)).font(.caption).foregroundStyle(.secondary)
                             }
-                        }.padding(.vertical, 4)
+                        }.padding(.vertical, 4) }
+                        .swipeActions(edge: .leading) { Button("编辑") { editing = item; showingForm = true }.tint(.blue) }
                     }
                 }
             }
@@ -178,6 +183,8 @@ private struct NativeTaskView: View {
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
             .refreshable { await load() }
             .navigationTitle("任务")
+            .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
+            .sheet(isPresented: $showingForm) { TaskForm(item: editing) { await load() } }
             .task { if records.isEmpty { await load() } }
         }
     }
@@ -200,6 +207,8 @@ private struct NativeLedgerView: View {
     @State private var loading = false
     @State private var error: String?
     @State private var deleting: CompanyExpense?
+    @State private var editing: CompanyExpense?
+    @State private var showingForm = false
 
     private var filtered: [CompanyExpense] {
         guard !query.isEmpty else { return records }
@@ -233,7 +242,10 @@ private struct NativeLedgerView: View {
                                 VStack(alignment: .trailing, spacing: 4) { Text(money(item.amount)).fontWeight(.semibold); Text(item.expenseDate).font(.caption).foregroundStyle(.secondary) }
                             }
                         }
-                        .swipeActions { Button("删除", role: .destructive) { deleting = item } }
+                        .swipeActions {
+                            Button("删除", role: .destructive) { deleting = item }
+                            Button("编辑") { editing = item; showingForm = true }.tint(.blue)
+                        }
                     }
                 }
             }
@@ -241,6 +253,8 @@ private struct NativeLedgerView: View {
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }.navigationTitle("公司记账")
             .task { if records.isEmpty { await load() } }
+            .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
+            .sheet(isPresented: $showingForm) { ExpenseForm(item: editing) { await load() } }
             .confirmationDialog("确定删除这条记账记录吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
                 Button("取消", role: .cancel) { deleting = nil }
@@ -272,6 +286,8 @@ private struct NativeLinksView: View {
     @State private var hasMore = true
     @State private var error: String?
     @State private var deleting: SavedLink?
+    @State private var editing: SavedLink?
+    @State private var showingForm = false
     private let pageSize = 15
 
     private var filtered: [SavedLink] {
@@ -291,7 +307,11 @@ private struct NativeLinksView: View {
                             VStack(alignment: .leading) { Text(item.authorUsername).font(.subheadline.bold()); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             if item.isPinned { Image(systemName: "pin.fill").foregroundStyle(.orange) }
-                            Menu { Button(item.isPinned ? "取消置顶" : "置顶") { Task { await togglePin(item) } }; Button("删除", role: .destructive) { deleting = item } } label: { Image(systemName: "ellipsis") }
+                            Menu {
+                                Button("编辑") { editing = item; showingForm = true }
+                                Button(item.isPinned ? "取消置顶" : "置顶") { Task { await togglePin(item) } }
+                                Button("删除", role: .destructive) { deleting = item }
+                            } label: { Image(systemName: "ellipsis") }
                         }
                         Text(item.title).font(.headline)
                         if let description = item.description, !description.isEmpty { Text(description).lineLimit(4).foregroundStyle(.secondary) }
@@ -307,6 +327,8 @@ private struct NativeLinksView: View {
             .searchable(text: $query, prompt: "搜索标题、用户或正文")
             .refreshable { await load() }.navigationTitle("链接广场")
             .task { if records.isEmpty { await load() } }
+            .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "square.and.pencil") } }
+            .sheet(isPresented: $showingForm) { LinkForm(item: editing) { await load() } }
             .confirmationDialog("确定删除这个帖子吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
                 Button("取消", role: .cancel) { deleting = nil }
@@ -338,6 +360,166 @@ private struct NativeLinksView: View {
     private func remove(_ item: SavedLink) async {
         do { try await session.delete("saved-links/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
         catch { self.error = session.message(for: error); deleting = nil }
+    }
+}
+
+private struct TaskDetail: View {
+    @EnvironmentObject private var session: NativeSession
+    @State var item: TaskRecord
+    let onChange: () async -> Void
+    @State private var error: String?
+    @State private var updating = false
+
+    var body: some View {
+        List {
+            if let error { Text(error).foregroundStyle(.red) }
+            Section("任务信息") {
+                LabeledContent("订单号", value: item.orderNo); LabeledContent("店铺", value: item.shopName)
+                LabeledContent("负责人", value: item.ownerName); LabeledContent("任务时间", value: shortDate(item.taskTime))
+                LabeledContent("刷单数量", value: "\(item.orderCount)")
+            }
+            Section("金额") {
+                LabeledContent("本金", value: money(item.principalAmount)); LabeledContent("佣金", value: money(item.commissionAmount)); LabeledContent("礼品", value: money(item.giftAmount))
+            }
+            Section("状态") {
+                Toggle("已签收", isOn: Binding(get: { item.signedStatus == "completed" }, set: { value in Task { await update("signed_status", value) } })).disabled(updating)
+                Toggle("已结算", isOn: Binding(get: { item.settlementStatus == "completed" }, set: { value in Task { await update("settlement_status", value) } })).disabled(updating)
+            }
+            if let note = item.note, !note.isEmpty { Section("备注") { Text(note) } }
+        }.navigationTitle(item.shopName).navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func update(_ field: String, _ done: Bool) async {
+        updating = true; defer { updating = false }
+        do {
+            let _: EmptyResponse = try await session.send("task-bookkeeping/records/batch-status", method: "PATCH", body: ["record_ids": [item.id], "field": field, "value": done ? "completed" : "pending"], allowEmpty: true)
+            let refreshed: TaskRecord = try await session.get("task-bookkeeping/records/\(item.id)"); item = refreshed; await onChange()
+        } catch { self.error = session.message(for: error) }
+    }
+}
+
+private struct TaskForm: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let item: TaskRecord?
+    let onSave: () async -> Void
+    @State private var shopName: String
+    @State private var ownerName: String
+    @State private var principal: String
+    @State private var orderCount: Int
+    @State private var commission: String
+    @State private var gift: String
+    @State private var signed: Bool
+    @State private var settled: Bool
+    @State private var note: String
+    @State private var saving = false
+    @State private var error: String?
+
+    init(item: TaskRecord?, onSave: @escaping () async -> Void) {
+        self.item = item; self.onSave = onSave
+        _shopName = State(initialValue: item?.shopName ?? ""); _ownerName = State(initialValue: item?.ownerName ?? "")
+        _principal = State(initialValue: item.map { String($0.principalAmount) } ?? "0")
+        _orderCount = State(initialValue: item?.orderCount ?? 1); _commission = State(initialValue: item.map { String($0.commissionAmount) } ?? "0")
+        _gift = State(initialValue: item.map { String($0.giftAmount) } ?? "0"); _signed = State(initialValue: item?.signedStatus == "completed")
+        _settled = State(initialValue: item?.settlementStatus == "completed"); _note = State(initialValue: item?.note ?? "")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let error { Text(error).foregroundStyle(.red) }
+                Section("基本信息") { TextField("店铺名称", text: $shopName); TextField("负责人", text: $ownerName); Stepper("刷单数量：\(orderCount)", value: $orderCount, in: 1...9999) }
+                Section("金额") {
+                    TextField("本金", text: $principal).keyboardType(.decimalPad); TextField("佣金", text: $commission).keyboardType(.decimalPad); TextField("礼品花费", text: $gift).keyboardType(.decimalPad)
+                }
+                Section("状态") { Toggle("已签收", isOn: $signed); Toggle("已结算", isOn: $settled) }
+                Section("备注") { TextField("任务说明", text: $note, axis: .vertical).lineLimit(3...8) }
+            }
+            .navigationTitle(item == nil ? "新增任务" : "编辑任务").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || shopName.isEmpty || ownerName.isEmpty) } }
+        }
+    }
+
+    private func save() async {
+        saving = true; error = nil; defer { saving = false }
+        let taskTime: Any = item?.taskTime ?? NSNull()
+        let taskNote: Any = note.isEmpty ? NSNull() : note
+        let body: [String: Any] = ["task_time": taskTime, "shop_name": shopName, "owner_name": ownerName, "principal_amount": Double(principal) ?? 0, "order_count": orderCount, "commission_amount": Double(commission) ?? 0, "gift_amount": Double(gift) ?? 0, "signed_status": signed ? "completed" : "pending", "settlement_status": settled ? "completed" : "pending", "note": taskNote]
+        do { let _: TaskRecord = try await session.send(item.map { "task-bookkeeping/records/\($0.id)" } ?? "task-bookkeeping/records", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() }
+        catch { self.error = session.message(for: error) }
+    }
+}
+
+private struct ExpenseForm: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let item: CompanyExpense?; let onSave: () async -> Void
+    @State private var amount: String; @State private var category: String; @State private var account: String
+    @State private var scope: String; @State private var description: String; @State private var employeePaid: Bool
+    @State private var saving = false; @State private var error: String?
+    private let categories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
+
+    init(item: CompanyExpense?, onSave: @escaping () async -> Void) {
+        self.item = item; self.onSave = onSave; _amount = State(initialValue: item.map { String($0.amount) } ?? "")
+        _category = State(initialValue: item?.category ?? "办公用品"); _account = State(initialValue: item?.paymentAccount ?? "公司卡")
+        _scope = State(initialValue: item?.expenseScope ?? "公共费用"); _description = State(initialValue: item?.description ?? "")
+        _employeePaid = State(initialValue: item?.paymentType == "employee")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let error { Text(error).foregroundStyle(.red) }
+                Section("金额") { TextField("0.00", text: $amount).keyboardType(.decimalPad).font(.title2.bold()) }
+                Section("消费信息") { Picker("分类", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }; TextField("消费说明", text: $description); Toggle("员工垫付", isOn: $employeePaid) }
+                Section("补充信息") { TextField("付款账户", text: $account); TextField("费用归属", text: $scope) }
+            }
+            .navigationTitle(item == nil ? "记一笔" : "编辑记账").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || (Double(amount) ?? 0) <= 0) } }
+        }
+    }
+
+    private func save() async {
+        saving = true; error = nil; defer { saving = false }
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+        let body: [String: Any] = ["expense_date": item?.expenseDate ?? formatter.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": employeePaid ? "employee" : "company", "payment_account": account.isEmpty ? "公司卡" : account, "expense_scope": scope.isEmpty ? "公共费用" : scope, "description": description.isEmpty ? category : description]
+        do { let _: CompanyExpense = try await session.send(item.map { "company-expenses/\($0.id)" } ?? "company-expenses", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() }
+        catch { self.error = session.message(for: error) }
+    }
+}
+
+private struct LinkForm: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let item: SavedLink?; let onSave: () async -> Void
+    @State private var title: String; @State private var category: String; @State private var url: String
+    @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
+
+    init(item: SavedLink?, onSave: @escaping () async -> Void) {
+        self.item = item; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
+        _url = State(initialValue: item?.url ?? ""); _description = State(initialValue: item?.description ?? ""); _pinned = State(initialValue: item?.isPinned ?? false)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let error { Text(error).foregroundStyle(.red) }
+                Section("帖子") { TextField("标题", text: $title); TextField("分类", text: $category); TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) }
+                Section("正文") { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }
+            }
+            .navigationTitle(item == nil ? "发布帖子" : "编辑帖子").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
+        }
+    }
+
+    private func save() async {
+        saving = true; error = nil; defer { saving = false }
+        let savedCategory: Any = category.isEmpty ? NSNull() : category
+        let savedDescription: Any = description.isEmpty ? NSNull() : description
+        let savedURL: Any = url.isEmpty ? NSNull() : url
+        let body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
+        do { let _: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() }
+        catch { self.error = session.message(for: error) }
     }
 }
 
