@@ -554,6 +554,7 @@ private struct NativeTaskView: View {
                     }
                 }
             }
+            }
             .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
             .refreshable { await load(reset: true) }
