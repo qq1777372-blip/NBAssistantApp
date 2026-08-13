@@ -112,7 +112,7 @@ private struct NativeTabView: View {
             NativeBottomBar(selected: $selected)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .sheet(item: $destination) { destination in
+        .fullScreenCover(item: $destination) { destination in
             NavigationStack { destination.view }
         }
     }
@@ -195,7 +195,7 @@ private struct NativeWorkbenchView: View {
         }
         .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
         .searchable(text: $query, prompt: "搜索功能")
-        .sheet(item: $destination) { target in NavigationStack { target.view } }
+        .fullScreenCover(item: $destination) { target in NavigationStack { target.view } }
     }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
         groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
@@ -299,7 +299,6 @@ private struct NativeHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("首页").font(.system(size: 25, weight: .bold)); Spacer(); Button { destination = .appSettings } label: { Image(systemName: "moon") }; Button { destination = .alerts } label: { Image(systemName: "bell.badge.fill") }; Button { destination = .search } label: { Image(systemName: "magnifyingglass") } }.padding(.horizontal, 16)
                     HStack { Text("常用功能").font(.headline); Spacer(); Text("自定义").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 12) {
                         HomeShortcut("生意参谋", "chart.bar", .teal) { destination = .sycm }
@@ -309,18 +308,26 @@ private struct NativeHomeView: View {
                         HomeShortcut("链接广场", "link", .blue) { destination = .links }
                         HomeShortcut("AI 工作台", "sparkles", .cyan) { destination = .aiWorkspace }
                         HomeShortcut("全部功能", "circle.grid.3x3", .gray) { destination = .workbench }
-                    }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 16)).padding(.horizontal, 16)
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 3), spacing: 1) { HomeMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--"); HomeMetric("累计利润", dashboard.profitTotal.map(money) ?? "--"); HomeMetric("当月钉钉利润", dashboard.monthProfit.map(money) ?? "--"); HomeMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--"); HomeMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--"); HomeMetric("库存成本", dashboard.stockCost.map(money) ?? "--") }.padding(1).background(Color(.separator)).clipShape(RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
                     HStack { Text("钉钉月度利润").font(.headline); Spacer(); Text("查看趋势 ›").font(.caption).foregroundStyle(.blue) }.padding(.horizontal, 16)
-                    HStack(alignment: .bottom, spacing: 18) { ForEach(Array(dashboard.months.enumerated()), id: \.offset) { _, item in VStack { RoundedRectangle(cornerRadius: 5).fill(item.value < 0 ? Color.red : Color.blue).frame(maxWidth: .infinity).frame(height: item.height); Text(item.label).font(.system(size: 9)).foregroundStyle(.secondary) } } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    HStack(alignment: .bottom, spacing: 18) { ForEach(Array(dashboard.months.enumerated()), id: \.offset) { _, item in VStack { RoundedRectangle(cornerRadius: 5).fill(item.value < 0 ? Color.red : Color.blue).frame(maxWidth: .infinity).frame(height: item.height); Text(item.label).font(.system(size: 9)).foregroundStyle(.secondary) } } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 16)).padding(.horizontal, 16)
                     HStack { Text("待办提醒").font(.headline); Spacer(); Text("查看全部").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
                     VStack(spacing: 0) { HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: dashboard.pendingSigned.map(String.init) ?? "--"); Divider(); HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: dashboard.pendingSettlement.map(String.init) ?? "--"); Divider(); HomeTodo(color: .blue, title: "库存预警", detail: "可用库存已达到预警值", value: dashboard.lowStock.map(String.init) ?? "--") }.background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
                     if let dashboardError { Text(dashboardError).font(.caption).foregroundStyle(.red).padding(.horizontal, 16) }
                 }.padding(.vertical, 14)
             }
             .background(Color(.systemGroupedBackground))
-            .navigationBarHidden(true)
+            .navigationTitle("首页")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { destination = .appSettings } label: { Image(systemName: "moon") }
+                    Button { destination = .alerts } label: { Image(systemName: "bell.badge.fill") }
+                    Button { destination = .search } label: { Image(systemName: "magnifyingglass") }
+                }
+            }
             .task { await loadDashboard() }
             .refreshable { await loadDashboard() }
         }
@@ -503,14 +510,11 @@ private struct NativeTaskView: View {
     @State private var summary: TaskSummary?
     @State private var query = ""
     @State private var loading = false
+    @State private var loadingMore = false
+    @State private var hasMore = true
     @State private var error: String?
     @State private var editing: TaskRecord?
     @State private var showingForm = false
-
-    private var filtered: [TaskRecord] {
-        guard !query.isEmpty else { return records }
-        return records.filter { "\($0.orderNo) \($0.shopName) \($0.ownerName) \($0.note ?? "")".localizedCaseInsensitiveContains(query) }
-    }
 
     var body: some View {
         NavigationStack {
@@ -530,7 +534,7 @@ private struct NativeTaskView: View {
                 }
                 if let error { Text(error).foregroundStyle(.red) }
                 Section("任务记录") {
-                    ForEach(filtered) { item in
+                    ForEach(records) { item in
                         NavigationLink {
                             TaskDetail(item: item) { await load() }
                         } label: { VStack(alignment: .leading, spacing: 8) {
@@ -544,24 +548,43 @@ private struct NativeTaskView: View {
                         }.padding(.vertical, 4) }
                         .swipeActions(edge: .leading) { Button("编辑") { editing = item; showingForm = true }.tint(.blue) }
                     }
+                    if hasMore {
+                        HStack { Spacer(); if loadingMore { ProgressView() } else { Text("加载更多") }; Spacer() }
+                            .onAppear { Task { await loadMore() } }
+                    }
                 }
             }
             .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
-            .refreshable { await load() }
+            .refreshable { await load(reset: true) }
             .navigationTitle("任务")
             .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
             .sheet(isPresented: $showingForm) { TaskForm(item: editing) { await load() } }
-            .task { if records.isEmpty { await load() } }
+            .task { if records.isEmpty { await load(reset: true) } }
+            .task(id: query) { if !records.isEmpty { try? await Task.sleep(nanoseconds: 300_000_000); guard !Task.isCancelled else { return }; await load(reset: true) } }
         }
     }
 
-    private func load() async {
+    private func load(reset: Bool = false) async {
         loading = true; error = nil; defer { loading = false }
         do {
-            async let fetchedRecords: [TaskRecord] = session.get("task-bookkeeping/records")
+            let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            let path = "task-bookkeeping/records?offset=0&limit=30\(keyword.isEmpty ? "" : "&q=\(keyword)")"
+            async let fetchedRecords: [TaskRecord] = session.get(path)
             async let fetchedSummary: TaskSummary = session.get("task-bookkeeping/summary")
             records = try await fetchedRecords; summary = try await fetchedSummary
+            hasMore = records.count == 30
+        } catch { self.error = session.message(for: error) }
+    }
+
+    private func loadMore() async {
+        guard hasMore, !loadingMore else { return }
+        loadingMore = true; defer { loadingMore = false }
+        do {
+            let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            let path = "task-bookkeeping/records?offset=\(records.count)&limit=30\(keyword.isEmpty ? "" : "&q=\(keyword)")"
+            let more: [TaskRecord] = try await session.get(path)
+            let ids = Set(records.map(\.id)); records.append(contentsOf: more.filter { !ids.contains($0.id) }); hasMore = more.count == 30
         } catch { self.error = session.message(for: error) }
     }
 }
@@ -581,6 +604,7 @@ private struct NativeLedgerView: View {
         guard !query.isEmpty else { return records }
         return records.filter { "\($0.expenseNo) \($0.category) \($0.paymentAccount) \($0.description) \($0.submitterName)".localizedCaseInsensitiveContains(query) }
     }
+    private var groupedByDay: [(String, [CompanyExpense])] { Dictionary(grouping: filtered, by: { $0.expenseDate }).map { ($0.key, $0.value.sorted { $0.id > $1.id }) }.sorted { $0.0 > $1.0 } }
 
     var body: some View {
         NavigationStack {
@@ -595,8 +619,9 @@ private struct NativeLedgerView: View {
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("流水") {
-                    ForEach(filtered) { item in
+                ForEach(groupedByDay, id: \.0) { day, items in
+                    Section(dayLabel(day)) {
+                    ForEach(items) { item in
                         NavigationLink { ExpenseDetail(item: item) } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: item.paymentType == "company" ? "building.columns" : "person.crop.circle")
@@ -620,7 +645,7 @@ private struct NativeLedgerView: View {
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }.navigationTitle("公司记账")
             .task { if records.isEmpty { await load() } }
-            .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
+            .toolbar { Button { editing = nil; showingForm = true } label: { Label("记一笔", systemImage: "plus") } }
             .sheet(isPresented: $showingForm) { ExpenseForm(item: editing) { await load() } }
             .confirmationDialog("确定删除这条记账记录吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
@@ -642,6 +667,13 @@ private struct NativeLedgerView: View {
         do { try await session.delete("company-expenses/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
         catch { self.error = session.message(for: error); deleting = nil }
     }
+}
+
+private func dayLabel(_ value: String) -> String {
+    let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+    if value == formatter.string(from: Date()) { return "今天  \(value)" }
+    if let date = formatter.date(from: value), let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()), formatter.string(from: yesterday) == formatter.string(from: date) { return "昨天  \(value)" }
+    return value
 }
 
 private struct NativeLinksView: View {
@@ -667,6 +699,7 @@ private struct NativeLinksView: View {
             List {
                 if let error { Text(error).foregroundStyle(.red) }
                 ForEach(filtered) { item in
+                    NavigationLink { SavedLinkDetail(item: item) } label: {
                     VStack(alignment: .leading, spacing: 9) {
                         HStack(spacing: 9) {
                             Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white)
@@ -683,8 +716,29 @@ private struct NativeLinksView: View {
                         Text(item.title).font(.headline)
                         if let description = item.description, !description.isEmpty { Text(description).lineLimit(4).foregroundStyle(.secondary) }
                         if let url = item.url, let destination = URL(string: url) { Link(destination: destination) { Label(destination.host ?? url, systemImage: "safari") }.font(.subheadline) }
-                        if !item.images.isEmpty { Label("\(item.images.count) 张图片", systemImage: "photo.on.rectangle").font(.caption).foregroundStyle(.secondary) }
+                        if !item.images.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in
+                                        if let url = nativeImageURL(image.url) {
+                                            AsyncImage(url: url) { phase in
+                                                switch phase {
+                                                case .success(let value): value.resizable().scaledToFill()
+                                                case .failure: Image(systemName: "photo").foregroundStyle(.secondary)
+                                                default: ProgressView()
+                                                }
+                                            }
+                                            .frame(width: 84, height: 84)
+                                            .clipped()
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }.padding(.vertical, 6)
+                    }
+                    }
                 }
                 if hasMore && query.isEmpty {
                     Button { Task { await loadMore() } } label: { HStack { Spacer(); if loadingMore { ProgressView() } else { Text("加载更多") }; Spacer() } }.disabled(loadingMore)
@@ -905,7 +959,7 @@ private struct NativeMineView: View {
                 VStack(spacing: 0) {
                     VStack(spacing: 14) {
                         HStack { Text("个人中心").font(.headline); Spacer(); Button { destination = .appSettings } label: { Image(systemName: "moon") }; Button { destination = .alerts } label: { Image(systemName: "bell") }; Button { destination = .appSettings } label: { Image(systemName: "gearshape") } }.font(.title3)
-                        Button { destination = .profile } label: { HStack(spacing: 13) { ZStack { RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.9)); Text(String((session.currentUser?.displayName ?? session.username).prefix(2))).fontWeight(.bold).foregroundStyle(.blue) }.frame(width: 58, height: 58); VStack(alignment: .leading, spacing: 6) { HStack { Text(session.currentUser?.displayName ?? session.username).font(.title3.bold()); Text(session.currentUser?.role == "superadmin" ? "超级管理员" : "当前账号").font(.caption2).padding(4).background(.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 4)) }; Text("账号 \(session.username)").font(.caption).opacity(0.8) }; Spacer(); Image(systemName: "chevron.right") } }.buttonStyle(.plain).padding(14).background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 12))
+                        Button { destination = .profile } label: { HStack(spacing: 13) { NativeRemoteImage(url: session.currentUser?.avatarURL, size: 58); VStack(alignment: .leading, spacing: 6) { HStack { Text(session.currentUser?.displayName ?? session.username).font(.title3.bold()); Text(session.currentUser?.role == "superadmin" ? "超级管理员" : "当前账号").font(.caption2).padding(4).background(.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 4)) }; Text("账号 \(session.username)").font(.caption).opacity(0.8) }; Spacer(); Image(systemName: "chevron.right") } }.buttonStyle(.plain).padding(14).background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 12))
                         HStack { MineStat(value: "18", title: "可用功能"); Divider().overlay(.white.opacity(0.3)); MineStat(value: "\(session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0)", title: "授权模块"); Divider().overlay(.white.opacity(0.3)); MineStat(value: session.currentUser?.role == "superadmin" ? "超级" : "普通", title: "账号身份") }.frame(height: 58).padding(.horizontal, 8).background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
                     }.padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 22).foregroundStyle(.white).background(Color(red: 0.08, green: 0.55, blue: 0.95))
                     VStack(alignment: .leading, spacing: 10) {
@@ -914,7 +968,7 @@ private struct NativeMineView: View {
                         Button("退出登录", role: .destructive) { Task { await session.logout() } }.frame(maxWidth: .infinity).padding().background(.background, in: RoundedRectangle(cornerRadius: 12))
                     }.padding(16)
                 }
-            }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).sheet(item: $destination) { target in
+            }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).fullScreenCover(item: $destination) { target in
                 NavigationStack { target.view }
             }
         }
@@ -994,11 +1048,11 @@ private struct LicenseCreateForm: View {
 
 private struct NativePeerShopsView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [PeerShopRecord] = []; @State private var query = ""; @State private var error: String?; @State private var editing: PeerShopRecord?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.shopName) \($0.shopURL ?? "") \($0.remark ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { PeerShopDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.shopName).fontWeight(.medium); Text(row.shopURL ?? row.remark ?? "-").font(.caption).foregroundStyle(.secondary) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("同行店铺").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { PeerShopForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.shopName) \($0.shopURL ?? "") \($0.remark ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { PeerShopDetail(item: row) } label: { HStack(spacing: 10) { NativeRemoteImage(url: row.imageURL, size: 48); VStack(alignment: .leading, spacing: 5) { Text(row.shopName).fontWeight(.medium); Text(row.shopURL ?? row.remark ?? "-").font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("同行店铺").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { PeerShopForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("peer-shops") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: PeerShopRecord) async { do { try await session.delete("peer-shops/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
-private struct PeerShopDetail: View { let item: PeerShopRecord; var body: some View { List { LabeledContent("店铺", value: item.shopName); LabeledContent("链接", value: item.shopURL ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("同行店铺详情") } }
+private struct PeerShopDetail: View { let item: PeerShopRecord; var body: some View { List { NativeRemoteImage(url: item.imageURL, size: 180); LabeledContent("店铺", value: item.shopName); LabeledContent("链接", value: item.shopURL ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("同行店铺详情") } }
 private struct PeerShopForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: PeerShopRecord?; let onSave: () async -> Void; @State private var name: String; @State private var url: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
     init(item: PeerShopRecord?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.shopName ?? ""); _url = State(initialValue: item?.shopURL ?? ""); _remark = State(initialValue: item?.remark ?? "") }
@@ -1009,11 +1063,11 @@ private struct PeerShopForm: View {
 
 private struct NativeLicenseRecordsView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [LicenseRecordItem] = []; @State private var query = ""; @State private var error: String?; @State private var editing: LicenseRecordItem?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.subjectName) \($0.creditCode) \($0.legalRepresentative ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { LicenseRecordDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.subjectName).fontWeight(.medium); Text(row.creditCode).font(.caption).foregroundStyle(.secondary); Text(row.expiryDate ?? "未填写到期日").font(.caption2).foregroundStyle(.secondary) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("执照档案").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { LicenseRecordForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.subjectName) \($0.creditCode) \($0.legalRepresentative ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { LicenseRecordDetail(item: row) } label: { HStack(spacing: 10) { NativeRemoteImage(url: row.imageURL, size: 48); VStack(alignment: .leading, spacing: 5) { Text(row.subjectName).fontWeight(.medium); Text(row.creditCode).font(.caption).foregroundStyle(.secondary); Text(row.expiryDate ?? "未填写到期日").font(.caption2).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("执照档案").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { LicenseRecordForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("license-records") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: LicenseRecordItem) async { do { try await session.delete("license-records/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
-private struct LicenseRecordDetail: View { let item: LicenseRecordItem; var body: some View { List { LabeledContent("主体名称", value: item.subjectName); LabeledContent("统一信用代码", value: item.creditCode); LabeledContent("法定代表人", value: item.legalRepresentative ?? "-"); LabeledContent("签发日期", value: item.issueDate ?? "-"); LabeledContent("到期日期", value: item.expiryDate ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("执照详情") } }
+private struct LicenseRecordDetail: View { let item: LicenseRecordItem; var body: some View { List { NativeRemoteImage(url: item.imageURL, size: 220); LabeledContent("主体名称", value: item.subjectName); LabeledContent("统一信用代码", value: item.creditCode); LabeledContent("法定代表人", value: item.legalRepresentative ?? "-"); LabeledContent("签发日期", value: item.issueDate ?? "-"); LabeledContent("到期日期", value: item.expiryDate ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("执照详情") } }
 private struct LicenseRecordForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: LicenseRecordItem?; let onSave: () async -> Void; @State private var subject: String; @State private var code: String; @State private var legal: String; @State private var issue: String; @State private var expiry: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
     init(item: LicenseRecordItem?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _subject = State(initialValue: item?.subjectName ?? ""); _code = State(initialValue: item?.creditCode ?? ""); _legal = State(initialValue: item?.legalRepresentative ?? ""); _issue = State(initialValue: item?.issueDate ?? ""); _expiry = State(initialValue: item?.expiryDate ?? ""); _remark = State(initialValue: item?.remark ?? "") }
@@ -1482,8 +1536,8 @@ private struct TaskOwner: Codable, Identifiable { let id: Int; let name: String 
 private struct AdminUserRecord: Codable, Identifiable { let id: Int; let username: String; let displayName: String?; let role: String; let isActive: Bool; let permissions: [String: String]?; enum CodingKeys: String, CodingKey { case id, username, role, permissions; case displayName = "display_name"; case isActive = "is_active" } }
 private struct LicenseDevice: Codable, Identifiable { var id: String { deviceID }; let deviceID: String; let deviceName: String?; let platform: String?; let appVersion: String?; enum CodingKeys: String, CodingKey { case platform; case deviceID = "device_id"; case deviceName = "device_name"; case appVersion = "app_version" } }
 private struct LicenseRecord: Codable, Identifiable { var id: String { licenseKey }; let licenseKey: String; let planName: String; let status: String; let maxDevices: Int; let expiresAt: String?; let devices: [LicenseDevice]; enum CodingKeys: String, CodingKey { case status, devices; case licenseKey = "license_key"; case planName = "plan_name"; case maxDevices = "max_devices"; case expiresAt = "expires_at" } }
-private struct PeerShopRecord: Codable, Identifiable { let id: Int; let shopName: String; let shopURL: String?; let remark: String?; enum CodingKeys: String, CodingKey { case id, remark; case shopName = "shop_name"; case shopURL = "shop_url" } }
-private struct LicenseRecordItem: Codable, Identifiable { let id: Int; let subjectName: String; let creditCode: String; let legalRepresentative: String?; let issueDate: String?; let expiryDate: String?; let remark: String?; enum CodingKeys: String, CodingKey { case id, remark; case subjectName = "subject_name"; case creditCode = "credit_code"; case legalRepresentative = "legal_representative"; case issueDate = "issue_date"; case expiryDate = "expiry_date" } }
+private struct PeerShopRecord: Codable, Identifiable { let id: Int; let shopName: String; let shopURL: String?; let remark: String?; let imageURL: String?; enum CodingKeys: String, CodingKey { case id, remark; case shopName = "shop_name"; case shopURL = "shop_url"; case imageURL = "image_url" } }
+private struct LicenseRecordItem: Codable, Identifiable { let id: Int; let subjectName: String; let creditCode: String; let legalRepresentative: String?; let issueDate: String?; let expiryDate: String?; let remark: String?; let imageURL: String?; enum CodingKeys: String, CodingKey { case id, remark; case subjectName = "subject_name"; case creditCode = "credit_code"; case legalRepresentative = "legal_representative"; case issueDate = "issue_date"; case expiryDate = "expiry_date"; case imageURL = "image_url" } }
 private struct MobileDevice: Codable, Identifiable { let id: Int; let deviceName: String; let primaryCard: String?; let secondaryCard: String?; let remark: String?; enum CodingKeys: String, CodingKey { case id, remark; case deviceName = "device_name"; case primaryCard = "primary_card"; case secondaryCard = "secondary_card" } }
 private struct AccountUsage: Codable, Identifiable { let id: Int; let accountName: String; let phoneNumber: String?; let deviceName: String?; let usageNotes: String?; let isBanned: Bool; let bannedReason: String?; enum CodingKeys: String, CodingKey { case id; case accountName = "account_name"; case phoneNumber = "phone_number"; case deviceName = "device_name"; case usageNotes = "usage_notes"; case isBanned = "is_banned"; case bannedReason = "banned_reason" } }
 private struct WarehouseSummary: Codable { let warehouseCount:Int;let productCount:Int;let totalQuantity:Int;let totalCost:Double;let lowStockCount:Int;let pendingOutboundCount:Int;let todayInboundQuantity:Int;let todayOutboundQuantity:Int; enum CodingKeys:String,CodingKey{case warehouseCount="warehouse_count",productCount="product_count",totalQuantity="total_quantity",totalCost="total_cost",lowStockCount="low_stock_count",pendingOutboundCount="pending_outbound_count",todayInboundQuantity="today_inbound_quantity",todayOutboundQuantity="today_outbound_quantity"} }
@@ -1549,6 +1603,24 @@ private struct ExpenseSummary: Codable {
 }
 
 private struct SavedLinkImage: Codable { let url: String; let name: String? }
+private struct SavedLinkDetail: View {
+    let item: SavedLink
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 10) {
+                    Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white).frame(width: 38, height: 38).background(Color.blue, in: Circle())
+                    VStack(alignment: .leading) { Text(item.authorUsername).fontWeight(.semibold); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }
+                }
+                Text(item.title).font(.title3.bold())
+                if let category = item.category, !category.isEmpty { Label(category, systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
+            }
+            if let description = item.description, !description.isEmpty { Section("正文") { Text(description).textSelection(.enabled) } }
+            if let value = item.url, let url = URL(string: value) { Section("链接") { Link(destination: url) { Label(value, systemImage: "safari") }.lineLimit(3) } }
+            if !item.images.isEmpty { Section("图片") { ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in if let url = nativeImageURL(image.url) { AsyncImage(url: url) { phase in if case .success(let value) = phase { value.resizable().scaledToFit() } else { ProgressView().frame(maxWidth: .infinity, minHeight: 120) } }.frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 10)) } } } }
+        }.navigationTitle("链接详情").navigationBarTitleDisplayMode(.inline)
+    }
+}
 private struct SavedLink: Codable, Identifiable {
     let id: Int; let title: String; let url: String?; let category: String?; let description: String?
     let isPinned: Bool; let authorUsername: String; let images: [SavedLinkImage]; let createdAt: String; let updatedAt: String
@@ -1708,8 +1780,8 @@ struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
 struct CurrentUserSession: Decodable {
-    let id: Int; let username: String; let displayName: String?; let role: String; let permissions: [String: String]
-    enum CodingKeys: String, CodingKey { case id, username, role, permissions; case displayName = "display_name" }
+    let id: Int; let username: String; let displayName: String?; let avatarURL: String?; let role: String; let permissions: [String: String]
+    enum CodingKeys: String, CodingKey { case id, username, role, permissions; case displayName = "display_name"; case avatarURL = "avatar_url" }
 }
 private struct CaptchaWebView: UIViewRepresentable {
     let data: String
@@ -1745,6 +1817,29 @@ private struct HomeMetric: View { let title: String; let value: String; init(_ t
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
+private func nativeImageURL(_ value: String) -> URL? {
+    if let absolute = URL(string: value), absolute.scheme != nil { return absolute }
+    let path = value.hasPrefix("/") ? String(value.dropFirst()) : value
+    return URL(string: "https://xiaoxu666.asia/\(path)")
+}
+private struct NativeRemoteImage: View {
+    let url: String?
+    let size: CGFloat
+    var body: some View {
+        Group {
+            if let url, let imageURL = nativeImageURL(url) {
+                AsyncImage(url: imageURL) { phase in
+                    if case .success(let image) = phase { image.resizable().scaledToFill() }
+                    else { placeholder }
+                }
+            } else { placeholder }
+        }
+        .frame(width: size, height: size)
+        .background(Color.white.opacity(0.2))
+        .clipShape(RoundedRectangle(cornerRadius: min(size * 0.2, 12)))
+    }
+    private var placeholder: some View { Image(systemName: "photo").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
+}
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
 private func jobStatus(_ value: String) -> String { switch value { case "queued": return "排队中"; case "running": return "运行中"; case "completed": return "已完成"; case "failed": return "失败"; case "cancelled": return "已取消"; default: return value } }
 private func jobColor(_ value: String) -> Color { switch value { case "completed": return .green; case "failed": return .red; case "queued", "running": return .blue; default: return .secondary } }
