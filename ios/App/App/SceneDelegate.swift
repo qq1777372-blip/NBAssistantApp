@@ -113,7 +113,7 @@ private struct NativeTabView: View {
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .fullScreenCover(item: $destination) { destination in
-            NavigationStack { destination.view }
+            NativeDestinationHost(destination: destination)
         }
     }
 }
@@ -167,6 +167,17 @@ private enum NativeDestination: String, Identifiable {
     }
 }
 
+private struct NativeDestinationHost: View {
+    let destination: NativeDestination
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            destination.view
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+        }
+    }
+}
+
 private struct NativeWorkbenchView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var query = ""
@@ -195,7 +206,7 @@ private struct NativeWorkbenchView: View {
         }
         .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
         .searchable(text: $query, prompt: "搜索功能")
-        .fullScreenCover(item: $destination) { target in NavigationStack { target.view } }
+        .fullScreenCover(item: $destination) { target in NativeDestinationHost(destination: target) }
     }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
         groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
@@ -969,7 +980,7 @@ private struct NativeMineView: View {
                     }.padding(16)
                 }
             }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).fullScreenCover(item: $destination) { target in
-                NavigationStack { target.view }
+                NativeDestinationHost(destination: target)
             }
         }
     }
@@ -1854,10 +1865,7 @@ private struct NativeRemoteImage: View {
     var body: some View {
         Group {
             if let url, let imageURL = nativeImageURL(url) {
-                AsyncImage(url: imageURL) { phase in
-                    if case .success(let image) = phase { image.resizable().scaledToFill() }
-                    else { placeholder }
-                }
+                CachedRemoteImage(url: imageURL, contentMode: .fill, placeholder: placeholder)
             } else { placeholder }
         }
         .frame(width: size, height: size)
@@ -1865,6 +1873,27 @@ private struct NativeRemoteImage: View {
         .clipShape(RoundedRectangle(cornerRadius: min(size * 0.2, 12)))
     }
     private var placeholder: some View { Image(systemName: "photo").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
+}
+
+private final class NativeImageCache {
+    static let shared = NSCache<NSURL, UIImage>()
+}
+private struct CachedRemoteImage<Placeholder: View>: View {
+    let url: URL
+    let contentMode: ContentMode
+    let placeholder: Placeholder
+    @State private var image: UIImage?
+    var body: some View {
+        Group {
+            if let image { Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode) }
+            else { placeholder }
+        }
+        .task(id: url) {
+            if let cached = NativeImageCache.shared.object(forKey: url as NSURL) { image = cached; return }
+            guard let (data, _) = try? await URLSession.shared.data(from: url), let loaded = UIImage(data: data) else { return }
+            NativeImageCache.shared.setObject(loaded, forKey: url as NSURL); image = loaded
+        }
+    }
 }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
 private func jobStatus(_ value: String) -> String { switch value { case "queued": return "排队中"; case "running": return "运行中"; case "completed": return "已完成"; case "failed": return "失败"; case "cancelled": return "已取消"; default: return value } }
