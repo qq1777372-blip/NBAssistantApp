@@ -310,18 +310,26 @@ private struct NativeHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("常用功能").font(.headline); Spacer(); Text("自定义").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 12) {
+                    HStack { Text("常用功能").font(.headline); Spacer(); Button("全部") { destination = .workbench }.font(.subheadline) }.padding(.horizontal, 16)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 16) {
                         HomeShortcut("生意参谋", "chart.bar", .teal) { destination = .sycm }
                         HomeShortcut("任务记录", "doc.text", .indigo) { destination = .tasks }
                         HomeShortcut("店铺账号", "storefront", .mint) { destination = .shops }
                         HomeShortcut("仓储管理", "cube.box", .orange) { destination = .warehouse }
                         HomeShortcut("链接广场", "link", .blue) { destination = .links }
                         HomeShortcut("AI 工作台", "sparkles", .cyan) { destination = .aiWorkspace }
-                        HomeShortcut("全部功能", "circle.grid.3x3", .gray) { destination = .workbench }
-                    }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 16)).padding(.horizontal, 16)
+                        }.padding(.horizontal, 16)
+                    }
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 3), spacing: 1) { HomeMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--"); HomeMetric("累计利润", dashboard.profitTotal.map(money) ?? "--"); HomeMetric("当月钉钉利润", dashboard.monthProfit.map(money) ?? "--"); HomeMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--"); HomeMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--"); HomeMetric("库存成本", dashboard.stockCost.map(money) ?? "--") }.padding(1).background(Color(.separator)).clipShape(RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    VStack(spacing: 0) {
+                        HomeMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--"); Divider()
+                        HomeMetric("累计利润", dashboard.profitTotal.map(money) ?? "--"); Divider()
+                        HomeMetric("当月钉钉利润", dashboard.monthProfit.map(money) ?? "--"); Divider()
+                        HomeMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--"); Divider()
+                        HomeMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--"); Divider()
+                        HomeMetric("库存成本", dashboard.stockCost.map(money) ?? "--")
+                    }.background(.background).clipShape(RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 16)
                     HStack { Text("钉钉月度利润").font(.headline); Spacer(); Text("查看趋势 ›").font(.caption).foregroundStyle(.blue) }.padding(.horizontal, 16)
                     HStack(alignment: .bottom, spacing: 18) { ForEach(Array(dashboard.months.enumerated()), id: \.offset) { _, item in VStack { RoundedRectangle(cornerRadius: 5).fill(item.value < 0 ? Color.red : Color.blue).frame(maxWidth: .infinity).frame(height: item.height); Text(item.label).font(.system(size: 9)).foregroundStyle(.secondary) } } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 16)).padding(.horizontal, 16)
                     HStack { Text("待办提醒").font(.headline); Spacer(); Text("查看全部").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
@@ -1849,7 +1857,7 @@ private struct HomeDashboard {
     private static var currentMonth: String { let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "Asia/Shanghai"); formatter.dateFormat = "yyyy-MM"; return formatter.string(from: Date()) }
 }
 
-private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1).foregroundStyle(.primary) } }.buttonStyle(.plain) } }
+private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1).foregroundStyle(.primary) } }.frame(width: 64).buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
