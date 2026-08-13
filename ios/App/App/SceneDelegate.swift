@@ -40,6 +40,8 @@ private struct NativeLoginView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var account = "admin"
     @State private var password = ""
+    @State private var totpCode = ""
+    @State private var captchaCode = ""
 
     var body: some View {
         NavigationStack {
@@ -55,8 +57,13 @@ private struct NativeLoginView: View {
                         .nativeField()
                     SecureField("密码", text: $password)
                         .textContentType(.password).nativeField()
+                    TextField("动态验证码（未启用可留空）", text: $totpCode)
+                        .keyboardType(.numberPad).textContentType(.oneTimeCode).nativeField()
+                    if let image = session.captchaImage {
+                        HStack { Image(uiImage: image).resizable().scaledToFit().frame(height: 48); TextField("图形验证码", text: $captchaCode).textInputAutocapitalization(.never).nativeField(); Button { Task { await session.loadCaptcha() } } label: { Image(systemName: "arrow.clockwise") } }
+                    }
                     Button(session.loading ? "登录中..." : "登录") {
-                        Task { await session.login(username: account, password: password) }
+                        Task { await session.login(username: account, password: password, totpCode: totpCode, captchaCode: captchaCode) }
                     }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .frame(maxWidth: .infinity)
@@ -1325,17 +1332,33 @@ private struct MultipartFile { let field: String; let filename: String; let data
     @Published var loggedIn = false
     @Published var loading = false
     @Published var error: String?
+    @Published var captchaImage: UIImage?
     @Published var username = "管理员"
+    private var captchaID: String?
     private let origin = URL(string: "https://xiaoxu666.asia")!
     private let decoder: JSONDecoder = { let value = JSONDecoder(); value.keyDecodingStrategy = .useDefaultKeys; return value }()
 
-    func login(username: String, password: String) async {
+    func login(username: String, password: String, totpCode: String = "", captchaCode: String = "") async {
         loading = true; error = nil; defer { loading = false }
         do {
-            let body: [String: Any] = ["username": username, "password": password, "totp_code": NSNull(), "captcha_id": NSNull(), "captcha_code": NSNull()]
+            let cleanTOTP = totpCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanCaptcha = captchaCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let savedTOTP: Any = cleanTOTP.isEmpty ? NSNull() : cleanTOTP
+            let savedCaptchaID: Any = captchaID ?? NSNull()
+            let savedCaptchaCode: Any = cleanCaptcha.isEmpty ? NSNull() : cleanCaptcha
+            let body: [String: Any] = ["username": username, "password": password, "totp_code": savedTOTP, "captcha_id": savedCaptchaID, "captcha_code": savedCaptchaCode]
             let _: EmptyResponse = try await send("auth/login", method: "POST", body: body, allowEmpty: true)
-            self.username = username; loggedIn = true
-        } catch { self.error = "登录失败，请检查账号、密码和网络。" }
+            self.username = username; captchaID = nil; captchaImage = nil; loggedIn = true
+        } catch { self.error = message(for: error); if case NativeAPIError.server(428, _) = error { await loadCaptcha() } }
+    }
+
+    func loadCaptcha() async {
+        do {
+            let response: LoginCaptcha = try await get("auth/captcha")
+            captchaID = response.captchaID
+            let encoded = response.imageData.components(separatedBy: ",").last ?? response.imageData
+            captchaImage = Data(base64Encoded: encoded).flatMap(UIImage.init(data:))
+        } catch { self.error = message(for: error) }
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T { try await send(path, method: "GET") }
@@ -1423,6 +1446,7 @@ private func outboundStatus(_ value: String) -> String { switch value { case "pe
 private func nextStatus(_ value: String) -> String? { switch value { case "pending": return "picking"; case "picking": return "checked"; case "checked": return "packed"; case "packed": return "shipped"; default: return nil } }
 private struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
+private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 private func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func shortTimestamp(_ value: TimeInterval) -> String { let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm"; return formatter.string(from: Date(timeIntervalSince1970: value)) }
