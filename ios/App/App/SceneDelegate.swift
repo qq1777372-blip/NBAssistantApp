@@ -4,6 +4,7 @@ import SwiftUI
 import AVFoundation
 import UniformTypeIdentifiers
 import WebKit
+import ImageIO
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -300,16 +301,16 @@ private struct NativeHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("常用功能").font(.headline); Spacer(); Button("全部") { destination = .workbench }.font(.subheadline) }.padding(.horizontal, 16)
+                    Text("常用功能").font(.headline).padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
-                        HomeShortcut("生意参谋", "chart.bar", .teal) { destination = .sycm }
-                        HomeShortcut("任务记录", "doc.text", .indigo) { destination = .tasks }
-                        HomeShortcut("店铺账号", "storefront", .mint) { destination = .shops }
-                        HomeShortcut("仓储管理", "cube.box", .orange) { destination = .warehouse }
+                        HomeShortcut("生意参谋", "chart.bar.fill", .teal) { destination = .sycm }
+                        HomeShortcut("任务记录", "doc.text.fill", .indigo) { destination = .tasks }
+                        HomeShortcut("店铺账号", "storefront.fill", .mint) { destination = .shops }
+                        HomeShortcut("仓储管理", "shippingbox.fill", .orange) { destination = .warehouse }
                         HomeShortcut("链接广场", "link", .blue) { destination = .links }
                         HomeShortcut("AI 工作台", "sparkles", .cyan) { destination = .aiWorkspace }
-                        HomeShortcut("公司记账", "creditcard", .blue) { destination = .expenses }
-                        HomeShortcut("同行店铺", "building.2", .green) { destination = .peers }
+                        HomeShortcut("负责人", "person.2.fill", .green) { destination = .owners }
+                        HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { destination = .workbench }
                     }.padding(.horizontal, 16)
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -766,33 +767,13 @@ private struct NativeLinksView: View {
                 if !loading && error == nil && filtered.isEmpty { LinkEmptyView(searching: !query.isEmpty) }
                 ForEach(filtered) { item in
                     NavigationLink { SavedLinkDetail(item: item) } label: {
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack(spacing: 9) {
-                            SavedLinkAvatar(item: item)
-                            VStack(alignment: .leading) { Text(item.authorUsername).font(.subheadline.bold()); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }
-                            Spacer()
-                            if item.isPinned { Image(systemName: "pin.fill").foregroundStyle(.orange) }
-                            Menu {
-                                Button("编辑") { editing = item; showingForm = true }
-                                Button(item.isPinned ? "取消置顶" : "置顶") { Task { await togglePin(item) } }
-                                Button("删除", role: .destructive) { deleting = item }
-                            } label: { Image(systemName: "ellipsis") }
+                        SavedLinkFeedRow(item: item) {
+                            editing = item; showingForm = true
+                        } onTogglePin: {
+                            Task { await togglePin(item) }
+                        } onDelete: {
+                            deleting = item
                         }
-                        Text(item.title).font(.headline)
-                        let bodyText = savedLinkPlainText(item.description)
-                        if !bodyText.isEmpty { Text(bodyText).lineLimit(4).fixedSize(horizontal: false, vertical: true).foregroundStyle(.secondary) }
-                        if let url = item.url, !url.isEmpty {
-                            HStack(alignment: .top, spacing: 6) {
-                                Image(systemName: "link").padding(.top, 2)
-                                Text(url).lineLimit(3).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                            }
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if let image = item.images.first, let url = nativeImageURL(image.url) { CachedRemoteImage(url: url, contentMode: .fit, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 170).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8)).clipShape(RoundedRectangle(cornerRadius: 8)); if item.images.count > 1 { Text("共 \(item.images.count) 张图片").font(.caption).foregroundStyle(.secondary) } }
-                    }
-                    .padding(.vertical, 8)
                     }
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
                 }
@@ -984,6 +965,7 @@ private struct LinkForm: View {
     @State private var importing = false; @State private var images: [URL] = []
     @State private var previewing = false
     @State private var editCommand: ArticleEditCommand?
+    @State private var pendingInlineImages: [PendingInlineImage] = []
 
     init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
         self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
@@ -996,29 +978,106 @@ private struct LinkForm: View {
                 if let error { Text(error).foregroundStyle(.red) }
                 Section(article ? "文章" : "帖子") { TextField("标题", text: $title); TextField("分类", text: $category); if !article { TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) } }
                 if article { Section { Picker("模式", selection: $previewing) { Text("写作").tag(false); Text("预览").tag(true) }.pickerStyle(.segmented) } }
-                if article && !previewing { Section("编写工具") { ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 10) { ArticleTool("H1", "一级标题") { editCommand = ArticleEditCommand(.heading1) }; ArticleTool("H2", "二级标题") { editCommand = ArticleEditCommand(.heading2) }; ArticleTool("bold", "粗体") { editCommand = ArticleEditCommand(.bold) }; ArticleTool("italic", "斜体") { editCommand = ArticleEditCommand(.italic) }; ArticleTool("text.quote", "引用") { editCommand = ArticleEditCommand(.quote) }; ArticleTool("list.bullet", "列表") { editCommand = ArticleEditCommand(.list) }; ArticleTool("link", "链接") { editCommand = ArticleEditCommand(.link) }; ArticleTool("text.aligncenter", "居中") { editCommand = ArticleEditCommand(.center) }; ArticleTool("photo", "插图") { importing = true } }.padding(.vertical, 4) } } }
+                if article && !previewing { articleToolbar }
                 if article && previewing { Section("文章预览") { Text(markdownPreview).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) } }
                 else { Section(article ? "文章正文" : "正文") { if article { NativeArticleTextEditor(text: $description, command: $editCommand).frame(minHeight: 280) } else { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) } } }
                 Section("配图") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } }
             }
             .navigationTitle(item == nil ? (article ? "发布文章" : "发布帖子") : (article ? "编辑文章" : "编辑帖子")).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in images = Array(((try? result.get()) ?? []).prefix(9)) }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: receiveImages)
+        }
+    }
+
+    private var articleToolbar: some View {
+        Section("编写工具") {
+            HStack(spacing: 4) {
+                Menu {
+                    Button { editCommand = ArticleEditCommand(.heading1) } label: { Label("一级标题", systemImage: "textformat.size.larger") }
+                    Button { editCommand = ArticleEditCommand(.heading2) } label: { Label("二级标题", systemImage: "textformat.size.smaller") }
+                    Button { editCommand = ArticleEditCommand(.body) } label: { Label("正文", systemImage: "textformat") }
+                    Button { editCommand = ArticleEditCommand(.quote) } label: { Label("引用", systemImage: "text.quote") }
+                } label: { ArticleToolIcon("textformat", "文字") }.frame(maxWidth: .infinity)
+
+                Menu {
+                    Button { editCommand = ArticleEditCommand(.list) } label: { Label("项目列表", systemImage: "list.bullet") }
+                    Button { editCommand = ArticleEditCommand(.numberedList) } label: { Label("数字列表", systemImage: "list.number") }
+                    Button { editCommand = ArticleEditCommand(.checklist) } label: { Label("待办列表", systemImage: "checklist") }
+                } label: { ArticleToolIcon("list.bullet", "列表") }.frame(maxWidth: .infinity)
+
+                Menu {
+                    Button { editCommand = ArticleEditCommand(.bold) } label: { Label("粗体", systemImage: "bold") }
+                    Button { editCommand = ArticleEditCommand(.italic) } label: { Label("斜体", systemImage: "italic") }
+                    Button { editCommand = ArticleEditCommand(.strikethrough) } label: { Label("删除线", systemImage: "strikethrough") }
+                    Button { editCommand = ArticleEditCommand(.link) } label: { Label("链接", systemImage: "link") }
+                    Button { editCommand = ArticleEditCommand(.center) } label: { Label("居中", systemImage: "text.aligncenter") }
+                } label: { ArticleToolIcon("paintbrush", "样式") }.frame(maxWidth: .infinity)
+
+                Menu {
+                    ForEach(["😀", "👍", "✅", "📌", "💡", "🎉"], id: \.self) { value in
+                        Button(value) { editCommand = ArticleEditCommand(.emoji(value)) }
+                    }
+                } label: { ArticleToolIcon("face.smiling", "表情") }.frame(maxWidth: .infinity)
+
+                Button { importing = true } label: { ArticleToolIcon("photo", "图片") }.frame(maxWidth: .infinity).buttonStyle(.plain)
+            }
+            .padding(.vertical, 2)
         }
     }
 
     private var markdownPreview: AttributedString { savedLinkMarkdown(description) }
 
+    private func receiveImages(_ result: Result<[URL], Error>) {
+        let remaining = max(9 - images.count, 0)
+        let selected = Array(((try? result.get()) ?? []).prefix(remaining))
+        guard !selected.isEmpty else { return }
+        images.append(contentsOf: selected)
+        guard article else { return }
+        let placeholders = selected.map { PendingInlineImage(token: "native-image://\(UUID().uuidString)", url: $0) }
+        pendingInlineImages.append(contentsOf: placeholders)
+        editCommand = ArticleEditCommand(.images(placeholders))
+    }
+
     private func save() async {
         saving = true; error = nil; defer { saving = false }
         let normalizedCategory = article && !category.lowercased().hasPrefix("tutorial:") ? "tutorial:\(category.isEmpty ? "未分类" : category)" : category
         let savedCategory: Any = normalizedCategory.isEmpty ? NSNull() : normalizedCategory
-        let savedDescription: Any = description.isEmpty ? NSNull() : description
+        var initialDescription = description
+        for pending in pendingInlineImages {
+            let token = NSRegularExpression.escapedPattern(for: pending.token)
+            initialDescription = initialDescription.replacingOccurrences(of: "!\\[[^\\]]*\\]\\(\(token)\\)", with: "", options: .regularExpression)
+        }
+        let savedDescription: Any = initialDescription.isEmpty ? NSNull() : initialDescription
         let articleURL = description.components(separatedBy: .whitespacesAndNewlines).first { $0.hasPrefix("http://") || $0.hasPrefix("https://") } ?? ""
         let savedURL: Any = (article ? articleURL : url).isEmpty ? NSNull() : (article ? articleURL : url)
-        let body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
-        do { let saved: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body); if !images.isEmpty { var files: [MultipartFile] = []; for image in images { guard image.startAccessingSecurityScopedResource() else { continue }; defer { image.stopAccessingSecurityScopedResource() }; files.append(MultipartFile(field: "images", filename: image.lastPathComponent, data: try Data(contentsOf: image), mime: "image/jpeg")) }; if !files.isEmpty { let _: SavedLink = try await session.uploadMany(path: "saved-links/\(saved.id)/images/append", files: files) } }; await onSave(); dismiss() }
-        catch { self.error = session.message(for: error) }
+        var body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
+        do {
+            var saved: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body)
+            if !images.isEmpty {
+                var files: [MultipartFile] = []
+                for image in images {
+                    guard image.startAccessingSecurityScopedResource() else { continue }
+                    defer { image.stopAccessingSecurityScopedResource() }
+                    let mime = UTType(filenameExtension: image.pathExtension)?.preferredMIMEType ?? "image/jpeg"
+                    files.append(MultipartFile(field: "images", filename: image.lastPathComponent, data: try Data(contentsOf: image), mime: mime))
+                }
+                if !files.isEmpty { saved = try await session.uploadMany(path: "saved-links/\(saved.id)/images/append", files: files) }
+            }
+            if article && !pendingInlineImages.isEmpty {
+                var finalDescription = description
+                let uploaded = Array(saved.images.suffix(pendingInlineImages.count))
+                guard uploaded.count == pendingInlineImages.count else { throw NativeImageError.invalidResponse }
+                for (pending, remote) in zip(pendingInlineImages, uploaded) {
+                    finalDescription = finalDescription.replacingOccurrences(of: "(\(pending.token))", with: "(\(remote.url))")
+                }
+                if finalDescription != description {
+                    body["description"] = finalDescription
+                    let _: SavedLink = try await session.send("saved-links/\(saved.id)", method: "PUT", body: body)
+                    description = finalDescription
+                }
+            }
+            await onSave(); dismiss()
+        } catch { self.error = session.message(for: error) }
     }
 }
 
@@ -1035,7 +1094,7 @@ private struct NativeMineView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(session.currentUser?.displayName ?? session.username).font(.headline).foregroundStyle(.primary)
                                 Text("账号 \(session.username)").font(.subheadline).foregroundStyle(.secondary)
-                                Text(accountSummary).font(.caption).foregroundStyle(.secondary)
+                                Text(roleLabel(session.currentUser?.role ?? "viewer")).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
@@ -1043,7 +1102,17 @@ private struct NativeMineView: View {
                         .padding(.vertical, 6)
                     }
                     .buttonStyle(.plain)
+
+                    HStack(spacing: 0) {
+                        MineAccountMetric(value: "\(authorizedModuleCount)", title: "授权模块")
+                        Divider().frame(height: 30)
+                        MineAccountMetric(value: session.currentUser?.role == "superadmin" ? "超级" : "普通", title: "账号身份")
+                        Divider().frame(height: 30)
+                        MineAccountMetric(value: "在线", title: "登录状态")
+                    }
+                    .padding(.vertical, 2)
                 }
+                .listRowBackground(Color.blue.opacity(0.07))
 
                 Section("账户与访问") {
                     MineEntry("账号与权限", "person.badge.key", .blue) { destination = .users }
@@ -1075,11 +1144,7 @@ private struct NativeMineView: View {
         Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
     }
 
-    private var accountSummary: String {
-        let role = session.currentUser?.role == "superadmin" ? "超级管理员" : "当前账号"
-        let count = session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0
-        return "\(role) · 已授权 \(count) 个模块"
-    }
+    private var authorizedModuleCount: Int { session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0 }
 }
 
 private struct LinkLoadErrorView: View {
@@ -1088,16 +1153,15 @@ private struct LinkLoadErrorView: View {
     var body: some View { VStack(spacing: 10) { Label("加载失败", systemImage: "wifi.exclamationmark").font(.headline); Text(message).font(.caption).foregroundStyle(.secondary); Button("重新加载", action: retry) }.frame(maxWidth: .infinity).padding(.vertical, 20) }
 }
 
-private struct ArticleTool: View {
-    let symbol: String
-    let title: String
-    let action: () -> Void
-    init(_ symbol: String, _ title: String, action: @escaping () -> Void) { self.symbol = symbol; self.title = title; self.action = action }
-    var body: some View { Button(action: action) { VStack(spacing: 5) { if symbol == "H1" || symbol == "H2" { Text(symbol).font(.headline) } else { Image(systemName: symbol).font(.headline) }; Text(title).font(.caption2) }.frame(width: 52, height: 48) }.buttonStyle(.bordered) }
+private struct ArticleToolIcon: View { let symbol: String; let title: String; init(_ symbol: String, _ title: String) { self.symbol = symbol; self.title = title }; var body: some View { VStack(spacing: 5) { Image(systemName: symbol).font(.headline); Text(title).font(.caption2) }.frame(minWidth: 48, minHeight: 46).contentShape(Rectangle()) } }
+
+private struct PendingInlineImage {
+    let token: String
+    let url: URL
 }
 
 private struct ArticleEditCommand: Identifiable {
-    enum Kind { case heading1, heading2, bold, italic, quote, list, link, center }
+    enum Kind { case heading1, heading2, body, bold, italic, strikethrough, quote, list, numberedList, checklist, link, center, emoji(String), images([PendingInlineImage]) }
     let id = UUID()
     let kind: Kind
     init(_ kind: Kind) { self.kind = kind }
@@ -1138,17 +1202,104 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
             switch kind {
             case .bold: replacement = "**\(selected.isEmpty ? "粗体文字" : selected)**"
             case .italic: replacement = "*\(selected.isEmpty ? "斜体文字" : selected)*"
+            case .strikethrough: replacement = "~~\(selected.isEmpty ? "删除线文字" : selected)~~"
             case .link: replacement = "[\(selected.isEmpty ? "链接文字" : selected)](https://)"
             case .heading1: replacement = "# \(selected.isEmpty ? "一级标题" : selected)"
             case .heading2: replacement = "## \(selected.isEmpty ? "二级标题" : selected)"
+            case .body: replacement = (selected.isEmpty ? "正文" : selected).replacingOccurrences(of: #"(?m)^(#{1,6}\s+|>\s+|[-*]\s+|\d+\.\s+|- \[[ xX]\]\s+)"#, with: "", options: .regularExpression)
             case .quote: replacement = "> \(selected.isEmpty ? "引用内容" : selected.replacingOccurrences(of: "\n", with: "\n> "))"
             case .list: replacement = "- \(selected.isEmpty ? "列表项目" : selected.replacingOccurrences(of: "\n", with: "\n- "))"
+            case .numberedList: replacement = (selected.isEmpty ? ["列表项目"] : selected.components(separatedBy: "\n")).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+            case .checklist: replacement = "- [ ] \(selected.isEmpty ? "待办事项" : selected.replacingOccurrences(of: "\n", with: "\n- [ ] "))"
             case .center: replacement = "\n::: align-center\n\(selected.isEmpty ? "居中内容" : selected)\n:::\n"
+            case .emoji(let value): replacement = value
+            case .images(let images): replacement = images.map { image in
+                let alt = image.url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "]", with: "")
+                return "\n![\(alt.isEmpty ? "图片" : alt)](\(image.token))\n"
+            }.joined(separator: "\n")
             }
             view.text = ns.replacingCharacters(in: range, with: replacement)
             view.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
             parent.text = view.text
             view.becomeFirstResponder()
+        }
+    }
+}
+
+private struct SavedLinkFeedRow: View {
+    let item: SavedLink
+    let onEdit: () -> Void
+    let onTogglePin: () -> Void
+    let onDelete: () -> Void
+    private var isArticle: Bool { item.category?.lowercased().hasPrefix("tutorial:") == true }
+    private var category: String? { item.category?.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]).trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
+    private var bodyText: String { savedLinkPlainText(item.description) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
+                SavedLinkAvatar(item: item)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.authorUsername).font(.subheadline.bold())
+                    Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if item.isPinned { Label("置顶", systemImage: "pin.fill").font(.caption2).foregroundStyle(.orange) }
+                Menu {
+                    Button("编辑") { onEdit() }
+                    Button(item.isPinned ? "取消置顶" : "置顶") { onTogglePin() }
+                    Button("删除", role: .destructive) { onDelete() }
+                } label: { Image(systemName: "ellipsis").font(.headline).frame(width: 28, height: 28).contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: 6) {
+                Image(systemName: isArticle ? "doc.text" : "bubble.left").foregroundStyle(.blue)
+                Text(item.title).font(.headline).lineLimit(2)
+                if let category { Text(category).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+            }
+            if !bodyText.isEmpty {
+                Text(bodyText).lineLimit(4).fixedSize(horizontal: false, vertical: true).foregroundStyle(.secondary)
+                if bodyText.count > 120 { Text("全文").font(.subheadline).foregroundStyle(.blue) }
+            }
+            if !item.images.isEmpty { SavedLinkImageGrid(images: item.images) }
+            if let url = item.url, !url.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "safari").foregroundStyle(.blue)
+                    Text(linkHost(url) ?? "打开原链接").font(.subheadline).foregroundStyle(.blue).lineLimit(1)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+private struct SavedLinkImageGrid: View {
+    let images: [SavedLinkImage]
+    var body: some View {
+        let urls = images.compactMap { nativeImageURL($0.url) }
+        if urls.isEmpty {
+            EmptyView()
+        } else if urls.count == 1 {
+            CachedRemoteImage(url: urls[0], contentMode: .fit, maxPixelSize: 1400, placeholder: ProgressView())
+                .frame(maxWidth: .infinity).frame(height: 180)
+                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            HStack(spacing: 4) {
+                ForEach(Array(urls.prefix(3).enumerated()), id: \.offset) { index, url in
+                    ZStack {
+                        CachedRemoteImage(url: url, contentMode: .fill, maxPixelSize: 600, placeholder: ProgressView())
+                        if index == 2 && urls.count > 3 {
+                            Color.black.opacity(0.38)
+                            Text("+\(urls.count - 3)").font(.headline).foregroundStyle(.white)
+                        }
+                    }
+                    .frame(maxWidth: .infinity).frame(height: 118)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+            }
         }
     }
 }
@@ -1165,12 +1316,22 @@ private struct SavedLinkAvatar: View {
     private var initials: some View { Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.blue) }
 }
 
+private func linkHost(_ value: String) -> String? {
+    guard let url = URL(string: value), let host = url.host else { return nil }
+    return host.replacingOccurrences(of: "www.", with: "", options: [.caseInsensitive, .anchored])
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 private struct LinkEmptyView: View {
     let searching: Bool
     var body: some View { VStack(spacing: 10) { Image(systemName: searching ? "magnifyingglass" : "link").font(.title2).foregroundStyle(.secondary); Text(searching ? "没有搜索结果" : "暂无内容").font(.headline); Text(searching ? "请尝试其他关键词" : "发布第一条帖子或文章").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 28) }
 }
 
 private struct MineEntry: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HStack(spacing: 12) { Image(systemName: icon).foregroundStyle(color).frame(width: 24); Text(title).foregroundStyle(.primary); Spacer(); Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) } }.buttonStyle(.plain) } }
+private struct MineAccountMetric: View { let value: String; let title: String; var body: some View { VStack(spacing: 3) { Text(value).font(.subheadline.weight(.semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity) } }
 
 private struct NativeShopsView: View {
     @EnvironmentObject private var session: NativeSession
@@ -1820,14 +1981,47 @@ private struct SavedLinkDetail: View {
                 HStack(spacing: 10) { SavedLinkAvatar(item: item).frame(width: 38, height: 38); VStack(alignment: .leading, spacing: 3) { Text(item.authorUsername).fontWeight(.semibold); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }; Spacer() }
                 Text(item.title).font(.title.bold())
                 if let category = item.category, !category.isEmpty { Label(category.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]), systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
-                let bodyText = savedLinkPlainText(item.description)
-                if !bodyText.isEmpty { Text(savedLinkMarkdown(bodyText)).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-                ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
+                let segments = savedLinkContentSegments(item.description)
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                    switch segment {
+                    case .text(let value):
+                        if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text(savedLinkMarkdown(value)).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                    case .image(let url, _):
+                        Button { previewURL = nativeImageURL(url) } label: { SavedLinkDetailImage(url: url) }.buttonStyle(.plain)
+                    }
+                }
+                let inlineURLs = Set(segments.compactMap { segment -> String? in if case .image(let url, _) = segment { return nativeImageURL(url)?.absoluteString }; return nil })
+                ForEach(Array(item.images.filter { image in guard let value = nativeImageURL(image.url)?.absoluteString else { return true }; return !inlineURLs.contains(value) }.enumerated()), id: \.offset) { _, image in Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
                 if let value = item.url, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) { Link(destination: url) { Label("打开原链接", systemImage: "safari").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).padding(.top, 8) }
             }.padding(20)
         }.background(Color(.systemBackground)).navigationTitle("预览").navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) { NavigationStack { ZStack { Color.black.ignoresSafeArea(); if let previewURL { CachedRemoteImage(url: previewURL, contentMode: .fit, placeholder: ProgressView().tint(.white)) } }.toolbar { Button("关闭") { previewURL = nil } } } }
     }
+}
+
+private enum SavedLinkContentSegment {
+    case text(String)
+    case image(url: String, alt: String)
+}
+
+private func savedLinkContentSegments(_ value: String?) -> [SavedLinkContentSegment] {
+    guard let source = value, !source.isEmpty else { return [] }
+    let pattern = #"!\[([^\]]*)\]\(([^\)]+)\)|\[([^\]]+)\]\(((?:/?saved-links/)[^\)]+)\)"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return [.text(source)] }
+    let ns = source as NSString
+    let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+    guard !matches.isEmpty else { return [.text(source)] }
+    var result: [SavedLinkContentSegment] = []
+    var cursor = 0
+    for match in matches {
+        if match.range.location > cursor { result.append(.text(ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor)))) }
+        let altRange = match.range(at: match.range(at: 1).location == NSNotFound ? 3 : 1)
+        let urlRange = match.range(at: match.range(at: 2).location == NSNotFound ? 4 : 2)
+        result.append(.image(url: ns.substring(with: urlRange), alt: altRange.location == NSNotFound ? "图片" : ns.substring(with: altRange)))
+        cursor = match.range.location + match.range.length
+    }
+    if cursor < ns.length { result.append(.text(ns.substring(from: cursor))) }
+    return result
 }
 private struct SavedLinkDetailImage: View {
     let url: String
@@ -2031,16 +2225,17 @@ private struct HomeDashboard {
     } }
 }
 
-private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1).foregroundStyle(.primary) } }.frame(width: 64).buttonStyle(.plain) } }
+private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 7) { Image(systemName: icon).font(.system(size: 23, weight: .semibold)).foregroundStyle(color).frame(width: 36, height: 30); Text(title).font(.caption2).lineLimit(1).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 58) }.buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
 private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { Image(systemName: icon).font(.subheadline.weight(.semibold)).foregroundStyle(color).frame(width: 30, height: 30).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7)); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func nativeImageURL(_ value: String) -> URL? {
-    if let absolute = URL(string: value), absolute.scheme != nil { return absolute }
-    let path = value.hasPrefix("/") ? String(value.dropFirst()) : value
-    return URL(string: "https://xiaoxu666.asia/\(path)")
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let base = URL(string: "https://xiaoxu666.asia/")!
+    return URL(string: trimmed, relativeTo: base)?.absoluteURL
 }
 private struct NativeRemoteImage: View {
     let url: String?
@@ -2048,7 +2243,7 @@ private struct NativeRemoteImage: View {
     var body: some View {
         Group {
             if let url, let imageURL = nativeImageURL(url) {
-                CachedRemoteImage(url: imageURL, contentMode: .fill, placeholder: placeholder)
+                CachedRemoteImage(url: imageURL, contentMode: .fill, maxPixelSize: size * 3, placeholder: placeholder)
             } else { placeholder }
         }
         .frame(width: size, height: size)
@@ -2058,23 +2253,115 @@ private struct NativeRemoteImage: View {
     private var placeholder: some View { Image(systemName: "photo").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
 }
 
-private final class NativeImageCache {
-    static let shared = NSCache<NSURL, UIImage>()
+private enum NativeImageError: Error { case invalidResponse, invalidImage }
+
+private actor NativeImagePipeline {
+    static let shared = NativeImagePipeline()
+
+    private let memoryCache = NSCache<NSString, UIImage>()
+    private let session: URLSession
+    private var inFlight: [String: Task<UIImage, Error>] = [:]
+
+    private init() {
+        memoryCache.countLimit = 200
+        memoryCache.totalCostLimit = 64 * 1024 * 1024
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024, diskCapacity: 256 * 1024 * 1024)
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 60
+        configuration.waitsForConnectivity = true
+        session = URLSession(configuration: configuration)
+    }
+
+    func image(for url: URL, maxPixelSize: CGFloat) async throws -> UIImage {
+        let bucket = max(Int(maxPixelSize.rounded(.up)), 120)
+        let key = "\(url.absoluteString)#\(bucket)"
+        if let cached = memoryCache.object(forKey: key as NSString) { return cached }
+        if let task = inFlight[key] { return try await task.value }
+
+        let session = session
+        let task = Task.detached(priority: .utility) {
+            var lastError: Error = NativeImageError.invalidResponse
+            for attempt in 0..<3 {
+                do {
+                    var request = URLRequest(url: url)
+                    request.cachePolicy = .returnCacheDataElseLoad
+                    request.timeoutInterval = 20
+                    request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+                    let (data, response) = try await session.data(for: request)
+                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NativeImageError.invalidResponse }
+                    if let mime = http.mimeType, !mime.lowercased().hasPrefix("image/") { throw NativeImageError.invalidImage }
+                    guard let image = NativeImagePipeline.downsample(data: data, maxPixelSize: bucket) else { throw NativeImageError.invalidImage }
+                    return image
+                } catch {
+                    lastError = error
+                    guard attempt < 2, !Task.isCancelled else { break }
+                    try? await Task.sleep(nanoseconds: UInt64(350 * (1 << attempt)) * 1_000_000)
+                }
+            }
+            throw lastError
+        }
+        inFlight[key] = task
+        do {
+            let image = try await task.value
+            inFlight[key] = nil
+            let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? bucket * bucket * 4
+            memoryCache.setObject(image, forKey: key as NSString, cost: cost)
+            return image
+        } catch {
+            inFlight[key] = nil
+            throw error
+        }
+    }
+
+    private static func downsample(data: Data, maxPixelSize: Int) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        return UIImage(cgImage: image)
+    }
 }
+
 private struct CachedRemoteImage<Placeholder: View>: View {
     let url: URL
     let contentMode: ContentMode
+    var maxPixelSize: CGFloat = 1600
     let placeholder: Placeholder
     @State private var image: UIImage?
+    @State private var loadedURL: URL?
+    @State private var failed = false
+    @State private var retryID = 0
     var body: some View {
-        Group {
+        ZStack {
             if let image { Image(uiImage: image).resizable().aspectRatio(contentMode: contentMode) }
-            else { placeholder }
+            else {
+                placeholder
+                if failed {
+                    Button { failed = false; retryID += 1 } label: {
+                        Image(systemName: "arrow.clockwise.circle.fill").font(.title2).symbolRenderingMode(.hierarchical)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("重新加载图片")
+                }
+            }
         }
-        .task(id: url) {
-            if let cached = NativeImageCache.shared.object(forKey: url as NSURL) { image = cached; return }
-            guard let (data, _) = try? await URLSession.shared.data(from: url), let loaded = UIImage(data: data) else { return }
-            NativeImageCache.shared.setObject(loaded, forKey: url as NSURL); image = loaded
+        .task(id: "\(url.absoluteString)#\(retryID)") {
+            if loadedURL != url { image = nil; failed = false }
+            do {
+                image = try await NativeImagePipeline.shared.image(for: url, maxPixelSize: maxPixelSize)
+                loadedURL = url
+                failed = false
+            } catch is CancellationError {
+            } catch {
+                failed = true
+            }
         }
     }
 }
