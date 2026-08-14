@@ -623,12 +623,14 @@ private struct NativeQuickLedgerView: View {
                 Text("消费分类").font(.headline)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], spacing: 10) { ForEach(categories, id: \.self) { value in Button(value) { category = value }.buttonStyle(.borderedProminent).tint(category == value ? .blue : .gray.opacity(0.25)) } }
                 TextField("写一句消费说明（可选）", text: $note).textFieldStyle(.roundedBorder)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) { ForEach(["1", "2", "3", "⌫", "4", "5", "6", "C", "7", "8", "9", "0", "."], id: \.self) { key in Button(key) { pressKey(key) }.font(.title2.weight(.semibold)).frame(maxWidth: .infinity).frame(height: 48).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10)) } }
                 if let error { Text(error).foregroundStyle(.red) }
                 Button { Task { await save() } } label: { Label(saving ? "保存中..." : "记账", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(saving || (Double(amount) ?? 0) <= 0)
             }.padding() }.background(Color(.systemGroupedBackground)).navigationTitle("记一笔").toolbar { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") } }
         }
     }
     private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch let requestError { error = session.message(for: requestError) } }
+    private func pressKey(_ key: String) { switch key { case "C": amount = ""; case "⌫": if !amount.isEmpty { amount.removeLast() }; case ".": if !amount.contains(".") { amount = amount.isEmpty ? "0." : amount + "." }; default: amount = amount == "0" ? key : amount + key } }
 }
 
 private struct NativeLedgerView: View {
