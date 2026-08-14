@@ -31,13 +31,12 @@ private struct NativeRootView: View {
     var body: some View {
         Group {
             if session.restoring {
-                ProgressView("正在恢复登录状态…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(.systemGroupedBackground))
+                NativeLaunchView()
             } else if session.loggedIn { NativeTabView().environmentObject(session) }
             else { NativeLoginView().environmentObject(session) }
         }
         .tint(Color(red: 0.08, green: 0.49, blue: 0.96))
+        .animation(.easeOut(duration: 0.25), value: session.restoring)
         .task { await session.restoreSession() }
     }
 }
@@ -112,9 +111,33 @@ private struct NativeTabView: View {
             NativeBottomBar(selected: $selected)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .fullScreenCover(item: $destination) { destination in
+        .sheet(item: $destination) { destination in
             NativeDestinationHost(destination: destination)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .interactiveDismissDisabled(false)
         }
+    }
+}
+
+private struct NativeLaunchView: View {
+    @State private var animated = false
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground).ignoresSafeArea()
+            VStack(spacing: 20) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 22).fill(Color.blue).frame(width: 84, height: 84).scaleEffect(animated ? 1 : 0.88).shadow(color: .blue.opacity(0.25), radius: animated ? 20 : 8, y: 8)
+                    Image(systemName: "sparkles.rectangle.stack.fill").font(.system(size: 40, weight: .semibold)).foregroundStyle(.white).rotationEffect(.degrees(animated ? 0 : -8))
+                }
+                VStack(spacing: 6) { Text("NBAssistant").font(.title2.bold()); Text("内部管理工作台").font(.subheadline).foregroundStyle(.secondary) }
+                ProgressView().controlSize(.regular).padding(.top, 4)
+            }
+        }
+        .onAppear { withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) { animated = true } }
+        .transition(.opacity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("正在启动 NBAssistant")
     }
 }
 
@@ -690,7 +713,6 @@ private struct NativeLedgerView: View {
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }.navigationTitle("公司记账")
             .task { if records.isEmpty { await load() } }
-            .toolbar { Button { editing = nil; showingForm = true } label: { Label("记一笔", systemImage: "plus") } }
             .sheet(isPresented: $showingForm) { ExpenseForm(item: editing) { await load() } }
             .confirmationDialog("确定删除这条记账记录吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
@@ -732,23 +754,27 @@ private struct NativeLinksView: View {
     @State private var deleting: SavedLink?
     @State private var editing: SavedLink?
     @State private var showingForm = false
+    @State private var tab = "latest"
+    @State private var publishingArticle = false
     private let pageSize = 50
 
     private var filtered: [SavedLink] {
-        let rows = query.isEmpty ? records : records.filter { "\($0.title) \($0.url ?? "") \($0.category ?? "") \($0.description ?? "") \($0.authorUsername)".localizedCaseInsensitiveContains(query) }
+        let scoped = records.filter { tab == "latest" || (tab == "with-images" && !$0.images.isEmpty) || (tab == "mine" && $0.authorUsername == session.username) }
+        let rows = query.isEmpty ? scoped : scoped.filter { "\($0.title) \($0.url ?? "") \($0.category ?? "") \($0.description ?? "") \($0.authorUsername)".localizedCaseInsensitiveContains(query) }
         return rows.sorted { $0.isPinned != $1.isPinned ? $0.isPinned : $0.updatedAt > $1.updatedAt }
     }
 
     var body: some View {
         NavigationStack {
             List {
-                if let error { Text(error).foregroundStyle(.red) }
+                Section { Picker("筛选", selection: $tab) { Text("最新").tag("latest"); Text("带图").tag("with-images"); Text("我发布的").tag("mine") }.pickerStyle(.segmented) }.listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                if let error { Section { VStack(spacing: 10) { Label("加载失败", systemImage: "wifi.exclamationmark").font(.headline); Text(error).font(.caption).foregroundStyle(.secondary); Button("重新加载") { Task { await load() } } }.frame(maxWidth: .infinity).padding(.vertical, 20) } }
+                if !loading && error == nil && filtered.isEmpty { Section { VStack(spacing: 10) { Image(systemName: query.isEmpty ? "link" : "magnifyingglass").font(.title2).foregroundStyle(.secondary); Text(query.isEmpty ? "暂无内容" : "没有搜索结果").font(.headline); Text(query.isEmpty ? "发布第一条帖子或文章" : "请尝试其他关键词").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 28) } }
                 ForEach(filtered) { item in
                     NavigationLink { SavedLinkDetail(item: item) } label: {
                     VStack(alignment: .leading, spacing: 9) {
                         HStack(spacing: 9) {
-                            Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white)
-                                .frame(width: 30, height: 30).background(Color.blue, in: Circle())
+                            if let avatar = nativeImageURL(item.authorAvatarURL) { CachedRemoteImage(url: avatar, contentMode: .fill, placeholder: Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold())).frame(width: 30, height: 30).clipShape(Circle()) } else { Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white).frame(width: 30, height: 30).background(Color.blue, in: Circle()) }
                             VStack(alignment: .leading) { Text(item.authorUsername).font(.subheadline.bold()); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             if item.isPinned { Image(systemName: "pin.fill").foregroundStyle(.orange) }
@@ -787,11 +813,11 @@ private struct NativeLinksView: View {
             .task { if records.isEmpty { await load() } }
             .toolbar {
                 Menu {
-                    Button("发布帖子", systemImage: "bubble.left.and.bubble.right") { editing = nil; showingForm = true }
-                    Button("发布文章", systemImage: "doc.text") { editing = nil; showingForm = true }
+                    Button("发布帖子", systemImage: "bubble.left.and.bubble.right") { editing = nil; publishingArticle = false; showingForm = true }
+                    Button("发布文章", systemImage: "doc.text") { editing = nil; publishingArticle = true; showingForm = true }
                 } label: { Image(systemName: "square.and.pencil") }
             }
-            .sheet(isPresented: $showingForm) { LinkForm(item: editing) { await load() } }
+            .sheet(isPresented: $showingForm) { LinkForm(item: editing, article: publishingArticle) { await load() } }
             .confirmationDialog("确定删除这个帖子吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
                 Button("取消", role: .cancel) { deleting = nil }
@@ -957,13 +983,13 @@ private struct ExpenseForm: View {
 private struct LinkForm: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
-    let item: SavedLink?; let onSave: () async -> Void
+    let item: SavedLink?; let article: Bool; let onSave: () async -> Void
     @State private var title: String; @State private var category: String; @State private var url: String
     @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
     @State private var importing = false; @State private var images: [URL] = []
 
-    init(item: SavedLink?, onSave: @escaping () async -> Void) {
-        self.item = item; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
+    init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
+        self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
         _url = State(initialValue: item?.url ?? ""); _description = State(initialValue: item?.description ?? ""); _pinned = State(initialValue: item?.isPinned ?? false)
     }
 
@@ -971,11 +997,11 @@ private struct LinkForm: View {
         NavigationStack {
             Form {
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("帖子") { TextField("标题", text: $title); TextField("分类", text: $category); TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) }
-                Section("正文") { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }
+                Section(article ? "文章" : "帖子") { TextField("标题", text: $title); TextField("分类", text: $category); if !article { TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) } }
+                Section(article ? "文章正文" : "正文") { TextField(article ? "输入文章内容" : "输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }
                 Section("配图") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } }
             }
-            .navigationTitle(item == nil ? "发布帖子" : "编辑帖子").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(item == nil ? (article ? "发布文章" : "发布帖子") : (article ? "编辑文章" : "编辑帖子")).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in images = (try? result.get()) ?? [] }
         }
@@ -983,7 +1009,8 @@ private struct LinkForm: View {
 
     private func save() async {
         saving = true; error = nil; defer { saving = false }
-        let savedCategory: Any = category.isEmpty ? NSNull() : category
+        let normalizedCategory = article && !category.lowercased().hasPrefix("article:") ? "article:\(category.isEmpty ? "未分类" : category)" : category
+        let savedCategory: Any = normalizedCategory.isEmpty ? NSNull() : normalizedCategory
         let savedDescription: Any = description.isEmpty ? NSNull() : description
         let savedURL: Any = url.isEmpty ? NSNull() : url
         let body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
@@ -1647,6 +1674,7 @@ private struct ExpenseSummary: Codable {
 private struct SavedLinkImage: Codable { let url: String; let name: String? }
 private struct SavedLinkDetail: View {
     let item: SavedLink
+    @State private var previewURL: URL?
     var body: some View {
         List {
             Section {
@@ -1658,15 +1686,16 @@ private struct SavedLinkDetail: View {
                 if let category = item.category, !category.isEmpty { Label(category, systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
             }
             if let description = item.description, !description.isEmpty { Section("正文") { Text(description).textSelection(.enabled) } }
-            if let value = item.url, let url = URL(string: value) { Section("链接") { Link(destination: url) { Label(value, systemImage: "safari") }.lineLimit(3) } }
+            if let value = item.url, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) { Section("链接") { Link(destination: url) { Label("打开原链接", systemImage: "safari") }.lineLimit(3); Text(value).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }
             if !item.images.isEmpty {
                 Section("图片") {
                     ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in
-                        SavedLinkDetailImage(url: image.url)
+                        Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain)
                     }
                 }
             }
         }.navigationTitle("链接详情").navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) { NavigationStack { ZStack { Color.black.ignoresSafeArea(); if let previewURL { CachedRemoteImage(url: previewURL, contentMode: .fit, placeholder: ProgressView().tint(.white)) } }.toolbar { Button("关闭") { previewURL = nil } } } }
     }
 }
 private struct SavedLinkDetailImage: View {
@@ -1685,8 +1714,8 @@ private struct SavedLinkDetailImage: View {
 }
 private struct SavedLink: Codable, Identifiable {
     let id: Int; let title: String; let url: String?; let category: String?; let description: String?
-    let isPinned: Bool; let authorUsername: String; let images: [SavedLinkImage]; let createdAt: String; let updatedAt: String
-    enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case createdAt = "created_at"; case updatedAt = "updated_at" }
+    let isPinned: Bool; let authorUsername: String; let authorAvatarURL: String?; let images: [SavedLinkImage]; let createdAt: String; let updatedAt: String
+    enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case authorAvatarURL = "author_avatar_url"; case createdAt = "created_at"; case updatedAt = "updated_at" }
 }
 
 enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
@@ -1765,6 +1794,7 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 401 { currentUser = nil; loggedIn = false }
             let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String ?? "请求失败"
             throw NativeAPIError.server(http.statusCode, detail)
         }
@@ -1796,7 +1826,7 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"); request.httpBody = body
         let (responseData, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { let detail = ((try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any])?["detail"] as? String ?? "上传失败"; throw NativeAPIError.server(http.statusCode, detail) }
+        guard (200..<300).contains(http.statusCode) else { if http.statusCode == 401 { currentUser = nil; loggedIn = false }; let detail = ((try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any])?["detail"] as? String ?? "上传失败"; throw NativeAPIError.server(http.statusCode, detail) }
         return try decoder.decode(T.self, from: responseData)
     }
 
@@ -1831,6 +1861,7 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
 
     func message(for error: Error) -> String {
         if case let NativeAPIError.server(_, detail) = error { return detail }
+        if let network = error as? URLError { return network.code == .notConnectedToInternet ? "当前网络不可用，请联网后重试。" : "网络请求失败，请稍后重试。" }
         return "数据加载失败，请检查网络后重试。"
     }
 }
