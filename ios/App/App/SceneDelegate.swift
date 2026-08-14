@@ -111,7 +111,7 @@ private struct NativeTabView: View {
             NativeLinksView()
                 .tabItem { Label("链接", systemImage: "link") }
                 .tag(3)
-            NativeMineView()
+            NativeMineView(isActive: selected == 4)
                 .tabItem { Label("我的", systemImage: "person") }
                 .tag(4)
         }
@@ -139,7 +139,7 @@ private struct NativeLaunchView: View {
     }
 }
 
-private enum NativeDestination: String, Identifiable {
+private enum NativeDestination: String, Identifiable, Hashable {
     case tasks, shops, warehouse, links, workbench, profits, expenses, owners
     case peers, licenses, accountUsage, devices, users, licenseKeys
     case aiWorkspace, aiModels, aiKnowledge, aiCapabilities, aiOperations
@@ -250,29 +250,56 @@ private struct NativeProfitView: View {
 
 private struct NativeAIWorkspaceView: View {
     @EnvironmentObject private var session: NativeSession
-    @State private var question = ""; @State private var messages: [AIChatMessage] = []
+    @State private var question = ""; @State private var chats: [AIChat] = []; @State private var activeChatID = ""
     @State private var models: [AIModel] = []; @State private var selectedModel = ""
     @State private var sending = false; @State private var error: String?; @State private var streamTask: Task<Void, Never>?
+    @State private var showingHistory = false; @State private var renaming: AIChat?; @State private var renameText = ""
+    @StateObject private var recorder = NativeAudioRecorder(); @State private var audioModel = ""
+    @State private var knowledge: [KnowledgeCollection] = []; @State private var skills: [CapabilityItem] = []; @State private var tools: [CapabilityItem] = []
+    @State private var selectedKnowledge = ""; @State private var selectedSkills: Set<String> = []; @State private var selectedTools: Set<String> = []
+    @State private var webSearch = false; @State private var imageMode = false; @State private var imageSize = "1024x1024"; @State private var showingTools = false
+    private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
+    private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView { LazyVStack(spacing: 14) {
-                    if messages.isEmpty { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题开始与 AI 对话").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
-                    ForEach(messages) { item in HStack { if item.role == "user" { Spacer(minLength: 48) }; Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled).padding(13).foregroundStyle(item.role == "user" ? .white : .primary).background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15)); if item.role != "user" { Spacer(minLength: 48) } }.id(item.id) }
-                }.padding() }.onChange(of: messages.count) { _ in if let id = messages.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } } }
+                    if activeChat?.messages.isEmpty != false { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用语音开始").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
+                    ForEach(activeChat?.messages ?? []) { item in HStack { if item.role == "user" { Spacer(minLength: 48) }; VStack(alignment: .leading, spacing: 8) { if let imageURL = generatedImageURL(item.content) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280) } else { Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled) }; if item.role == "assistant" && !item.content.isEmpty { HStack { Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }; Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") } }.font(.caption) } }.padding(13).foregroundStyle(item.role == "user" ? .white : .primary).background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15)); if item.role != "user" { Spacer(minLength: 48) } }.id(item.id) }
+                }.padding() }.onChange(of: activeChat?.messages.count ?? 0) { _ in if let id = activeChat?.messages.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } } }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("给 AI 发消息…", text: $question, axis: .vertical).lineLimit(1...5).nativeField()
+                Button { showingTools = true } label: { Image(systemName: (webSearch || imageMode || !selectedKnowledge.isEmpty || !selectedSkills.isEmpty || !selectedTools.isEmpty) ? "plus.circle.fill" : "plus.circle").font(.system(size: 28)) }
+                Button { Task { await toggleRecording() } } label: { Image(systemName: recorder.recording ? "stop.circle.fill" : "mic.circle.fill").font(.system(size: 32)).foregroundStyle(recorder.recording ? .red : .blue) }
+                TextField(imageMode ? "描述要生成的图片…" : "给 AI 发消息…", text: $question, axis: .vertical).lineLimit(1...5).nativeField()
                 Button { sending ? stop() : send() } label: { Image(systemName: sending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.system(size: 34)) }.disabled(!sending && question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding()
         }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItem(placement: .topBarTrailing) { Button { messages = []; error = nil } label: { Image(systemName: "square.and.pencil") } } }
-        .task { await loadModels() }.onDisappear { streamTask?.cancel() }
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
+        .sheet(isPresented: $showingHistory) { historySheet }
+        .sheet(isPresented: $showingTools) { toolsSheet }
+        .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
+        .task { await loadModels(); await loadCapabilities(); await loadChats() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
     }
-    private func loadModels() async { do { let result: AIModelsResponse = try await session.get("ai-api/models"); models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }; if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" } } catch { self.error = session.message(for: error) } }
-    private func send() { let value = question.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; question = ""; error = nil; messages.append(AIChatMessage(role: "user", content: value)); let answerID = UUID().uuidString; messages.append(AIChatMessage(id: answerID, role: "assistant", content: "")); sending = true; streamTask = Task { do { try await session.streamChat(value, modelID: selectedModel) { chunk in if let index = messages.firstIndex(where: { $0.id == answerID }) { messages[index].content += chunk } } } catch is CancellationError { } catch { self.error = session.message(for: error) }; sending = false } }
-    private func stop() { streamTask?.cancel(); streamTask = nil; sending = false }
+    private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; selectedModel = chat.modelID ?? selectedModel; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { Button("完成") { showingHistory = false } } } }
+    private var toolsSheet: some View { NavigationStack { Form { Toggle("联网搜索", isOn: $webSearch); Toggle("生成图片", isOn: $imageMode); if imageMode { Picker("图片尺寸", selection: $imageSize) { Text("方图").tag("1024x1024"); Text("横图").tag("1536x1024"); Text("竖图").tag("1024x1536") } }; Picker("知识集合", selection: $selectedKnowledge) { Text("不使用知识库").tag(""); ForEach(knowledge) { Text($0.name).tag($0.id) } }; if !skills.isEmpty { Section("Skills") { ForEach(skills) { item in Toggle(item.displayName, isOn: setBinding($selectedSkills, item.id)) } } }; if !tools.isEmpty { Section("Tools") { ForEach(tools) { item in Toggle(item.displayName, isOn: setBinding($selectedTools, item.id)) } } } }.navigationTitle("对话能力").toolbar { Button("完成") { showingTools = false } } } }
+    private func loadModels() async { do { let result: AIModelsResponse = try await session.get("ai-api/models"); models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }; if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" }; audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? "" } catch { self.error = session.message(for: error) } }
+    private func loadCapabilities() async { do { async let a: KnowledgeResponse = session.get("ai-api/knowledge"); async let b: CapabilityResponse = session.get("ai-api/skills"); async let c: CapabilityResponse = session.get("ai-api/tools"); let result = try await (a,b,c); knowledge = result.0.knowledge; skills = result.1.skills ?? []; tools = result.2.tools ?? [] } catch { error = session.message(for: error) } }
+    private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats"); chats = result.chats; if let first = chats.first(where: { !$0.archived }) ?? chats.first { activeChatID = first.id; selectedModel = first.modelID ?? selectedModel } else { createChat() } } catch { error = session.message(for: error); if chats.isEmpty { createChat() } } }
+    private func send() { let value = question.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; if activeIndex == nil { createChat() }; guard let index = activeIndex else { return }; question = ""; error = nil; chats[index].messages.append(AIChatMessage(role: "user", content: value)); let answerID = UUID().uuidString; chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: "")); if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }; chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true; streamTask = Task { do { if imageMode { let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt":value,"model_id":selectedModel,"size":imageSize]); if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = "image:\(response.url)" } } else { var documents: [SearchDocument] = []; if !selectedKnowledge.isEmpty { let result: SearchDocumentsResponse = try await session.send("ai-api/search", method: "POST", body: ["query":value,"limit":5,"knowledge_id":selectedKnowledge]); documents += result.documents }; if webSearch { let result: SearchDocumentsResponse = try await session.send("ai-api/web-search", method: "POST", body: ["query":value,"limit":5]); documents += result.documents }; try await session.streamChat(value, modelID: selectedModel, documents: documents, skillIDs: Array(selectedSkills), toolIDs: Array(selectedTools)) { chunk in guard let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }; chats[chatIndex].messages[messageIndex].content += chunk } } } catch is CancellationError { } catch { self.error = session.message(for: error) }; sending = false; await saveActiveChat() } }
+    private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
+    private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id }
+    private func updateActiveModel() { guard let index = activeIndex else { return }; chats[index].modelID = selectedModel; Task { await saveActiveChat() } }
+    private func saveActiveChat() async { guard let chat = activeChat else { return }; let messages = chat.messages.map { ["id": $0.id, "role": $0.role, "content": $0.content] }; let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: ["id": chat.id, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)], allowEmpty: true) }
+    private func update(_ chat: AIChat, favorite: Bool? = nil, archived: Bool? = nil) { guard let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; if let favorite { chats[index].favorite = favorite }; if let archived { chats[index].archived = archived }; activeChatID = chat.id; Task { await saveActiveChat() } }
+    private func applyRename() { guard let chat = renaming, let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; chats[index].title = renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? chat.title : renameText; activeChatID = chat.id; renaming = nil; Task { await saveActiveChat() } }
+    private func delete(_ chat: AIChat) async { let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id], allowEmpty: true); chats.removeAll { $0.id == chat.id }; if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } } }
+    private func regenerate(_ messageID: String) { guard let index = activeIndex, let answerIndex = chats[index].messages.firstIndex(where: { $0.id == messageID }), answerIndex > 0 else { return }; let value = chats[index].messages[..<answerIndex].last(where: { $0.role == "user" })?.content ?? ""; chats[index].messages.removeSubrange((answerIndex - 1)...answerIndex); question = value; send() }
+    private func exportText(_ chat: AIChat) -> String { chat.messages.map { "\($0.role == "user" ? "我" : "AI")：\($0.content)" }.joined(separator: "\n\n") }
+    private func generatedImageURL(_ content: String) -> URL? { guard content.hasPrefix("image:") else { return nil }; return URL(string: String(content.dropFirst(6))) }
+    private func setBinding(_ selection: Binding<Set<String>>, _ id: String) -> Binding<Bool> { Binding(get: { selection.wrappedValue.contains(id) }, set: { enabled in if enabled { selection.wrappedValue.insert(id) } else { selection.wrappedValue.remove(id) } }) }
+    private func toggleRecording() async { if recorder.recording { guard let data = recorder.stop() else { return }; recorder.transcribing = true; defer { recorder.transcribing = false }; do { let result: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": "recording.m4a", "data": data.base64EncodedString(), "model_id": audioModel]); question = [question, result.text].filter { !$0.isEmpty }.joined(separator: " ") } catch { self.error = session.message(for: error) } } else { do { try await recorder.start() } catch { error = "无法使用麦克风，请在系统设置中允许权限。" } } }
 }
 
 private struct NativeHomeView: View {
@@ -529,10 +556,13 @@ private struct NativeTaskView: View {
     @State private var error: String?
     @State private var editing: TaskRecord?
     @State private var showingForm = false
+    @State private var selectedIDs: Set<Int> = []
+    @State private var editMode: EditMode = .inactive
+    @State private var exporting = false
 
     var body: some View {
         NavigationStack {
-            List {
+            List(selection: $selectedIDs) {
                 if let summary {
                     Section {
                         HStack {
@@ -561,6 +591,7 @@ private struct NativeTaskView: View {
                             }
                         }.padding(.vertical, 4) }
                         .swipeActions(edge: .leading) { Button("编辑") { editing = item; showingForm = true }.tint(.blue) }
+                        .tag(item.id)
                     }
                      if hasMore {
                         HStack { Spacer(); if loadingMore { ProgressView() } else { Text("加载更多") }; Spacer() }
@@ -572,8 +603,10 @@ private struct NativeTaskView: View {
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
             .refreshable { await load(reset: true) }
             .navigationTitle("任务")
-            .toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }
+            .toolbar { ToolbarItemGroup { EditButton(); if !selectedIDs.isEmpty { Menu { Button("标记已签收") { Task { await batchStatus("signed_status") } }; Button("标记已结算") { Task { await batchStatus("settlement_status") } }; Button("导出所选") { exporting = true }; Button("删除所选", role: .destructive) { Task { await batchDelete() } } } label: { Image(systemName: "ellipsis.circle") } }; Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } } }
             .sheet(isPresented: $showingForm) { TaskForm(item: editing) { await load() } }
+            .environment(\.editMode, $editMode)
+            .fileExporter(isPresented: $exporting, document: TaskCSVDocument(records: records.filter { selectedIDs.contains($0.id) }), contentType: .commaSeparatedText, defaultFilename: "任务记录") { _ in }
             .task { if records.isEmpty { await load(reset: true) } }
             .task(id: query) { if !records.isEmpty { try? await Task.sleep(nanoseconds: 300_000_000); guard !Task.isCancelled else { return }; await load(reset: true) } }
         }
@@ -601,6 +634,16 @@ private struct NativeTaskView: View {
             let ids = Set(records.map(\.id)); records.append(contentsOf: more.filter { !ids.contains($0.id) }); hasMore = more.count == 30
         } catch { self.error = session.message(for: error) }
     }
+    private func batchStatus(_ field: String) async { do { let _: EmptyResponse = try await session.send("task-bookkeeping/records/batch-status", method: "PATCH", body: ["record_ids": Array(selectedIDs), "field": field, "value": "completed"], allowEmpty: true); selectedIDs.removeAll(); editMode = .inactive; await load(reset: true) } catch { self.error = session.message(for: error) } }
+    private func batchDelete() async { do { let _: EmptyResponse = try await session.send("task-bookkeeping/records/batch-delete", method: "POST", body: ["record_ids": Array(selectedIDs)], allowEmpty: true); selectedIDs.removeAll(); editMode = .inactive; await load(reset: true) } catch { self.error = session.message(for: error) } }
+}
+
+private struct TaskCSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+    let records: [TaskRecord]
+    init(records: [TaskRecord]) { self.records = records }
+    init(configuration: ReadConfiguration) throws { records = [] }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { let header = "订单号,店铺,负责人,本金,数量,签收,结算,时间\n"; let rows = records.map { "\($0.orderNo),\($0.shopName),\($0.ownerName),\($0.principalAmount),\($0.orderCount),\($0.signedStatus),\($0.settlementStatus),\($0.taskTime ?? "")" }.joined(separator: "\n"); return FileWrapper(regularFileWithContents: Data((header + rows).utf8)) }
 }
 
 private struct NativeQuickLedgerView: View {
@@ -966,6 +1009,7 @@ private struct LinkForm: View {
     @State private var previewing = false
     @State private var editCommand: ArticleEditCommand?
     @State private var pendingInlineImages: [PendingInlineImage] = []
+    @State private var draftNotice: String?
 
     init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
         self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
@@ -976,16 +1020,22 @@ private struct LinkForm: View {
         NavigationStack {
             Form {
                 if let error { Text(error).foregroundStyle(.red) }
-                Section(article ? "文章" : "帖子") { TextField("标题", text: $title); TextField("分类", text: $category); if !article { TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) } }
+                if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary) }
+                Section(article ? "文章" : "帖子") { TextField("标题", text: $title); TextField("分类", text: $category); if !article { Toggle("置顶", isOn: $pinned) } }
                 if article { Section { Picker("模式", selection: $previewing) { Text("写作").tag(false); Text("预览").tag(true) }.pickerStyle(.segmented) } }
                 if article && !previewing { articleToolbar }
                 if article && previewing { Section("文章预览") { Text(markdownPreview).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) } }
                 else { Section(article ? "文章正文" : "正文") { if article { NativeArticleTextEditor(text: $description, command: $editCommand).frame(minHeight: 280) } else { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) } } }
-                Section("配图") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } }
+                if !article { Section("图片") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } } }
+                if article && !images.isEmpty { Section("待上传图片") { ForEach(Array(images.enumerated()), id: \.offset) { index, image in HStack { Text(image.lastPathComponent).lineLimit(1); Spacer(); Button { moveImage(index, -1) } label: { Image(systemName: "arrow.up") }.disabled(index == 0); Button { moveImage(index, 1) } label: { Image(systemName: "arrow.down") }.disabled(index == images.count - 1); Button(role: .destructive) { removeImage(at: index) } label: { Image(systemName: "trash") } } } } }
             }
             .navigationTitle(item == nil ? (article ? "发布文章" : "发布帖子") : (article ? "编辑文章" : "编辑帖子")).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: receiveImages)
+            .task { restoreDraft() }
+            .onChange(of: title) { _ in saveDraft() }
+            .onChange(of: category) { _ in saveDraft() }
+            .onChange(of: description) { _ in saveDraft() }
         }
     }
 
@@ -1037,6 +1087,8 @@ private struct LinkForm: View {
         pendingInlineImages.append(contentsOf: placeholders)
         editCommand = ArticleEditCommand(.images(placeholders))
     }
+    private func moveImage(_ index: Int, _ offset: Int) { let target = index + offset; guard images.indices.contains(target) else { return }; images.swapAt(index, target); if pendingInlineImages.indices.contains(index), pendingInlineImages.indices.contains(target) { pendingInlineImages.swapAt(index, target) } }
+    private func removeImage(at index: Int) { guard images.indices.contains(index) else { return }; let url = images.remove(at: index); if let pendingIndex = pendingInlineImages.firstIndex(where: { $0.url == url }) { let pending = pendingInlineImages.remove(at: pendingIndex); let token = NSRegularExpression.escapedPattern(for: pending.token); description = description.replacingOccurrences(of: "!?\\[[^\\]]*\\]\\(\(token)\\)", with: "", options: .regularExpression) } }
 
     private func save() async {
         saving = true; error = nil; defer { saving = false }
@@ -1076,19 +1128,35 @@ private struct LinkForm: View {
                     description = finalDescription
                 }
             }
+            UserDefaults.standard.removeObject(forKey: draftKey)
             await onSave(); dismiss()
         } catch { self.error = session.message(for: error) }
     }
+
+    private var draftKey: String { "native-link-draft-\(article ? "article" : "post")" }
+    private func saveDraft() {
+        guard item == nil, !title.isEmpty || !description.isEmpty else { return }
+        let draft = LinkDraft(title: title, category: category, description: description, updatedAt: Date())
+        if let data = try? JSONEncoder().encode(draft) { UserDefaults.standard.set(data, forKey: draftKey) }
+    }
+    private func restoreDraft() {
+        guard item == nil, title.isEmpty, description.isEmpty, let data = UserDefaults.standard.data(forKey: draftKey), let draft = try? JSONDecoder().decode(LinkDraft.self, from: data) else { return }
+        title = draft.title; category = draft.category; description = draft.description
+        draftNotice = "已恢复 \(shortTimestamp(draft.updatedAt.timeIntervalSince1970)) 的草稿"
+    }
 }
+
+private struct LinkDraft: Codable { let title: String; let category: String; let description: String; let updatedAt: Date }
 
 private struct NativeMineView: View {
     @EnvironmentObject private var session: NativeSession
-    @State private var destination: NativeDestination?
+    let isActive: Bool
+    @State private var path: [NativeDestination] = []
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section {
-                    Button { destination = .profile } label: {
+                    Button { path.append(.profile) } label: {
                         HStack(spacing: 14) {
                             NativeRemoteImage(url: session.currentUser?.avatarURL, size: 60)
                             VStack(alignment: .leading, spacing: 4) {
@@ -1115,14 +1183,14 @@ private struct NativeMineView: View {
                 .listRowBackground(Color.blue.opacity(0.07))
 
                 Section("账户与访问") {
-                    MineEntry("账号与权限", "person.badge.key", .blue) { destination = .users }
-                    MineEntry("卡密管理", "key", .purple) { destination = .licenseKeys }
+                    MineEntry("账号与权限", "person.badge.key", .blue) { path.append(.users) }
+                    MineEntry("卡密管理", "key", .purple) { path.append(.licenseKeys) }
                 }
 
                 Section("系统") {
-                    MineEntry("服务器运行", "server.rack", .green) { destination = .server }
-                    MineEntry("通知中心", "bell", .red) { destination = .alerts }
-                    MineEntry("系统设置", "gearshape", .gray) { destination = .systemSettings }
+                    MineEntry("服务器运行", "server.rack", .green) { path.append(.server) }
+                    MineEntry("通知中心", "bell", .red) { path.append(.alerts) }
+                    MineEntry("系统设置", "gearshape", .gray) { path.append(.systemSettings) }
                 }
 
                 Section {
@@ -1134,14 +1202,9 @@ private struct NativeMineView: View {
             .listStyle(.insetGrouped)
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.large)
-            .navigationDestination(isPresented: destinationPresented) {
-                if let destination { destination.view }
-            }
+            .navigationDestination(for: NativeDestination.self) { destination in destination.view }
+            .onChange(of: isActive) { active in if !active { path.removeAll() } }
         }
-    }
-
-    private var destinationPresented: Binding<Bool> {
-        Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
     }
 
     private var authorizedModuleCount: Int { session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0 }
@@ -1277,11 +1340,11 @@ private struct SavedLinkFeedRow: View {
 private struct SavedLinkImageGrid: View {
     let images: [SavedLinkImage]
     var body: some View {
-        let urls = images.compactMap { nativeImageURL($0.url) }
+        let urls = images.compactMap { nativeThumbnailURL($0.url) }
         if urls.isEmpty {
             EmptyView()
         } else if urls.count == 1 {
-            CachedRemoteImage(url: urls[0], contentMode: .fit, maxPixelSize: 1400, placeholder: ProgressView())
+            CachedRemoteImage(url: urls[0], contentMode: .fill, maxPixelSize: 1400, placeholder: ProgressView())
                 .frame(maxWidth: .infinity).frame(height: 180)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -1308,7 +1371,7 @@ private struct SavedLinkAvatar: View {
     let item: SavedLink
     var body: some View {
         Group {
-            if let value = item.authorAvatarURL, let avatar = nativeImageURL(value) {
+            if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value) {
                 CachedRemoteImage(url: avatar, contentMode: .fill, placeholder: initials)
             } else { initials }
         }.frame(width: 30, height: 30).clipShape(Circle())
@@ -1339,7 +1402,7 @@ private struct NativeShopsView: View {
     @State private var editing: ShopRecord?; @State private var showingForm = false
     private var visibleFields: [ShopField] { fields.filter(\.isVisible).sorted { $0.sortOrder < $1.sortOrder } }
     private var filtered: [ShopRecord] { query.isEmpty ? records : records.filter { $0.values.values.map(\.display).joined(separator: " ").localizedCaseInsensitiveContains(query) } }
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { record in NavigationLink { ShopDetail(record: record, fields: visibleFields) } label: { VStack(alignment: .leading, spacing: 5) { Text(title(record)).fontWeight(.medium); Text(visibleFields.prefix(3).compactMap { field in record.values[field.fieldName].map { "\(field.label)：\($0.display)" } }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(record) } }; Button("编辑") { editing = record; showingForm = true }.tint(.blue) } } }.navigationTitle("店铺档案").searchable(text: $query).overlay { if loading && records.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingForm) { ShopForm(item: editing, fields: visibleFields) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(filtered) { record in NavigationLink { ShopDetail(record: record, fields: visibleFields) } label: { VStack(alignment: .leading, spacing: 5) { Text(title(record)).fontWeight(.medium); Text(visibleFields.prefix(3).compactMap { field in record.values[field.fieldName].map { "\(field.label)：\($0.display)" } }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(2) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(record) } }; Button("编辑") { editing = record; showingForm = true }.tint(.blue) } } }.navigationTitle("店铺档案").searchable(text: $query).overlay { if loading && records.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }.toolbar { ToolbarItemGroup { NavigationLink { ShopFieldsView() } label: { Image(systemName: "slider.horizontal.3") }; Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } } }.sheet(isPresented: $showingForm) { ShopForm(item: editing, fields: visibleFields) { await load() } } }
     private func title(_ record: ShopRecord) -> String { for key in ["shop_name", "store_name", "name"] { if let value = record.values[key], !value.display.isEmpty { return value.display } }; return visibleFields.compactMap { record.values[$0.fieldName]?.display }.first ?? "店铺 #\(record.id)" }
     private func load() async { loading = true; defer { loading = false }; do { async let fieldRequest: [ShopField] = session.get("custom-fields"); async let recordRequest: [ShopRecord] = session.get("shop-records"); let result = try await (fieldRequest, recordRequest); fields = result.0; records = result.1 } catch { self.error = session.message(for: error) } }
     private func remove(_ record: ShopRecord) async { do { try await session.delete("shop-records/\(record.id)"); records.removeAll { $0.id == record.id } } catch { self.error = session.message(for: error) } }
@@ -1540,21 +1603,23 @@ private struct NativeKnowledgeView: View {
     @State private var selectedFile: KnowledgeFile?
     @State private var detail: KnowledgeFileDetail?
     @State private var deletingFile: KnowledgeFile?
+    @State private var selectedCollectionID = ""; @State private var renamingCollection: KnowledgeCollection?; @State private var collectionName = ""
 
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
-            Section("新建知识集合") {
+            Section("知识集合") {
                 HStack { TextField("集合名称", text: $newName); Button("创建") { Task { await create() } }.disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty) }
+                Picker("当前集合", selection: $selectedCollectionID) { Text("全部文件").tag(""); ForEach(collections) { Text($0.name).tag($0.id) } }
             }
             Section("集合") {
-                ForEach(collections) { item in HStack { Label(item.name, systemImage: "folder"); Spacer(); Text("\(files.filter { $0.knowledgeID == item.id }.count) 个文件").font(.caption).foregroundStyle(.secondary) } }
+                ForEach(collections) { item in Button { selectedCollectionID = item.id } label: { HStack { Label(item.name, systemImage: selectedCollectionID == item.id ? "folder.fill" : "folder"); Spacer(); Text("\(files.filter { $0.knowledgeID == item.id }.count) 个文件").font(.caption).foregroundStyle(.secondary) } }.contextMenu { Button("重命名") { renamingCollection = item; collectionName = item.name } } }
             }
             Section("文件") {
-                ForEach(files.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { file in
+                ForEach(files.filter { (selectedCollectionID.isEmpty || $0.knowledgeID == selectedCollectionID) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }) { file in
                     Button { selectedFile = file; Task { await preview(file) } } label: {
                         VStack(alignment: .leading, spacing: 4) { Text(file.name).foregroundStyle(.primary); Text(file.status ?? "已导入").font(.caption).foregroundStyle(.secondary) }
-                    }.swipeActions {
+                    }.contextMenu { Menu("移动到") { ForEach(collections.filter { $0.id != file.knowledgeID }) { collection in Button(collection.name) { Task { await assign(file, to: collection.id) } } } } }.swipeActions {
                         Button("删除", role: .destructive) { deletingFile = file }
                         Button("重解析") { Task { await reprocess(file) } }.tint(.blue)
                     }
@@ -1568,6 +1633,7 @@ private struct NativeKnowledgeView: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importFile(result) } }
         .sheet(item: $selectedFile) { file in NavigationStack { List { if let detail { Section("内容") { Text(detail.file.content ?? "无可读取内容").textSelection(.enabled) }; Section("分块") { ForEach(detail.chunks) { chunk in VStack(alignment: .leading) { Text("第 \(chunk.chunkIndex + 1) 块").font(.caption).foregroundStyle(.secondary); Text(chunk.content).textSelection(.enabled) } } } } else { ProgressView() } }.navigationTitle(file.name).toolbar { Button("关闭") { selectedFile = nil; detail = nil } } } }
         .confirmationDialog("确定删除这个知识文件吗？", isPresented: Binding(get: { deletingFile != nil }, set: { if !$0 { deletingFile = nil } }), titleVisibility: .visible) { Button("删除", role: .destructive) { if let file = deletingFile { Task { await remove(file) } } }; Button("取消", role: .cancel) { deletingFile = nil } }
+        .alert("重命名集合", isPresented: Binding(get: { renamingCollection != nil }, set: { if !$0 { renamingCollection = nil } })) { TextField("集合名称", text: $collectionName); Button("保存") { Task { await renameCollection() } }; Button("取消", role: .cancel) { renamingCollection = nil } }
     }
 
     private func load() async {
@@ -1590,12 +1656,15 @@ private struct NativeKnowledgeView: View {
             let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }
             let data = try Data(contentsOf: url); guard data.count <= 15_000_000 else { throw NativeAPIError.server(400, "单个文件不能超过 15MB") }
             let response: ImportFileResponse = try await session.send("ai-api/documents/import-file", method: "POST", body: ["title": url.deletingPathExtension().lastPathComponent, "filename": url.lastPathComponent, "data": data.base64EncodedString()])
-            if let collection = collections.first { let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": response.file.id, "knowledge_id": collection.id], allowEmpty: true) }
+            let target = selectedCollectionID.isEmpty ? collections.first?.id : selectedCollectionID
+            if let target { let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": response.file.id, "knowledge_id": target], allowEmpty: true) }
             await load()
         } catch { self.error = session.message(for: error) }
     }
     private func preview(_ file: KnowledgeFile) async { do { detail = try await session.get("ai-api/files/detail?id=\(file.id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? file.id)") } catch { self.error = session.message(for: error) } }
     private func reprocess(_ file: KnowledgeFile) async { do { let _: EmptyResponse = try await session.send("ai-api/files/reprocess", method: "POST", body: ["id": file.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func assign(_ file: KnowledgeFile, to knowledgeID: String) async { do { let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": file.id, "knowledge_id": knowledgeID], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func renameCollection() async { guard let item = renamingCollection else { return }; do { let _: EmptyResponse = try await session.send("ai-api/knowledge", method: "POST", body: ["id": item.id, "name": collectionName], allowEmpty: true); renamingCollection = nil; await load() } catch { self.error = session.message(for: error) } }
     private func remove(_ file: KnowledgeFile) async { do { let _: EmptyResponse = try await session.send("ai-api/files/delete", method: "POST", body: ["id": file.id], allowEmpty: true); deletingFile = nil; await load() } catch { self.error = session.message(for: error) } }
 }
 
@@ -1680,6 +1749,8 @@ private struct NativeOperationsView: View {
     @State private var section: OperationsSection = .usage
     @State private var usage: [UsageRecord] = []; @State private var summary: UsageSummary?
     @State private var memories: [AIMemory] = []; @State private var workflows: [AIWorkflow] = []; @State private var jobs: [AIJob] = []
+    @State private var shares: [AIShare] = []; @State private var query = ""
+    @AppStorage("ai-monthly-budget") private var monthlyBudget = 0.0
     @State private var loading = false; @State private var error: String?
     @State private var editingMemory: AIMemory?; @State private var showingMemory = false
     @State private var editingWorkflow: AIWorkflow?; @State private var showingWorkflow = false
@@ -1690,25 +1761,27 @@ private struct NativeOperationsView: View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             if section == .usage {
-                if let summary { Section { HStack { Metric(title: "调用", value: "\(summary.calls)"); Metric(title: "输入 Token", value: "\(summary.inputTokens)"); Metric(title: "输出 Token", value: "\(summary.outputTokens)") }; LabeledContent("累计费用", value: String(format: "¥ %.4f", summary.cost)) } }
-                ForEach(usage) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.operation).fontWeight(.medium); Spacer(); Text("\(item.inputTokens + item.outputTokens) Token").font(.caption) }; Text("\(item.modelID.flatMap { $0.isEmpty ? nil : $0 } ?? "默认模型") · \(item.latencyMS) ms").font(.caption).foregroundStyle(.secondary) } }
+                if let summary { Section { HStack { Metric(title: "调用", value: "\(summary.calls)"); Metric(title: "输入 Token", value: "\(summary.inputTokens)"); Metric(title: "输出 Token", value: "\(summary.outputTokens)") }; LabeledContent("累计费用", value: String(format: "¥ %.4f", summary.cost)); HStack { Text("月度预算"); Spacer(); TextField("0", value: $monthlyBudget, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90) }; if monthlyBudget > 0 { ProgressView(value: min(summary.cost / monthlyBudget, 1)); Text(String(format: "已使用 %.1f%%", summary.cost / monthlyBudget * 100)).font(.caption).foregroundStyle(.secondary) } } }
+                ForEach(usage.filter { query.isEmpty || "\($0.operation) \($0.modelID ?? "")".localizedCaseInsensitiveContains(query) }) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.operation).fontWeight(.medium); Spacer(); Text("\(item.inputTokens + item.outputTokens) Token").font(.caption) }; Text("\(item.modelID.flatMap { $0.isEmpty ? nil : $0 } ?? "默认模型") · \(item.latencyMS) ms").font(.caption).foregroundStyle(.secondary) } }
             } else if section == .memory {
-                ForEach(memories) { item in VStack(alignment: .leading, spacing: 6) { Text(item.content); HStack { Text(item.sourceChatID.isEmpty ? "手动添加" : "来自会话").font(.caption).foregroundStyle(.secondary); Spacer(); Toggle("", isOn: Binding(get: { item.enabled != 0 }, set: { enabled in Task { await toggleMemory(item, enabled) } })).labelsHidden() } }.contentShape(Rectangle()).onTapGesture { editingMemory = item; showingMemory = true }.swipeActions { Button("删除", role: .destructive) { Task { await deleteMemory(item) } } } }
+                ForEach(memories) { item in VStack(alignment: .leading, spacing: 6) { Text(item.content); HStack { Text(item.sourceChatID?.isEmpty == false ? "来自会话" : "手动添加").font(.caption).foregroundStyle(.secondary); Spacer(); Toggle("", isOn: Binding(get: { item.enabled != 0 }, set: { enabled in Task { await toggleMemory(item, enabled) } })).labelsHidden() } }.contentShape(Rectangle()).onTapGesture { editingMemory = item; showingMemory = true }.swipeActions { Button("删除", role: .destructive) { Task { await deleteMemory(item) } } } }
             } else if section == .workflow {
                 ForEach(workflows) { item in VStack(alignment: .leading, spacing: 6) { HStack { Text(item.name).fontWeight(.medium); Spacer(); StatusBadge(text: item.enabled != 0 ? "启用" : "停用", done: item.enabled != 0) }; Text(item.description).font(.caption).foregroundStyle(.secondary) }.contentShape(Rectangle()).onTapGesture { editingWorkflow = item; showingWorkflow = true }.swipeActions { Button("运行") { runWorkflow = item }.tint(.green); Button("删除", role: .destructive) { Task { await deleteWorkflow(item) } } } }
+            } else if section == .jobs {
+                ForEach(jobs) { item in NavigationLink { List { LabeledContent("类型", value: item.kind); LabeledContent("状态", value: jobStatus(item.status)); Section("结果") { Text(item.resultText).textSelection(.enabled) } }.navigationTitle("任务详情") } label: { VStack(alignment: .leading, spacing: 5) { HStack { Text(item.kind).fontWeight(.medium); Spacer(); Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status)) }; Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3) } }.swipeActions { if ["queued", "running"].contains(item.status) { Button("取消") { Task { await jobAction(item, "cancel") } }.tint(.orange) } else { Button("重试") { Task { await jobAction(item, "retry") } }.tint(.blue); Button("删除", role: .destructive) { Task { await jobAction(item, "delete") } } } }
             } else {
-                ForEach(jobs) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.kind).fontWeight(.medium); Spacer(); Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status)) }; Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3) }.swipeActions { if ["queued", "running"].contains(item.status) { Button("取消") { Task { await jobAction(item, "cancel") } }.tint(.orange) } else { Button("重试") { Task { await jobAction(item, "retry") } }.tint(.blue); Button("删除", role: .destructive) { Task { await jobAction(item, "delete") } } } }
+                ForEach(shares) { item in ShareLink(item: URL(string: "https://xiaoxu666.asia/ai/shared/\(item.id)")!) { VStack(alignment: .leading, spacing: 5) { Text(item.title).foregroundStyle(.primary).fontWeight(.medium); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) } } }
             }
         }
-    }.navigationTitle("AI 运营").overlay { if loading && usage.isEmpty && memories.isEmpty && workflows.isEmpty && jobs.isEmpty { ProgressView() } }.task(id: section) { await load() }.refreshable { await load() }
+    }.navigationTitle("AI 运营").searchable(text: $query, prompt: "搜索用量记录").overlay { if loading && usage.isEmpty && memories.isEmpty && workflows.isEmpty && jobs.isEmpty && shares.isEmpty { ProgressView() } }.task(id: section) { await load() }.refreshable { await load() }
         .toolbar { if section == .memory { Button { editingMemory = nil; showingMemory = true } label: { Image(systemName: "plus") } } else if section == .workflow { Button { editingWorkflow = nil; showingWorkflow = true } label: { Image(systemName: "plus") } } }
         .sheet(isPresented: $showingMemory) { MemoryForm(item: editingMemory) { await load() } }
         .sheet(isPresented: $showingWorkflow) { WorkflowForm(item: editingWorkflow) { await load() } }
         .alert("运行工作流", isPresented: Binding(get: { runWorkflow != nil }, set: { if !$0 { runWorkflow = nil } })) { TextField("输入内容", text: $runInput); Button("运行") { if let workflow = runWorkflow { Task { await run(workflow) } } }; Button("取消", role: .cancel) { runWorkflow = nil } } message: { Text("输入工作流处理内容") }
     }
     }
-    private func load() async { loading = true; defer { loading = false }; do { switch section { case .usage: let result: UsageResponse = try await session.get("ai-api/usage"); usage = result.usage; summary = result.summary; case .memory: let result: MemoriesResponse = try await session.get("ai-api/memories"); memories = result.memories; case .workflow: let result: WorkflowsResponse = try await session.get("ai-api/workflows"); workflows = result.workflows; case .jobs: let result: JobsResponse = try await session.get("ai-api/jobs"); jobs = result.jobs } } catch { self.error = session.message(for: error) } }
-    private func toggleMemory(_ item: AIMemory, _ enabled: Bool) async { do { let _: EmptyResponse = try await session.send("ai-api/memories", method: "POST", body: ["id": item.id, "content": item.content, "source_chat_id": item.sourceChatID, "enabled": enabled], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func load() async { loading = true; error = nil; defer { loading = false }; do { switch section { case .usage: let result: UsageResponse = try await session.get("ai-api/usage"); usage = result.usage; summary = result.summary; case .memory: let result: MemoriesResponse = try await session.get("ai-api/memories"); memories = result.memories; case .workflow: let result: WorkflowsResponse = try await session.get("ai-api/workflows"); workflows = result.workflows; case .jobs: let result: JobsResponse = try await session.get("ai-api/jobs"); jobs = result.jobs; case .shares: let result: SharesResponse = try await session.get("ai-api/shares"); shares = result.shares } } catch { self.error = session.message(for: error) } }
+    private func toggleMemory(_ item: AIMemory, _ enabled: Bool) async { do { let _: EmptyResponse = try await session.send("ai-api/memories", method: "POST", body: ["id": item.id, "content": item.content, "source_chat_id": item.sourceChatID ?? "", "enabled": enabled], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
     private func deleteMemory(_ item: AIMemory) async { do { let _: EmptyResponse = try await session.send("ai-api/memories/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
     private func deleteWorkflow(_ item: AIWorkflow) async { do { let _: EmptyResponse = try await session.send("ai-api/workflows/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
     private func run(_ item: AIWorkflow) async { do { let _: JobActionResponse = try await session.send("ai-api/workflows/run", method: "POST", body: ["id": item.id, "input": runInput]); runWorkflow = nil; runInput = ""; section = .jobs; await load() } catch { self.error = session.message(for: error) } }
@@ -1760,6 +1833,7 @@ private struct NativeWarehouseView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var tab: WarehouseTab = .stocks; @State private var summary: WarehouseSummary?; @State private var warehouses: [WarehouseRecord] = []; @State private var products: [WarehouseProduct] = []; @State private var stocks: [WarehouseStock] = []; @State private var inbound: [WarehouseInbound] = []; @State private var outbound: [WarehouseOutbound] = []; @State private var movements: [WarehouseMovement] = []
     @State private var query = ""; @State private var loading = false; @State private var error: String?; @State private var sheet: WarehouseSheet?
+    @State private var editingWarehouse: WarehouseRecord?; @State private var editingProduct: WarehouseProduct?
     var body: some View {
         List {
             if let summary { Section { ScrollView(.horizontal, showsIndicators: false) { HStack { WarehouseMetric("总库存", "\(summary.totalQuantity)"); WarehouseMetric("库存成本", money(summary.totalCost)); WarehouseMetric("低库存", "\(summary.lowStockCount)"); WarehouseMetric("待出库", "\(summary.pendingOutboundCount)") }.padding(.vertical, 4) } } }
@@ -1767,37 +1841,41 @@ private struct NativeWarehouseView: View {
             if let error { Text(error).foregroundStyle(.red) }
             switch tab {
             case .stocks: ForEach(stocks.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName).fontWeight(.medium); Text("\(row.sku) · \(row.warehouseName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(row.availableQuantity) \(row.unit)").foregroundStyle(row.isLowStock ? .red : .primary); if row.lockedQuantity > 0 { Text("锁定 \(row.lockedQuantity)").font(.caption2).foregroundStyle(.orange) } } } }
-            case .products: ForEach(products.filter { matches("\($0.sku) \($0.name) \($0.barcode ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.sku) · \(row.specification ?? row.unit) · \(money(row.costPrice))", status: row.isActive ? "启用" : "停用") }
-            case .warehouses: ForEach(warehouses.filter { matches("\($0.code) \($0.name) \($0.address ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.code) · \(row.address ?? "未填写地址")", status: row.isActive ? "启用" : "停用") }
+            case .products: ForEach(products.filter { matches("\($0.sku) \($0.name) \($0.barcode ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.sku) · \(row.specification ?? row.unit) · \(money(row.costPrice))", status: row.isActive ? "启用" : "停用").swipeActions { Button("删除", role: .destructive) { Task { await deleteProduct(row) } }; Button("编辑") { editingProduct = row; sheet = .product }.tint(.blue) } }
+            case .warehouses: ForEach(warehouses.filter { matches("\($0.code) \($0.name) \($0.address ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.code) · \(row.address ?? "未填写地址")", status: row.isActive ? "启用" : "停用").swipeActions { Button("删除", role: .destructive) { Task { await deleteWarehouse(row) } }; Button("编辑") { editingWarehouse = row; sheet = .warehouse }.tint(.blue) } }
             case .inbound: ForEach(inbound.filter { matches("\($0.orderNo) \($0.warehouseName) \(lineSummary($0.items))") }) { row in WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: row.status == "completed" ? "已入库" : "已撤销").swipeActions { if row.status == "completed" { Button("撤销", role: .destructive) { Task { await cancel(row) } } } } }
             case .outbound: ForEach(outbound.filter { matches("\($0.orderNo) \($0.warehouseName) \($0.trackingNo ?? "")") }) { row in NavigationLink { WarehouseOutboundDetail(row: row) } label: { WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: outboundStatus(row.status)) }.swipeActions { if let next = nextStatus(row.status) { Button("推进") { Task { await setStatus(row, next) } }.tint(.blue) }; if !["shipped","cancelled"].contains(row.status) { Button("取消", role: .destructive) { Task { await setStatus(row, "cancelled") } } } } }
             case .movements: ForEach(movements.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName) \($0.referenceNo)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName); Text("\(row.warehouseName) · \(row.referenceNo)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(row.quantityChange > 0 ? "+\(row.quantityChange)" : "\(row.quantityChange)").foregroundStyle(row.quantityChange > 0 ? .green : .red) } }
             }
         }.navigationTitle("仓储管理").searchable(text: $query, prompt: "搜索商品、单号或仓库").overlay { if loading && stocks.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }
-        .toolbar { if [.warehouses,.products,.inbound,.outbound].contains(tab) { Button { sheet = tab == .warehouses ? .warehouse : tab == .products ? .product : tab == .inbound ? .inbound : .outbound } label: { Image(systemName: "plus") } } }
-        .sheet(item: $sheet) { value in switch value { case .warehouse: WarehouseBasicEditor(kind: .warehouse) { await load() }; case .product: WarehouseBasicEditor(kind: .product) { await load() }; case .inbound: WarehouseOrderEditor(outbound: false, warehouses: warehouses, products: products) { await load() }; case .outbound: WarehouseOrderEditor(outbound: true, warehouses: warehouses, products: products) { await load() } } }
+        .toolbar { if [.warehouses,.products,.inbound,.outbound].contains(tab) { Button { editingWarehouse = nil; editingProduct = nil; sheet = tab == .warehouses ? .warehouse : tab == .products ? .product : tab == .inbound ? .inbound : .outbound } label: { Image(systemName: "plus") } } }
+        .sheet(item: $sheet) { value in switch value { case .warehouse: WarehouseBasicEditor(kind: .warehouse, warehouse: editingWarehouse, product: nil) { await load() }; case .product: WarehouseBasicEditor(kind: .product, warehouse: nil, product: editingProduct) { await load() }; case .inbound: WarehouseOrderEditor(outbound: false, warehouses: warehouses, products: products) { await load() }; case .outbound: WarehouseOrderEditor(outbound: true, warehouses: warehouses, products: products) { await load() } } }
     }
     private func matches(_ value: String) -> Bool { query.isEmpty || value.localizedCaseInsensitiveContains(query) }
     private func load() async { loading = true; defer { loading = false }; do { async let a: WarehouseSummary = session.get("warehouse/summary"); async let b: [WarehouseRecord] = session.get("warehouse/warehouses"); async let c: [WarehouseProduct] = session.get("warehouse/products"); async let d: [WarehouseStock] = session.get("warehouse/stocks"); async let e: [WarehouseInbound] = session.get("warehouse/inbound-orders"); async let f: [WarehouseOutbound] = session.get("warehouse/outbound-orders"); async let g: [WarehouseMovement] = session.get("warehouse/movements"); (summary,warehouses,products,stocks,inbound,outbound,movements) = try await (a,b,c,d,e,f,g) } catch { self.error = session.message(for: error) } }
     private func cancel(_ row: WarehouseInbound) async { do { let _: WarehouseInbound = try await session.send("warehouse/inbound-orders/\(row.id)", method: "DELETE"); await load() } catch { self.error = session.message(for: error) } }
     private func setStatus(_ row: WarehouseOutbound, _ status: String) async { do { let _: WarehouseOutbound = try await session.send("warehouse/outbound-orders/\(row.id)/status", method: "PATCH", body: ["status":status,"carrier":row.carrier ?? "","tracking_no":row.trackingNo ?? ""]); await load() } catch { self.error = session.message(for: error) } }
+    private func deleteWarehouse(_ row: WarehouseRecord) async { do { try await session.delete("warehouse/warehouses/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
+    private func deleteProduct(_ row: WarehouseProduct) async { do { try await session.delete("warehouse/products/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
 private struct WarehouseMetric: View { let title:String,value:String; init(_ title:String,_ value:String){self.title=title;self.value=value}; var body:some View{VStack(alignment:.leading){Text(title).font(.caption).foregroundStyle(.secondary);Text(value).font(.headline)}.padding(12).background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:8))} }
 private struct WarehouseTextRow: View { let title:String,detail:String,status:String; var body:some View{VStack(alignment:.leading,spacing:5){HStack{Text(title).fontWeight(.medium);Spacer();Text(status).foregroundStyle(.secondary)};Text(detail).font(.caption).foregroundStyle(.secondary)}} }
 private struct WarehouseOutboundDetail: View { let row: WarehouseOutbound; var body: some View { List { Section("订单") { LabeledContent("出库单号", value: row.orderNo); LabeledContent("仓库", value: row.warehouseName); LabeledContent("状态", value: outboundStatus(row.status)); if let external = row.externalOrderNo, !external.isEmpty { LabeledContent("平台订单", value: external) } }; Section("收货信息") { LabeledContent("收件人", value: row.recipientName ?? "-"); LabeledContent("联系电话", value: row.recipientPhone ?? "-"); LabeledContent("地址", value: row.recipientAddress ?? "-"); LabeledContent("快递", value: row.carrier ?? "-"); LabeledContent("物流单号", value: row.trackingNo ?? "-") }; Section("商品") { ForEach(row.items, id: \.productID) { item in LabeledContent("\(item.sku) · \(item.productName)", value: "× \(item.quantity) \(item.unit)") } } }.navigationTitle("出库详情").navigationBarTitleDisplayMode(.inline) } }
 
 private struct WarehouseBasicEditor: View {
-    enum Kind { case warehouse, product }; @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let kind:Kind; let onSave:() async->Void
-    @State private var code=""; @State private var name=""; @State private var extra=""; @State private var unit="件"; @State private var price="0"; @State private var warning=0; @State private var error:String?
-    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};TextField(kind == .warehouse ? "仓库编码":"SKU",text:$code).textInputAutocapitalization(.characters);TextField(kind == .warehouse ? "仓库名称":"商品名称",text:$name);TextField(kind == .warehouse ? "地址":"条码",text:$extra);if kind == .product{TextField("单位",text:$unit);TextField("成本价",text:$price).keyboardType(.decimalPad);Stepper("预警库存：\(warning)",value:$warning,in:0...999999)}}.navigationTitle(kind == .warehouse ? "新增仓库":"新增商品").toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("保存"){Task{await save()}}.disabled(code.isEmpty || name.isEmpty)}}}}
-    private func save()async{do{if kind == .warehouse{let _:WarehouseRecord=try await session.send("warehouse/warehouses",method:"POST",body:["code":code,"name":name,"address":extra,"contact_name":"","contact_phone":"","is_active":true,"remark":""])}else{let _:WarehouseProduct=try await session.send("warehouse/products",method:"POST",body:["sku":code,"name":name,"barcode":extra,"specification":"","unit":unit,"cost_price":Double(price) ?? 0,"warning_quantity":warning,"is_active":true,"remark":""])};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
+    enum Kind { case warehouse, product }; @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let kind:Kind; let warehouse: WarehouseRecord?; let product: WarehouseProduct?; let onSave:() async->Void
+    @State private var code:String; @State private var name:String; @State private var extra:String; @State private var unit:String; @State private var price:String; @State private var warning:Int; @State private var enabled:Bool; @State private var error:String?
+    init(kind:Kind,warehouse:WarehouseRecord?,product:WarehouseProduct?,onSave:@escaping()async->Void){self.kind=kind;self.warehouse=warehouse;self.product=product;self.onSave=onSave;_code=State(initialValue:warehouse?.code ?? product?.sku ?? "");_name=State(initialValue:warehouse?.name ?? product?.name ?? "");_extra=State(initialValue:warehouse?.address ?? product?.barcode ?? "");_unit=State(initialValue:product?.unit ?? "件");_price=State(initialValue:product.map{String($0.costPrice)} ?? "0");_warning=State(initialValue:product?.warningQuantity ?? 0);_enabled=State(initialValue:warehouse?.isActive ?? product?.isActive ?? true)}
+    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};TextField(kind == .warehouse ? "仓库编码":"SKU",text:$code).textInputAutocapitalization(.characters);TextField(kind == .warehouse ? "仓库名称":"商品名称",text:$name);TextField(kind == .warehouse ? "地址":"条码",text:$extra);if kind == .product{TextField("单位",text:$unit);TextField("成本价",text:$price).keyboardType(.decimalPad);Stepper("预警库存：\(warning)",value:$warning,in:0...999999)};Toggle("启用",isOn:$enabled)}.navigationTitle((warehouse != nil || product != nil) ? "编辑资料" : (kind == .warehouse ? "新增仓库":"新增商品")).toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("保存"){Task{await save()}}.disabled(code.isEmpty || name.isEmpty)}}}}
+    private func save()async{do{if kind == .warehouse{let path=warehouse.map{"warehouse/warehouses/\($0.id)"} ?? "warehouse/warehouses";let _:WarehouseRecord=try await session.send(path,method:warehouse == nil ? "POST":"PUT",body:["code":code,"name":name,"address":extra,"contact_name":warehouse?.contactName ?? "","contact_phone":warehouse?.contactPhone ?? "","is_active":enabled,"remark":warehouse?.remark ?? ""])}else{let path=product.map{"warehouse/products/\($0.id)"} ?? "warehouse/products";let _:WarehouseProduct=try await session.send(path,method:product == nil ? "POST":"PUT",body:["sku":code,"name":name,"barcode":extra,"specification":product?.specification ?? "","unit":unit,"cost_price":Double(price) ?? 0,"warning_quantity":warning,"is_active":enabled,"remark":product?.remark ?? ""])};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
 }
 private struct WarehouseOrderEditor: View {
     @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let outbound:Bool; let warehouses:[WarehouseRecord]; let products:[WarehouseProduct]; let onSave:() async->Void
-    @State private var warehouseID=0;@State private var productID=0;@State private var quantity=1;@State private var source="purchase";@State private var recipient="";@State private var phone="";@State private var address="";@State private var carrier="";@State private var trackingNo="";@State private var remark="";@State private var error:String?
-    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};Picker("仓库",selection:$warehouseID){Text("请选择").tag(0);ForEach(warehouses.filter(\.isActive)){Text($0.name).tag($0.id)}};Picker("商品",selection:$productID){Text("请选择").tag(0);ForEach(products.filter(\.isActive)){Text("\($0.sku) · \($0.name)").tag($0.id)}};Stepper("数量：\(quantity)",value:$quantity,in:1...999999);if outbound{TextField("收件人",text:$recipient);TextField("联系电话",text:$phone).keyboardType(.phonePad);TextField("收货地址",text:$address);TextField("快递公司（可选）",text:$carrier);TextField("物流单号（可选）",text:$trackingNo)}else{Picker("入库类型",selection:$source){Text("采购入库").tag("purchase");Text("退货入库").tag("return");Text("其他入库").tag("other")}};TextField("备注",text:$remark,axis:.vertical)}.navigationTitle(outbound ? "新建出库单":"商品入库").toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("提交"){Task{await save()}}.disabled(warehouseID == 0 || productID == 0)}}}}
-    private func save()async{var body:[String:Any]=["warehouse_id":warehouseID,"items":[["product_id":productID,"quantity":quantity]],"remark":remark];do{if outbound{body.merge(["external_order_no":"","delivery_method":"shipping","recipient_name":recipient,"recipient_phone":phone,"recipient_address":address,"carrier":carrier,"tracking_no":trackingNo]){_,new in new};let _:WarehouseOutbound=try await session.send("warehouse/outbound-orders",method:"POST",body:body)}else{body["source_type"]=source;body["supplier"]="";let _:WarehouseInbound=try await session.send("warehouse/inbound-orders",method:"POST",body:body)};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
+    @State private var warehouseID=0;@State private var lines:[WarehouseDraftLine]=[WarehouseDraftLine()];@State private var source="purchase";@State private var recipient="";@State private var phone="";@State private var address="";@State private var carrier="";@State private var trackingNo="";@State private var remark="";@State private var error:String?
+    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};Picker("仓库",selection:$warehouseID){Text("请选择").tag(0);ForEach(warehouses.filter(\.isActive)){Text($0.name).tag($0.id)}};Section("商品明细"){ForEach($lines){$line in VStack{Picker("商品",selection:$line.productID){Text("请选择").tag(0);ForEach(products.filter(\.isActive)){Text("\($0.sku) · \($0.name)").tag($0.id)}};Stepper("数量：\(line.quantity)",value:$line.quantity,in:1...999999)}.swipeActions{if lines.count>1{Button("删除",role:.destructive){lines.removeAll{$0.id==line.id}}}}};Button{lines.append(WarehouseDraftLine())}label:{Label("添加商品",systemImage:"plus")}};if outbound{Section("收货信息"){TextField("收件人",text:$recipient);TextField("联系电话",text:$phone).keyboardType(.phonePad);TextField("收货地址",text:$address);TextField("快递公司（可选）",text:$carrier);TextField("物流单号（可选）",text:$trackingNo)}}else{Picker("入库类型",selection:$source){Text("采购入库").tag("purchase");Text("退货入库").tag("return");Text("其他入库").tag("other")}};TextField("备注",text:$remark,axis:.vertical)}.navigationTitle(outbound ? "新建出库单":"商品入库").toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("提交"){Task{await save()}}.disabled(warehouseID == 0 || lines.contains{$0.productID==0})}}}}
+    private func save()async{var body:[String:Any]=["warehouse_id":warehouseID,"items":lines.map{["product_id":$0.productID,"quantity":$0.quantity]},"remark":remark];do{if outbound{body.merge(["external_order_no":"","delivery_method":"shipping","recipient_name":recipient,"recipient_phone":phone,"recipient_address":address,"carrier":carrier,"tracking_no":trackingNo]){_,new in new};let _:WarehouseOutbound=try await session.send("warehouse/outbound-orders",method:"POST",body:body)}else{body["source_type"]=source;body["supplier"]="";let _:WarehouseInbound=try await session.send("warehouse/inbound-orders",method:"POST",body:body)};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
 }
+private struct WarehouseDraftLine: Identifiable { let id=UUID(); var productID=0; var quantity=1 }
 
 private extension View {
     func nativeField() -> some View { padding(12).background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12)) }
@@ -1859,27 +1937,52 @@ private struct CapabilityResponse: Codable {
     let prompts: [CapabilityItem]?; let skills: [CapabilityItem]?; let tools: [CapabilityItem]?; let notes: [CapabilityItem]?
     func items(for kind: CapabilityKind) -> [CapabilityItem] { switch kind { case .prompts: return prompts ?? []; case .skills: return skills ?? []; case .tools: return tools ?? []; case .notes: return notes ?? [] } }
 }
-private enum OperationsSection: String, CaseIterable, Identifiable { case usage, memory, workflow, jobs; var id: String { rawValue }; var title: String { switch self { case .usage: return "用量"; case .memory: return "记忆"; case .workflow: return "工作流"; case .jobs: return "任务" } } }
+private enum OperationsSection: String, CaseIterable, Identifiable { case usage, memory, workflow, jobs, shares; var id: String { rawValue }; var title: String { switch self { case .usage: return "用量"; case .memory: return "记忆"; case .workflow: return "工作流"; case .jobs: return "任务"; case .shares: return "分享" } } }
 private struct UsageRecord: Codable, Identifiable {
-    let id: Int; let operation: String; let modelID: String?; let inputTokens: Int; let outputTokens: Int; let latencyMS: Int
+    let id: String; let operation: String; let modelID: String?; let inputTokens: Int; let outputTokens: Int; let latencyMS: Int
     enum CodingKeys: String, CodingKey { case id, operation; case modelID = "model_id"; case inputTokens = "input_tokens"; case outputTokens = "output_tokens"; case latencyMS = "latency_ms" }
+    init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(Int.self, forKey: .id)).map(String.init) ?? UUID().uuidString; operation = try c.decodeIfPresent(String.self, forKey: .operation) ?? "AI 调用"; modelID = try c.decodeIfPresent(String.self, forKey: .modelID); inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0; outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0; latencyMS = try c.decodeIfPresent(Int.self, forKey: .latencyMS) ?? 0 }
 }
-private struct UsageSummary: Codable { let calls: Int; let inputTokens: Int; let outputTokens: Int; let cost: Double; enum CodingKeys: String, CodingKey { case calls, cost; case inputTokens = "input_tokens"; case outputTokens = "output_tokens" } }
-private struct UsageResponse: Codable { let usage: [UsageRecord]; let summary: UsageSummary }
-private struct AIMemory: Codable, Identifiable { let id: String; let content: String; let sourceChatID: String; let enabled: Int; enum CodingKeys: String, CodingKey { case id, content, enabled; case sourceChatID = "source_chat_id" } }
-private struct MemoriesResponse: Codable { let memories: [AIMemory] }
+
+private struct ShopFieldsView: View {
+    @EnvironmentObject private var session: NativeSession
+    @State private var fields: [ShopField] = []; @State private var showingNew = false; @State private var error: String?
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(Array(fields.enumerated()), id: \.offset) { index, field in VStack(alignment: .leading, spacing: 8) { HStack { VStack(alignment: .leading) { Text(field.label).fontWeight(.medium); Text("\(field.fieldName) · \(fieldTypeLabel(field.fieldType))").font(.caption).foregroundStyle(.secondary) }; Spacer(); Toggle("显示", isOn: Binding(get: { field.isVisible }, set: { update(field, ["is_visible": $0]) })).labelsHidden() }; Toggle("必填", isOn: Binding(get: { field.required }, set: { update(field, ["required": $0]) })); HStack { Button { move(index, -1) } label: { Image(systemName: "arrow.up") }.disabled(index == 0); Button { move(index, 1) } label: { Image(systemName: "arrow.down") }.disabled(index == fields.count - 1); Spacer(); if field.isBuiltin != true { Button("删除", role: .destructive) { Task { await remove(field) } } } } }.padding(.vertical, 4) } }.navigationTitle("店铺字段").task { await load() }.refreshable { await load() }.toolbar { Button { showingNew = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showingNew) { ShopFieldForm { await load() } } }
+    private func load() async { do { fields = try await session.get("custom-fields"); fields.sort { $0.sortOrder < $1.sortOrder } } catch { self.error = session.message(for: error) } }
+    private func update(_ field: ShopField, _ body: [String: Any]) { Task { do { let _: ShopField = try await session.send("custom-fields/\(field.id)", method: "PATCH", body: body); await load() } catch { self.error = session.message(for: error) } } }
+    private func move(_ index: Int, _ offset: Int) { let target = index + offset; guard fields.indices.contains(target) else { return }; fields.swapAt(index, target); let ids = fields.map(\.id); Task { do { let _: EmptyResponse = try await session.send("custom-fields/reorder", method: "POST", body: ["field_ids": ids], allowEmpty: true) } catch { self.error = session.message(for: error); await load() } } }
+    private func remove(_ field: ShopField) async { do { try await session.delete("custom-fields/\(field.id)"); await load() } catch { self.error = session.message(for: error) } }
+    private func fieldTypeLabel(_ value: String) -> String { ["text":"文本","number":"数字","date":"日期"][value] ?? value }
+}
+
+private struct ShopFieldForm: View {
+    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let onSave: () async -> Void
+    @State private var label = ""; @State private var name = ""; @State private var type = "text"; @State private var error: String?
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("字段名称", text: $label); TextField("英文标识", text: $name).textInputAutocapitalization(.never); Picker("类型", selection: $type) { Text("文本").tag("text"); Text("数字").tag("number"); Text("日期").tag("date") } }.navigationTitle("新增字段").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("新增") { Task { await save() } }.disabled(label.isEmpty || name.isEmpty) } } } }
+    private func save() async { do { let _: ShopField = try await session.send("custom-fields", method: "POST", body: ["label":label,"field_name":name,"field_type":type,"required":false]); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+}
+private struct UsageSummary: Codable { let calls: Int; let inputTokens: Int; let outputTokens: Int; let cost: Double; enum CodingKeys: String, CodingKey { case calls, cost; case inputTokens = "input_tokens"; case outputTokens = "output_tokens" }; init(calls: Int, inputTokens: Int, outputTokens: Int, cost: Double) { self.calls = calls; self.inputTokens = inputTokens; self.outputTokens = outputTokens; self.cost = cost }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); calls = try c.decodeIfPresent(Int.self, forKey: .calls) ?? 0; inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0; outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0; cost = try c.decodeIfPresent(Double.self, forKey: .cost) ?? 0 } }
+private struct UsageResponse: Codable { let usage: [UsageRecord]; let summary: UsageSummary; enum CodingKeys: CodingKey { case usage, summary }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); usage = try c.decodeIfPresent([UsageRecord].self, forKey: .usage) ?? []; summary = try c.decodeIfPresent(UsageSummary.self, forKey: .summary) ?? UsageSummary(calls: 0, inputTokens: 0, outputTokens: 0, cost: 0) } }
+private struct AIMemory: Codable, Identifiable { let id: String; let content: String; let sourceChatID: String?; let enabled: Int; enum CodingKeys: String, CodingKey { case id, content, enabled; case sourceChatID = "source_chat_id" }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(Int.self, forKey: .id)).map(String.init) ?? UUID().uuidString; content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""; sourceChatID = try c.decodeIfPresent(String.self, forKey: .sourceChatID); enabled = (try? c.decode(Int.self, forKey: .enabled)) ?? ((try? c.decode(Bool.self, forKey: .enabled)) == true ? 1 : 0) } }
+private struct MemoriesResponse: Codable { let memories: [AIMemory]; enum CodingKeys: CodingKey { case memories }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); memories = try c.decodeIfPresent([AIMemory].self, forKey: .memories) ?? [] } }
 private struct AIWorkflow: Codable, Identifiable {
     let id: String; let name: String; let description: String; let steps: String; let enabled: Int
     var firstPrompt: String { guard let data = steps.data(using: .utf8), let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return "" }; return rows.first?["content"] as? String ?? "" }
+    enum CodingKeys: CodingKey { case id, name, description, steps, enabled }
+    init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(Int.self, forKey: .id)).map(String.init) ?? UUID().uuidString; name = try c.decodeIfPresent(String.self, forKey: .name) ?? "未命名工作流"; description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""; if let value = try? c.decode(String.self, forKey: .steps) { steps = value } else if let value = try? c.decode([[String: JSONValue]].self, forKey: .steps), let data = try? JSONEncoder().encode(value) { steps = String(data: data, encoding: .utf8) ?? "[]" } else { steps = "[]" }; enabled = (try? c.decode(Int.self, forKey: .enabled)) ?? ((try? c.decode(Bool.self, forKey: .enabled)) == true ? 1 : 0) }
 }
-private struct WorkflowsResponse: Codable { let workflows: [AIWorkflow] }
+private struct WorkflowsResponse: Codable { let workflows: [AIWorkflow]; enum CodingKeys: CodingKey { case workflows }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); workflows = try c.decodeIfPresent([AIWorkflow].self, forKey: .workflows) ?? [] } }
 private struct AIJob: Codable, Identifiable {
     let id: String; let kind: String; let status: String; let output: String?; let error: String?
     var resultText: String { if let error, !error.isEmpty { return error }; guard let output, !output.isEmpty else { return "暂无结果" }; if let data = output.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let result = object["result"] { return String(describing: result) }; return output }
+    enum CodingKeys: CodingKey { case id, kind, status, output, error }
+    init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(Int.self, forKey: .id)).map(String.init) ?? UUID().uuidString; kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "AI 任务"; status = try c.decodeIfPresent(String.self, forKey: .status) ?? "unknown"; output = try c.decodeIfPresent(String.self, forKey: .output); error = try c.decodeIfPresent(String.self, forKey: .error) }
 }
-private struct JobsResponse: Codable { let jobs: [AIJob] }
+private struct JobsResponse: Codable { let jobs: [AIJob]; enum CodingKeys: CodingKey { case jobs }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); jobs = try c.decodeIfPresent([AIJob].self, forKey: .jobs) ?? [] } }
+private struct AIShare: Decodable, Identifiable { let id: String; let title: String; let createdAt: String?; enum CodingKeys: String, CodingKey { case id, title; case createdAt = "created_at" }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString; title = try c.decodeIfPresent(String.self, forKey: .title) ?? "共享会话"; createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) } }
+private struct SharesResponse: Decodable { let shares: [AIShare]; enum CodingKeys: CodingKey { case shares }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); shares = try c.decodeIfPresent([AIShare].self, forKey: .shares) ?? [] } }
 private struct JobActionResponse: Codable { let jobID: String?; let status: String?; enum CodingKeys: String, CodingKey { case status; case jobID = "job_id" } }
-private struct ShopField: Codable, Identifiable { let id: Int; let fieldName: String; let label: String; let fieldType: String; let required: Bool; let sortOrder: Int; let isVisible: Bool; enum CodingKeys: String, CodingKey { case id, label, required; case fieldName = "field_name"; case fieldType = "field_type"; case sortOrder = "sort_order"; case isVisible = "is_visible" } }
+private struct ShopField: Codable, Identifiable { let id: Int; let fieldName: String; let label: String; let fieldType: String; let required: Bool; let sortOrder: Int; let isVisible: Bool; let isBuiltin: Bool?; enum CodingKeys: String, CodingKey { case id, label, required; case fieldName = "field_name"; case fieldType = "field_type"; case sortOrder = "sort_order"; case isVisible = "is_visible"; case isBuiltin = "is_builtin" } }
 private struct ShopRecord: Codable, Identifiable { let id: Int; let values: [String: JSONValue] }
 private enum JSONValue: Codable {
     case string(String), number(Double), bool(Bool), null
@@ -2115,12 +2218,14 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
     func send<T: Decodable>(_ path: String, method: String, body: [String: Any]? = nil, allowEmpty: Bool = false) async throws -> T {
         guard let url = URL(string: path, relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         var request = URLRequest(url: url); request.httpMethod = method; request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyWorkspaceHeaders(to: &request, path: path)
         if let body { request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 { currentUser = nil; loggedIn = false }
-            let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String ?? "请求失败"
+            let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "请求失败"
             throw NativeAPIError.server(http.statusCode, detail)
         }
         if allowEmpty { return EmptyResponse() as! T }
@@ -2149,9 +2254,10 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         }
         body.append(Data("--\(boundary)--\r\n".utf8))
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type"); request.httpBody = body
+        applyWorkspaceHeaders(to: &request, path: path)
         let (responseData, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else { if http.statusCode == 401 { currentUser = nil; loggedIn = false }; let detail = ((try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any])?["detail"] as? String ?? "上传失败"; throw NativeAPIError.server(http.statusCode, detail) }
+        guard (200..<300).contains(http.statusCode) else { if http.statusCode == 401 { currentUser = nil; loggedIn = false }; let payload = (try? JSONSerialization.jsonObject(with: responseData)) as? [String: Any]; let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "上传失败"; throw NativeAPIError.server(http.statusCode, detail) }
         return try decoder.decode(T.self, from: responseData)
     }
 
@@ -2164,10 +2270,11 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         } catch { return message(for: error) }
     }
 
-    func streamChat(_ question: String, modelID: String, onChunk: @escaping @MainActor (String) -> Void) async throws {
+    func streamChat(_ question: String, modelID: String, documents: [SearchDocument] = [], skillIDs: [String] = [], toolIDs: [String] = [], onChunk: @escaping @MainActor (String) -> Void) async throws {
         guard let url = URL(string: "ai-api/chat/stream", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["question": question]
+        applyWorkspaceHeaders(to: &request, path: "ai-api/chat/stream")
+        var body: [String: Any] = ["question": question, "documents": documents.map(\.body), "skill_ids": skillIDs, "tool_ids": toolIDs]
         if !modelID.isEmpty { body["model_id"] = modelID }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -2196,6 +2303,9 @@ private func outboundStatus(_ value: String) -> String { switch value { case "pe
 private func nextStatus(_ value: String) -> String? { switch value { case "pending": return "picking"; case "picking": return "checked"; case "checked": return "packed"; case "packed": return "shipped"; default: return nil } }
 struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
+private struct ImageGenerationResponse: Decodable { let url: String }
+struct SearchDocument: Decodable { let title: String?; let content: String?; let url: String?; var body: [String: Any] { ["title":title ?? "","content":content ?? "","url":url ?? ""] } }
+private struct SearchDocumentsResponse: Decodable { let documents: [SearchDocument]; enum CodingKeys: CodingKey { case documents }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); documents = try c.decodeIfPresent([SearchDocument].self, forKey: .documents) ?? [] } }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
 struct CurrentUserSession: Decodable {
     let id: Int; let username: String; let displayName: String?; let avatarURL: String?; let role: String; let permissions: [String: String]
@@ -2237,18 +2347,32 @@ private func nativeImageURL(_ value: String) -> URL? {
     let base = URL(string: "https://xiaoxu666.asia/")!
     return URL(string: trimmed, relativeTo: base)?.absoluteURL
 }
+private func nativeThumbnailURL(_ value: String) -> URL? {
+    guard let url = nativeImageURL(value), var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nativeImageURL(value) }
+    var items = components.queryItems ?? []
+    if !items.contains(where: { $0.name == "thumb" }) { items.append(URLQueryItem(name: "thumb", value: "1")) }
+    components.queryItems = items
+    return components.url ?? url
+}
 private struct NativeRemoteImage: View {
     let url: String?
     let size: CGFloat
     var body: some View {
         Group {
-            if let url, let imageURL = nativeImageURL(url) {
+            if let url, let imageURL = nativeThumbnailURL(url) {
                 CachedRemoteImage(url: imageURL, contentMode: .fill, maxPixelSize: size * 3, placeholder: placeholder)
             } else { placeholder }
         }
         .frame(width: size, height: size)
         .background(Color.white.opacity(0.2))
         .clipShape(RoundedRectangle(cornerRadius: min(size * 0.2, 12)))
+    }
+
+    private func applyWorkspaceHeaders(to request: inout URLRequest, path: String) {
+        let normalized = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        guard normalized.hasPrefix("ai-api/") else { return }
+        request.setValue(currentUser.map { String($0.id) } ?? "local", forHTTPHeaderField: "X-Workspace-User")
+        request.setValue(currentUser?.role ?? "user", forHTTPHeaderField: "X-Workspace-Role")
     }
     private var placeholder: some View { Image(systemName: "photo").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
 }
@@ -2283,9 +2407,10 @@ private actor NativeImagePipeline {
         let session = session
         let task = Task.detached(priority: .utility) {
             var lastError: Error = NativeImageError.invalidResponse
+            let requestURLs = NativeImagePipeline.requestURLs(for: url)
             for attempt in 0..<3 {
                 do {
-                    var request = URLRequest(url: url)
+                    var request = URLRequest(url: requestURLs[min(attempt, requestURLs.count - 1)])
                     request.cachePolicy = .returnCacheDataElseLoad
                     request.timeoutInterval = 20
                     request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
@@ -2326,6 +2451,13 @@ private actor NativeImagePipeline {
         ] as CFDictionary
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
         return UIImage(cgImage: image)
+    }
+
+    private static func requestURLs(for url: URL) -> [URL] {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.queryItems?.contains(where: { $0.name == "thumb" }) == true else { return [url] }
+        components.queryItems = components.queryItems?.filter { $0.name != "thumb" }
+        guard let original = components.url else { return [url] }
+        return [url, url, original]
     }
 }
 

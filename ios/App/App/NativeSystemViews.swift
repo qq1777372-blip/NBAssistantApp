@@ -1,12 +1,17 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 struct NativeAlertsView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var payload = AlertPayload()
     @State private var error: String?
+    @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
     var body: some View {
         List {
+            Section("系统通知") {
+                HStack { Label(notificationLabel, systemImage: notificationStatus == .authorized ? "bell.badge.fill" : "bell.slash"); Spacer(); if notificationStatus != .authorized { Button("开启") { Task { await requestNotifications() } } } }
+            }
             Section { HStack { Metric(title: "待处理", value: "\(payload.openCount)"); Metric(title: "紧急提醒", value: "\(payload.criticalCount)") } }
             if let error { Text(error).foregroundStyle(.red) }
             ForEach(payload.items) { item in
@@ -17,9 +22,12 @@ struct NativeAlertsView: View {
                     Button(item.acknowledged ? "重新打开" : "标记已处理") { Task { await toggle(item) } }.font(.caption)
                 }.padding(.vertical, 4).opacity(item.acknowledged ? 0.6 : 1)
             }
-        }.navigationTitle("通知中心").task { await load() }.refreshable { await load() }
+        }.navigationTitle("通知中心").task { await refreshNotificationStatus(); await load() }.refreshable { await load() }
     }
-    private func load() async { do { payload = try await session.get("system-alerts") } catch { self.error = session.message(for: error) } }
+    private var notificationLabel: String { switch notificationStatus { case .authorized, .provisional, .ephemeral: "通知已开启"; case .denied: "通知已关闭"; default: "尚未开启通知" } }
+    private func refreshNotificationStatus() async { notificationStatus = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus }
+    private func requestNotifications() async { do { _ = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]); UIApplication.shared.registerForRemoteNotifications(); await refreshNotificationStatus() } catch { self.error = "无法开启系统通知" } }
+    private func load() async { do { payload = try await session.get("system-alerts"); UIApplication.shared.applicationIconBadgeNumber = payload.openCount } catch { self.error = session.message(for: error) } }
     private func toggle(_ item: SystemAlert) async { do { let _: EmptyResponse = try await session.send("system-alerts/\(item.key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.key)", method: "PATCH", body: ["acknowledged": !item.acknowledged], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
 }
 
