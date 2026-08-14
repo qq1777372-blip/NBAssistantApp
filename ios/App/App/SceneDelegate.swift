@@ -5,6 +5,7 @@ import AVFoundation
 import UniformTypeIdentifiers
 import WebKit
 import ImageIO
+import PhotosUI
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -148,7 +149,7 @@ private enum NativeDestination: String, Identifiable, Hashable {
     var id: String { rawValue }
 
     @ViewBuilder var view: some View {
-        switch self {
+        Group { switch self {
         case .tasks: NativeTaskView()
         case .shops: NativeShopsView()
         case .warehouse: NativeWarehouseView()
@@ -175,7 +176,9 @@ private enum NativeDestination: String, Identifiable, Hashable {
         case .systemSettings: NativeSystemSettingsView()
         case .appSettings: NativeAppSettingsView()
         case .profile: NativeProfileView()
-        }
+        } }
+        .listStyle(.plain)
+        .scrollContentBackground(.visible)
     }
 
     var title: String {
@@ -243,7 +246,7 @@ private struct NativeProfitView: View {
             Section { HStack { Metric(title: "累计利润", value: money(summary?.totalProfit ?? 0)); Metric(title: "店铺数", value: "\(summary?.uniqueStoreCount ?? 0) 家"); Metric(title: "报表人数", value: "\(summary?.uniqueReporterCount ?? 0) 人") } }
             Section("月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(months) { item in VStack { Text(money(item.totalProfit)).font(.caption2).foregroundStyle(item.totalProfit < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.totalProfit < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.totalProfit) / maximum) * 115, 5)); Text(String(item.month.suffix(2)) + "月").font(.caption) } } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
             Section("利润明细") { ForEach(filtered) { item in HStack { VStack(alignment: .leading, spacing: 4) { Text(item.storeName).fontWeight(.medium); Text("\(item.reportDate) · \(item.reporterName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(money(item.profit)).foregroundStyle(item.profit < 0 ? .red : .green) } } }
-        }.navigationTitle("钉钉利润").searchable(text: $query, prompt: "搜索店铺、上报人或日期").task { await load() }.refreshable { await load() }
+        }.listStyle(.plain).navigationTitle("钉钉利润").searchable(text: $query, prompt: "搜索店铺、上报人或日期").task { await load() }.refreshable { await load() }
     }
     private func load() async { do { async let a: ProfitListSummary = session.get("dingtalk-profits/summary"); async let b: [ProfitMonth] = session.get("dingtalk-profits/monthly-summary"); async let c: [ProfitRecord] = session.get("dingtalk-profits"); (summary, months, rows) = try await (a, b, c) } catch { self.error = session.message(for: error) } }
 }
@@ -259,6 +262,7 @@ private struct NativeAIWorkspaceView: View {
     @State private var selectedKnowledge = ""; @State private var selectedSkills: Set<String> = []; @State private var selectedTools: Set<String> = []
     @State private var webSearch = false; @State private var imageMode = false; @State private var imageSize = "1024x1024"; @State private var showingTools = false
     @State private var scrollRequest = 0
+    @FocusState private var composerFocused: Bool
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
     private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
     var body: some View {
@@ -272,6 +276,7 @@ private struct NativeAIWorkspaceView: View {
                     }
                     .padding()
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .onAppear { scrollToBottom(proxy, animated: false) }
                 .onChange(of: activeChatID) { _ in scrollToBottom(proxy, animated: false) }
                 .onChange(of: activeChat?.messages.count ?? 0) { _ in scrollToBottom(proxy) }
@@ -281,6 +286,7 @@ private struct NativeAIWorkspaceView: View {
             if let error { HStack(spacing: 6) { Image(systemName: "exclamationmark.circle"); Text(error).lineLimit(2); Spacer(); Button { Task { await loadWorkspace() } } label: { Image(systemName: "arrow.clockwise") }; Button { self.error = nil } label: { Image(systemName: "xmark") } }.font(.caption).foregroundStyle(.orange).padding(.horizontal, 14).padding(.top, 6) }
             composer
         }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in requestKeyboardScroll() }
         .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
         .sheet(isPresented: $showingHistory) { historySheet }
         .sheet(isPresented: $showingTools) { toolsSheet }
@@ -291,11 +297,12 @@ private struct NativeAIWorkspaceView: View {
         VStack(spacing: 8) {
             TextField(recorder.recording ? "正在录音…" : imageMode ? "描述要生成的图片…" : "给 AI 发消息…", text: $question, axis: .vertical)
                 .lineLimit(1...5)
+                .focused($composerFocused)
                 .submitLabel(.send)
                 .onSubmit { if !sending { send() } }
+                .onChange(of: composerFocused) { focused in if focused { requestKeyboardScroll() } }
             HStack(spacing: 12) {
                 Button { showingTools = true } label: { Image(systemName: activeTools ? "plus.circle.fill" : "plus.circle").font(.title2) }
-                Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { HStack(spacing: 4) { Image(systemName: "cpu"); Text(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型").lineLimit(1); Image(systemName: "chevron.down").font(.caption2) }.font(.caption).foregroundStyle(.secondary) }
                 Spacer(minLength: 4)
                 if sending {
                     Button { stop() } label: { Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(.primary, in: Circle()) }
@@ -344,6 +351,7 @@ private struct NativeAIWorkspaceView: View {
     private var localChatsKey: String { "native-ai-chats-\(session.currentUser?.id ?? 0)" }
     private func restoreLocalChats() { guard chats.isEmpty, let data = UserDefaults.standard.data(forKey: localChatsKey), let saved = try? JSONDecoder().decode([AIChat].self, from: data), !saved.isEmpty else { return }; chats = saved; activeChatID = saved.first(where: { !$0.archived })?.id ?? saved[0].id; selectedModel = activeChat?.modelID ?? selectedModel }
     private func persistChatsLocally() { if let data = try? JSONEncoder().encode(Array(chats.prefix(60))) { UserDefaults.standard.set(data, forKey: localChatsKey) } }
+    private func requestKeyboardScroll() { scrollRequest += 1; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { scrollRequest += 1 } }
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) { DispatchQueue.main.async { if animated { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("ai-chat-bottom", anchor: .bottom) } } else { proxy.scrollTo("ai-chat-bottom", anchor: .bottom) } } }
     private func setBinding(_ selection: Binding<Set<String>>, _ id: String) -> Binding<Bool> { Binding(get: { selection.wrappedValue.contains(id) }, set: { enabled in if enabled { selection.wrappedValue.insert(id) } else { selection.wrappedValue.remove(id) } }) }
     private func toggleRecording() async { if recorder.recording { guard let data = recorder.stop() else { return }; recorder.transcribing = true; defer { recorder.transcribing = false }; do { let result: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": "recording.m4a", "data": data.base64EncodedString(), "model_id": audioModel]); question = [question, result.text].filter { !$0.isEmpty }.joined(separator: " ") } catch { self.error = session.message(for: error) } } else { do { try await recorder.start() } catch { self.error = "无法使用麦克风，请在系统设置中允许权限。" } } }
@@ -390,7 +398,9 @@ private struct NativeHomeView: View {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue)
                         HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green)
+                        HomeDashboardMetric("本月钉钉利润", dashboard.monthlyProfit.map(money) ?? "--", "calendar", .orange)
                         HomeDashboardMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--", "shippingbox", .purple)
+                        HomeDashboardMetric("待结算", dashboard.pendingSettlement.map(String.init) ?? "--", "clock.badge.checkmark", .pink)
                         HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal)
                         HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo)
                         HomeDashboardMetric("库存预警", dashboard.lowStock.map(String.init) ?? "--", "exclamationmark.triangle", .orange)
@@ -430,7 +440,8 @@ private struct NativeHomeView: View {
         async let tasks: TaskSummary? = try? session.get("task-bookkeeping/summary")
         async let expenses: ExpenseSummary? = try? session.get("company-expenses/summary")
         async let profits: ProfitSummary? = try? session.get("dingtalk-profits/summary")
-        let results: [HomeDashboard.Partial] = await [.warehouse(warehouse), .tasks(tasks), .expenses(expenses), .profits(profits)]
+        async let monthlyProfits: [ProfitMonth]? = try? session.get("dingtalk-profits/monthly-summary")
+        let results: [HomeDashboard.Partial] = await [.warehouse(warehouse), .tasks(tasks), .expenses(expenses), .profits(profits), .monthlyProfits(monthlyProfits)]
         var successes = 0
         for result in results { if dashboard.apply(result) { successes += 1 } }
         if successes == 0 { dashboardError = "经营数据加载失败，请下拉重试" }
@@ -646,6 +657,7 @@ private struct NativeTaskView: View {
                      }
                  }
              }
+             .listStyle(.plain)
              .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
             .refreshable { await load(reset: true) }
@@ -782,6 +794,7 @@ private struct NativeLedgerView: View {
                 }
             }
             }
+            .listStyle(.plain)
             .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }.navigationTitle("公司记账")
@@ -825,6 +838,8 @@ private struct NativeLinksView: View {
     @State private var hasMore = true
     @State private var error: String?
     @State private var deleting: SavedLink?
+    @State private var pushing: SavedLink?
+    @State private var scheduling: SavedLink?
     @State private var editing: SavedLink?
     @State private var showingForm = false
     @State private var tab = "latest"
@@ -863,6 +878,10 @@ private struct NativeLinksView: View {
                             Task { await togglePin(item) }
                         } onDelete: {
                             deleting = item
+                        } onPushNow: {
+                            pushing = item
+                        } onSchedule: {
+                            scheduling = item
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
@@ -884,10 +903,15 @@ private struct NativeLinksView: View {
                 } label: { Image(systemName: "square.and.pencil") }
             }
             .sheet(isPresented: $showingForm) { LinkForm(item: editing, article: publishingArticle) { await load() } }
+            .sheet(item: $scheduling) { item in SavedLinkPushSheet(item: item) { updated in update(updated) } }
             .confirmationDialog("确定删除这个帖子吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
                 Button("取消", role: .cancel) { deleting = nil }
             }
+            .confirmationDialog("立即推送到钉钉群？", isPresented: Binding(get: { pushing != nil }, set: { if !$0 { pushing = nil } }), titleVisibility: .visible) {
+                Button("立即推送") { if let item = pushing { Task { await pushNow(item) } } }
+                Button("取消", role: .cancel) { pushing = nil }
+            } message: { Text(pushing.map { "将“\($0.title)”发送到已配置的钉钉群。" } ?? "") }
         }
     }
 
@@ -909,9 +933,18 @@ private struct NativeLinksView: View {
     private func togglePin(_ item: SavedLink) async {
         do {
             let updated: SavedLink = try await session.send("saved-links/\(item.id)/pin", method: item.isPinned ? "DELETE" : "POST")
-            if let index = records.firstIndex(where: { $0.id == updated.id }) { records[index] = updated }
+            update(updated)
         } catch { self.error = session.message(for: error) }
     }
+
+    private func pushNow(_ item: SavedLink) async {
+        do {
+            let updated: SavedLink = try await session.send("saved-links/\(item.id)/push", method: "POST", body: ["scheduled_at": NSNull()])
+            update(updated); pushing = nil
+        } catch { self.error = session.message(for: error); pushing = nil }
+    }
+
+    private func update(_ item: SavedLink) { if let index = records.firstIndex(where: { $0.id == item.id }) { records[index] = item } }
 
     private func remove(_ item: SavedLink) async {
         do { try await session.delete("saved-links/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
@@ -1061,7 +1094,7 @@ private struct LinkForm: View {
     let item: SavedLink?; let article: Bool; let onSave: () async -> Void
     @State private var title: String; @State private var category: String; @State private var url: String
     @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
-    @State private var importing = false; @State private var images: [URL] = []
+    @State private var photoItems: [PhotosPickerItem] = []; @State private var images: [URL] = []
     @State private var previewing = false
     @State private var editCommand: ArticleEditCommand?
     @State private var pendingInlineImages: [PendingInlineImage] = []
@@ -1074,20 +1107,10 @@ private struct LinkForm: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if let error { Text(error).foregroundStyle(.red) }
-                if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary) }
-                Section(article ? "文章" : "帖子") { TextField("标题", text: $title); TextField("分类", text: $category); if !article { Toggle("置顶", isOn: $pinned) } }
-                if article { Section { Picker("模式", selection: $previewing) { Text("写作").tag(false); Text("预览").tag(true) }.pickerStyle(.segmented) } }
-                if article && !previewing { articleToolbar }
-                if article && previewing { Section("文章预览") { Text(markdownPreview).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) } }
-                else { Section(article ? "文章正文" : "正文") { if article { NativeArticleTextEditor(text: $description, command: $editCommand).frame(minHeight: 280) } else { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) } } }
-                if !article { Section("图片") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } } }
-                if article && !images.isEmpty { Section("待上传图片") { ForEach(Array(images.enumerated()), id: \.offset) { index, image in HStack { Text(image.lastPathComponent).lineLimit(1); Spacer(); Button { moveImage(index, -1) } label: { Image(systemName: "arrow.up") }.disabled(index == 0); Button { moveImage(index, 1) } label: { Image(systemName: "arrow.down") }.disabled(index == images.count - 1); Button(role: .destructive) { removeImage(at: index) } label: { Image(systemName: "trash") } } } } }
-            }
+            Group { if article { articleEditorBody } else { postEditorBody } }
             .navigationTitle(item == nil ? (article ? "发布文章" : "发布帖子") : (article ? "编辑文章" : "编辑帖子")).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true, onCompletion: receiveImages)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; if article { ToolbarItem(placement: .principal) { Picker("模式", selection: $previewing) { Text("写作").tag(false); Text("预览").tag(true) }.pickerStyle(.segmented).frame(width: 150) } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
+            .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
             .task { restoreDraft() }
             .onChange(of: title) { _ in saveDraft() }
             .onChange(of: category) { _ in saveDraft() }
@@ -1095,9 +1118,32 @@ private struct LinkForm: View {
         }
     }
 
+    private var postEditorBody: some View {
+        Form { if let error { Text(error).foregroundStyle(.red) }; Section("帖子") { TextField("标题", text: $title); TextField("分类", text: $category); Toggle("置顶", isOn: $pinned) }; Section("正文") { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }; Section("图片") { PhotosPicker(selection: $photoItems, maxSelectionCount: max(9 - images.count, 1), matching: .images) { Label(images.isEmpty ? "从照片图库选择" : "已选择 \(images.count) 张，继续添加", systemImage: "photo.on.rectangle") }.disabled(images.count >= 9) } }
+    }
+
+    private var articleEditorBody: some View {
+        VStack(spacing: 0) {
+            if let error { Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
+            if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
+            VStack(spacing: 0) {
+                TextField("输入标题", text: $title, axis: .vertical).font(.title2.weight(.semibold)).lineLimit(1...3).padding(.horizontal, 20).padding(.vertical, 14)
+                Divider().padding(.horizontal, 20)
+                HStack(spacing: 8) { Image(systemName: "tag").foregroundStyle(.secondary); TextField("添加分类", text: $category) }.padding(.horizontal, 20).padding(.vertical, 11)
+                Divider()
+            }
+            if previewing {
+                articlePreviewBody
+            } else {
+                NativeArticleTextEditor(text: $description, command: $editCommand).frame(maxWidth: .infinity, maxHeight: .infinity).padding(.horizontal, 20)
+            }
+        }
+        .background(Color(.systemBackground))
+        .safeAreaInset(edge: .bottom, spacing: 0) { if !previewing { articleToolbar } }
+    }
+
     private var articleToolbar: some View {
-        Section("编写工具") {
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 Menu {
                     Button { editCommand = ArticleEditCommand(.heading1) } label: { Label("一级标题", systemImage: "textformat.size.larger") }
                     Button { editCommand = ArticleEditCommand(.heading2) } label: { Label("二级标题", systemImage: "textformat.size.smaller") }
@@ -1125,17 +1171,40 @@ private struct LinkForm: View {
                     }
                 } label: { ArticleToolIcon("face.smiling", "表情") }.frame(maxWidth: .infinity)
 
-                Button { importing = true } label: { ArticleToolIcon("photo", "图片") }.frame(maxWidth: .infinity).buttonStyle(.plain)
+                PhotosPicker(selection: $photoItems, maxSelectionCount: max(9 - images.count, 1), matching: .images) { ArticleToolIcon("photo", "图片") }.frame(maxWidth: .infinity).buttonStyle(.plain).disabled(images.count >= 9)
+                Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) } label: { ArticleToolIcon("keyboard.chevron.compact.down", "收起") }.frame(maxWidth: .infinity).buttonStyle(.plain)
             }
-            .padding(.vertical, 2)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(.ultraThinMaterial)
+            .overlay(alignment: .top) { Divider() }
+    }
+
+    private var articlePreviewBody: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                ForEach(Array(savedLinkContentSegments(description).enumerated()), id: \.offset) { _, segment in
+                    switch segment {
+                    case .text(let value):
+                        if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text(savedLinkMarkdown(value)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                    case .image(let source, _):
+                        if let pending = pendingInlineImages.first(where: { source.contains($0.token) }), let image = UIImage(contentsOfFile: pending.url.path) { Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 8)) }
+                        else { SavedLinkDetailImage(url: source) }
+                    }
+                }
+            }.padding(20)
         }
     }
 
-    private var markdownPreview: AttributedString { savedLinkMarkdown(description) }
-
-    private func receiveImages(_ result: Result<[URL], Error>) {
+    @MainActor private func receivePhotos(_ items: [PhotosPickerItem]) async {
         let remaining = max(9 - images.count, 0)
-        let selected = Array(((try? result.get()) ?? []).prefix(remaining))
+        guard remaining > 0, !items.isEmpty else { photoItems = []; return }
+        var selected: [URL] = []
+        for item in items.prefix(remaining) {
+            guard let sourceData = try? await item.loadTransferable(type: Data.self), let data = preparedArticlePhoto(sourceData) else { continue }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("article-photo-\(UUID().uuidString).jpg")
+            do { try data.write(to: url, options: .atomic); selected.append(url) } catch { self.error = "读取照片失败，请重新选择。" }
+        }
+        photoItems = []
         guard !selected.isEmpty else { return }
         images.append(contentsOf: selected)
         guard article else { return }
@@ -1143,8 +1212,16 @@ private struct LinkForm: View {
         pendingInlineImages.append(contentsOf: placeholders)
         editCommand = ArticleEditCommand(.images(placeholders))
     }
-    private func moveImage(_ index: Int, _ offset: Int) { let target = index + offset; guard images.indices.contains(target) else { return }; images.swapAt(index, target); if pendingInlineImages.indices.contains(index), pendingInlineImages.indices.contains(target) { pendingInlineImages.swapAt(index, target) } }
-    private func removeImage(at index: Int) { guard images.indices.contains(index) else { return }; let url = images.remove(at: index); if let pendingIndex = pendingInlineImages.firstIndex(where: { $0.url == url }) { let pending = pendingInlineImages.remove(at: pendingIndex); let token = NSRegularExpression.escapedPattern(for: pending.token); description = description.replacingOccurrences(of: "!?\\[[^\\]]*\\]\\(\(token)\\)", with: "", options: .regularExpression) } }
+    private func preparedArticlePhoto(_ data: Data) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+        let maximum: CGFloat = 2400
+        let longest = max(image.size.width, image.size.height)
+        let scale = longest > maximum ? maximum / longest : 1
+        let size = CGSize(width: max(image.size.width * scale, 1), height: max(image.size.height * scale, 1))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in UIColor.white.setFill(); UIRectFill(CGRect(origin: .zero, size: size)); image.draw(in: CGRect(origin: .zero, size: size)) }
+        return rendered.jpegData(compressionQuality: 0.84)
+    }
 
     private func save() async {
         saving = true; error = nil; defer { saving = false }
@@ -1214,16 +1291,16 @@ private struct NativeMineView: View {
                 Section {
                     Button { path.append(.profile) } label: {
                         HStack(spacing: 14) {
-                            NativeRemoteImage(url: session.currentUser?.avatarURL, size: 60)
+                            NativeRemoteImage(url: session.currentUser?.avatarURL, size: 64)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(session.currentUser?.displayName ?? session.username).font(.headline).foregroundStyle(.primary)
+                                HStack(spacing: 7) { Text(session.currentUser?.displayName ?? session.username).font(.title3.bold()).foregroundStyle(.primary); Text(roleLabel(session.currentUser?.role ?? "viewer")).font(.caption2.weight(.medium)).foregroundStyle(.blue).padding(.horizontal, 7).padding(.vertical, 3).background(Color.blue.opacity(0.1), in: Capsule()) }
                                 Text("账号 \(session.username)").font(.subheadline).foregroundStyle(.secondary)
-                                Text(roleLabel(session.currentUser?.role ?? "viewer")).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                         }
-                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
 
@@ -1236,17 +1313,16 @@ private struct NativeMineView: View {
                     }
                     .padding(.vertical, 2)
                 }
-                .listRowBackground(Color.blue.opacity(0.07))
 
                 Section("账户与访问") {
-                    MineEntry("账号与权限", "person.badge.key", .blue) { path.append(.users) }
-                    MineEntry("卡密管理", "key", .purple) { path.append(.licenseKeys) }
+                    MineEntry("账号与权限", subtitle: "成员、角色与模块权限", "person.badge.key", .blue) { path.append(.users) }
+                    MineEntry("卡密管理", subtitle: "授权码与绑定设备", "key", .purple) { path.append(.licenseKeys) }
                 }
 
                 Section("系统") {
-                    MineEntry("服务器运行", "server.rack", .green) { path.append(.server) }
-                    MineEntry("通知中心", "bell", .red) { path.append(.alerts) }
-                    MineEntry("系统设置", "gearshape", .gray) { path.append(.systemSettings) }
+                    MineEntry("服务器运行", subtitle: "服务状态与资源监控", "server.rack", .green) { path.append(.server) }
+                    MineEntry("通知中心", subtitle: "业务提醒与系统消息", "bell", .red) { path.append(.alerts) }
+                    MineEntry("系统设置", subtitle: "安全、会话与应用配置", "gearshape", .gray) { path.append(.systemSettings) }
                 }
 
                 Section {
@@ -1350,9 +1426,12 @@ private struct SavedLinkFeedRow: View {
     let onEdit: () -> Void
     let onTogglePin: () -> Void
     let onDelete: () -> Void
+    let onPushNow: () -> Void
+    let onSchedule: () -> Void
     private var isArticle: Bool { item.category?.lowercased().hasPrefix("tutorial:") == true }
     private var category: String? { item.category?.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]).trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
     private var bodyText: String { savedLinkPlainText(item.description) }
+    private var pushLabel: String? { item.pushStatus == "idle" ? nil : item.pushStatus == "scheduled" ? "已定时" : item.pushStatus == "sending" ? "推送中" : item.pushStatus == "sent" ? "已推送" : "推送失败" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1367,6 +1446,8 @@ private struct SavedLinkFeedRow: View {
                 Menu {
                     Button("编辑") { onEdit() }
                     Button(item.isPinned ? "取消置顶" : "置顶") { onTogglePin() }
+                    Button("立即推送到钉钉", systemImage: "paperplane") { onPushNow() }
+                    Button("定时推送", systemImage: "calendar.badge.clock") { onSchedule() }
                     Button("删除", role: .destructive) { onDelete() }
                 } label: { Image(systemName: "ellipsis").font(.headline).frame(width: 28, height: 28).contentShape(Rectangle()) }
                 .buttonStyle(.plain)
@@ -1375,6 +1456,7 @@ private struct SavedLinkFeedRow: View {
                 Image(systemName: isArticle ? "doc.text" : "bubble.left").foregroundStyle(.blue)
                 Text(item.title).font(.headline).lineLimit(2)
                 if let category { Text(category).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                if let pushLabel { Text(pushLabel).font(.caption2).foregroundStyle(item.pushStatus == "failed" ? .red : .blue) }
             }
             if !bodyText.isEmpty {
                 Text(bodyText).lineLimit(4).fixedSize(horizontal: false, vertical: true).foregroundStyle(.secondary)
@@ -1464,7 +1546,23 @@ private struct LinkEmptyView: View {
     var body: some View { VStack(spacing: 10) { Image(systemName: searching ? "magnifyingglass" : "link").font(.title2).foregroundStyle(.secondary); Text(searching ? "没有搜索结果" : "暂无内容").font(.headline); Text(searching ? "请尝试其他关键词" : "发布第一条帖子或文章").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 28) }
 }
 
-private struct MineEntry: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HStack(spacing: 12) { Image(systemName: icon).foregroundStyle(color).frame(width: 24); Text(title).foregroundStyle(.primary); Spacer(); Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary) } }.buttonStyle(.plain) } }
+private struct MineEntry: View {
+    let title: String; let subtitle: String; let icon: String; let color: Color; let action: () -> Void
+    init(_ title: String, subtitle: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.subtitle = subtitle; self.icon = icon; self.color = color; self.action = action }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundStyle(color).frame(width: 34, height: 34).background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) { Text(title).font(.body).foregroundStyle(.primary); Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
 private struct MineAccountMetric: View { let value: String; let title: String; var body: some View { VStack(spacing: 3) { Text(value).font(.subheadline.weight(.semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity) } }
 
 private struct NativeShopsView: View {
@@ -1493,7 +1591,37 @@ private struct ShopForm: View {
 private struct NativeOwnersView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var owners: [TaskOwner] = []; @State private var query = ""; @State private var newName = ""; @State private var showingAdd = false; @State private var error: String?
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(owners.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { owner in Label(owner.name, systemImage: "person.circle").swipeActions { Button("删除", role: .destructive) { Task { await remove(owner) } } } } }.navigationTitle("负责人").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }.alert("新增负责人", isPresented: $showingAdd) { TextField("负责人名称", text: $newName); Button("保存") { Task { await add() } }; Button("取消", role: .cancel) {} } }
+    var body: some View {
+        List {
+            if let error { Text(error).foregroundStyle(.red) }
+            ForEach(owners.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { owner in
+                HStack(spacing: 14) {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.blue)
+                        .frame(width: 38, height: 38)
+                        .background(Color.blue.opacity(0.1), in: Circle())
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(owner.name).font(.body.weight(.medium))
+                        Text("任务负责人").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+                .swipeActions { Button("删除", role: .destructive) { Task { await remove(owner) } } }
+            }
+        }
+        .listStyle(.plain)
+        .navigationTitle("负责人")
+        .searchable(text: $query)
+        .task { await load() }
+        .refreshable { await load() }
+        .toolbar { Button { showingAdd = true } label: { Image(systemName: "plus") } }
+        .alert("新增负责人", isPresented: $showingAdd) {
+            TextField("负责人名称", text: $newName)
+            Button("保存") { Task { await add() } }
+            Button("取消", role: .cancel) {}
+        }
+    }
     private func load() async { do { owners = try await session.get("task-bookkeeping/owners") } catch { self.error = session.message(for: error) } }
     private func add() async { let name = newName.trimmingCharacters(in: .whitespacesAndNewlines); guard !name.isEmpty else { return }; do { let _: TaskOwner = try await session.send("task-bookkeeping/owners", method: "POST", body: ["name": name]); newName = ""; await load() } catch { self.error = session.message(for: error) } }
     private func remove(_ owner: TaskOwner) async { do { try await session.delete("task-bookkeeping/owners/\(owner.id)"); await load() } catch { self.error = session.message(for: error) } }
@@ -2266,6 +2394,7 @@ private struct SavedLinkDetail: View {
                 HStack(spacing: 10) { SavedLinkAvatar(item: item).frame(width: 38, height: 38); VStack(alignment: .leading, spacing: 3) { Text(item.authorUsername).fontWeight(.semibold); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }; Spacer() }
                 Text(item.title).font(.title.bold())
                 if let category = item.category, !category.isEmpty { Label(category.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]), systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
+                if item.pushStatus != "idle" { SavedLinkPushStatusView(item: item) }
                 let segments = savedLinkContentSegments(item.description)
                 ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                     switch segment {
@@ -2282,6 +2411,24 @@ private struct SavedLinkDetail: View {
         }.background(Color(.systemBackground)).navigationTitle("预览").navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) { NavigationStack { ZStack { Color.black.ignoresSafeArea(); if let previewURL { CachedRemoteImage(url: previewURL, contentMode: .fit, placeholder: ProgressView().tint(.white)) } }.toolbar { Button("关闭") { previewURL = nil } } } }
     }
+}
+
+private struct SavedLinkPushStatusView: View {
+    let item: SavedLink
+    private var title: String { item.pushStatus == "scheduled" ? "已安排钉钉定时推送" : item.pushStatus == "sending" ? "钉钉推送中" : item.pushStatus == "sent" ? "已推送到钉钉群" : "钉钉推送失败" }
+    var body: some View { VStack(alignment: .leading, spacing: 5) { Label(title, systemImage: item.pushStatus == "failed" ? "exclamationmark.triangle" : "paperplane.fill").foregroundStyle(item.pushStatus == "failed" ? .red : .blue); if let scheduled = item.pushScheduledAt { Text("计划时间：\(shortDate(scheduled))").font(.caption).foregroundStyle(.secondary) }; if let sent = item.pushSentAt { Text("发送时间：\(shortDate(sent))").font(.caption).foregroundStyle(.secondary) }; if let pushError = item.pushError, !pushError.isEmpty { Text(pushError).font(.caption).foregroundStyle(.red).textSelection(.enabled) } }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10)) }
+}
+
+private struct SavedLinkPushSheet: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let item: SavedLink
+    let onSave: (SavedLink) -> Void
+    @State private var scheduledAt = Date().addingTimeInterval(600)
+    @State private var saving = false
+    @State private var error: String?
+    var body: some View { NavigationStack { Form { Section("帖子") { Text(item.title).fontWeight(.medium) }; Section("推送时间") { DatePicker("发送时间", selection: $scheduledAt, in: Date().addingTimeInterval(60)..., displayedComponents: [.date, .hourAndMinute]) }; if let error { Text(error).foregroundStyle(.red) } }.navigationTitle("定时推送").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("安排") { Task { await schedule() } }.disabled(saving) } } } }
+    private func schedule() async { saving = true; defer { saving = false }; let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withTimeZone]; do { let updated: SavedLink = try await session.send("saved-links/\(item.id)/push", method: "POST", body: ["scheduled_at": formatter.string(from: scheduledAt)]); onSave(updated); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
 private enum SavedLinkContentSegment {
@@ -2325,7 +2472,8 @@ private struct SavedLinkDetailImage: View {
 private struct SavedLink: Codable, Identifiable {
     let id: Int; let title: String; let url: String?; let category: String?; let description: String?
     let isPinned: Bool; let authorUsername: String; let authorAvatarURL: String?; let images: [SavedLinkImage]; let createdAt: String; let updatedAt: String
-    enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case authorAvatarURL = "author_avatar_url"; case createdAt = "created_at"; case updatedAt = "updated_at" }
+    let pushStatus: String; let pushScheduledAt: String?; let pushSentAt: String?; let pushError: String?
+    enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case authorAvatarURL = "author_avatar_url"; case createdAt = "created_at"; case updatedAt = "updated_at"; case pushStatus = "push_status"; case pushScheduledAt = "push_scheduled_at"; case pushSentAt = "push_sent_at"; case pushError = "push_error" }
 }
 
 enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
@@ -2512,15 +2660,21 @@ private struct ProfitMonth: Decodable, Identifiable { let month: String; let tot
 private struct ProfitRecord: Decodable, Identifiable { let sourceRecordID: Int; let reportDate: String; let storeName: String; let profit: Double; let reporterName: String; var id: Int { sourceRecordID }; enum CodingKeys: String, CodingKey { case profit; case sourceRecordID = "source_record_id"; case reportDate = "report_date"; case storeName = "store_name"; case reporterName = "reporter_name" } }
 
 private struct HomeDashboard {
-    var expenseTotal: Double?; var profitTotal: Double?
+    var expenseTotal: Double?; var profitTotal: Double?; var monthlyProfit: Double?
     var pendingSigned: Int?; var pendingSettlement: Int?; var stockQuantity: Int?
     var stockCost: Double?; var lowStock: Int?
-    enum Partial { case warehouse(WarehouseSummary?); case tasks(TaskSummary?); case expenses(ExpenseSummary?); case profits(ProfitSummary?) }
+    enum Partial { case warehouse(WarehouseSummary?); case tasks(TaskSummary?); case expenses(ExpenseSummary?); case profits(ProfitSummary?); case monthlyProfits([ProfitMonth]?) }
     mutating func apply(_ partial: Partial) -> Bool { switch partial {
         case .warehouse(let value): stockQuantity = value?.totalQuantity; stockCost = value?.totalCost; lowStock = value?.lowStockCount; return value != nil
         case .tasks(let value): pendingSigned = value?.pendingSignedCount; pendingSettlement = value?.pendingSettlementCount; return value != nil
         case .expenses(let value): expenseTotal = value?.monthTotal; return value != nil
         case .profits(let value): profitTotal = value?.totalProfit; return value != nil
+        case .monthlyProfits(let value):
+            guard let value else { return false }
+            let components = Calendar.current.dateComponents([.year, .month], from: Date())
+            let currentMonth = String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
+            monthlyProfit = value.first(where: { $0.month == currentMonth })?.totalProfit ?? 0
+            return true
     } }
 }
 
