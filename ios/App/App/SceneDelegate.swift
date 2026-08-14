@@ -1065,7 +1065,7 @@ private struct SavedLinkAvatar: View {
     let item: SavedLink
     var body: some View {
         Group {
-            if let avatar = nativeImageURL(item.authorAvatarURL) {
+            if let value = item.authorAvatarURL, let avatar = nativeImageURL(value) {
                 CachedRemoteImage(url: avatar, contentMode: .fill, placeholder: initials)
             } else { initials }
         }.frame(width: 30, height: 30).clipShape(Circle())
