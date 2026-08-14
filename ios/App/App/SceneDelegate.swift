@@ -97,25 +97,22 @@ private struct NativeTabView: View {
     @State private var selected = 0
     @State private var destination: NativeDestination?
     var body: some View {
-        VStack(spacing: 0) {
-            Group {
-                switch selected {
-                case 1: NativeTaskView()
-                case 2: NativeQuickLedgerView()
-                case 3: NativeLinksView()
-                case 4: NativeMineView()
-                default: NativeHomeView(destination: $destination)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            NativeBottomBar(selected: $selected)
-        }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
-        .sheet(item: $destination) { destination in
-            NativeDestinationHost(destination: destination)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-                .interactiveDismissDisabled(false)
+        TabView(selection: $selected) {
+            NativeHomeView(destination: $destination)
+                .tabItem { Label("首页", systemImage: "house") }
+                .tag(0)
+            NativeTaskView()
+                .tabItem { Label("任务", systemImage: "checklist") }
+                .tag(1)
+            NativeQuickLedgerView()
+                .tabItem { Label("记账", systemImage: "wallet.pass") }
+                .tag(2)
+            NativeLinksView()
+                .tabItem { Label("链接", systemImage: "link") }
+                .tag(3)
+            NativeMineView()
+                .tabItem { Label("我的", systemImage: "person") }
+                .tag(4)
         }
     }
 }
@@ -190,17 +187,6 @@ private enum NativeDestination: String, Identifiable {
     }
 }
 
-private struct NativeDestinationHost: View {
-    let destination: NativeDestination
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        NavigationStack {
-            destination.view
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
-        }
-    }
-}
-
 private struct NativeWorkbenchView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var query = ""
@@ -229,7 +215,12 @@ private struct NativeWorkbenchView: View {
         }
         .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
         .searchable(text: $query, prompt: "搜索功能")
-        .fullScreenCover(item: $destination) { target in NativeDestinationHost(destination: target) }
+        .navigationDestination(isPresented: destinationPresented) {
+            if let destination { destination.view }
+        }
+    }
+    private var destinationPresented: Binding<Bool> {
+        Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
     }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
         groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
@@ -283,30 +274,6 @@ private struct NativeAIWorkspaceView: View {
     private func stop() { streamTask?.cancel(); streamTask = nil; sending = false }
 }
 
-private struct NativeBottomBar: View {
-    @Binding var selected: Int
-    private let items: [(String, String)] = [("首页", "house"), ("任务", "checklist"), ("记账", "wallet.pass"), ("链接", "link"), ("我的", "person")]
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(items.indices, id: \.self) { index in
-                Button { selected = index } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: items[index].1).font(.system(size: 19, weight: selected == index ? .semibold : .regular))
-                        Text(items[index].0).font(.system(size: 10, weight: selected == index ? .semibold : .regular))
-                    }
-                    .frame(maxWidth: .infinity).frame(height: 58)
-                    .foregroundStyle(selected == index ? Color.blue : Color(.secondaryLabel))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.top, 5)
-        .padding(.bottom, 4)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) { Divider() }
-    }
-}
-
 private struct NativeHomeView: View {
     @EnvironmentObject private var session: NativeSession
     @Binding var destination: NativeDestination?
@@ -334,25 +301,23 @@ private struct NativeHomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack { Text("常用功能").font(.headline); Spacer(); Button("全部") { destination = .workbench }.font(.subheadline) }.padding(.horizontal, 16)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 16) {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
                         HomeShortcut("生意参谋", "chart.bar", .teal) { destination = .sycm }
                         HomeShortcut("任务记录", "doc.text", .indigo) { destination = .tasks }
                         HomeShortcut("店铺账号", "storefront", .mint) { destination = .shops }
                         HomeShortcut("仓储管理", "cube.box", .orange) { destination = .warehouse }
                         HomeShortcut("链接广场", "link", .blue) { destination = .links }
                         HomeShortcut("AI 工作台", "sparkles", .cyan) { destination = .aiWorkspace }
-                        }.padding(.horizontal, 16)
-                    }
+                    }.padding(.horizontal, 16)
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    VStack(spacing: 0) {
-                        HomeMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--"); Divider()
-                        HomeMetric("累计利润", dashboard.profitTotal.map(money) ?? "--"); Divider()
-                        HomeMetric("当月钉钉利润", dashboard.monthProfit.map(money) ?? "--"); Divider()
-                        HomeMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--"); Divider()
-                        HomeMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--"); Divider()
-                        HomeMetric("库存成本", dashboard.stockCost.map(money) ?? "--")
-                    }.background(.background).clipShape(RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 16)
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue)
+                        HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green)
+                        HomeDashboardMetric("当月钉钉利润", dashboard.monthProfit.map(money) ?? "--", "calendar", .orange)
+                        HomeDashboardMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--", "shippingbox", .purple)
+                        HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal)
+                        HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo)
+                    }.padding(.horizontal, 16)
                     HStack { Text("钉钉月度利润").font(.headline); Spacer(); Text("查看趋势 ›").font(.caption).foregroundStyle(.blue) }.padding(.horizontal, 16)
                     HStack(alignment: .bottom, spacing: 18) { ForEach(Array(dashboard.months.enumerated()), id: \.offset) { _, item in VStack { RoundedRectangle(cornerRadius: 5).fill(item.value < 0 ? Color.red : Color.blue).frame(maxWidth: .infinity).frame(height: item.height); Text(item.label).font(.system(size: 9)).foregroundStyle(.secondary) } } }.frame(height: 95, alignment: .bottom).padding(16).background(.background, in: RoundedRectangle(cornerRadius: 16)).padding(.horizontal, 16)
                     HStack { Text("待办提醒").font(.headline); Spacer(); Text("查看全部").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
@@ -372,7 +337,14 @@ private struct NativeHomeView: View {
             }
             .task { await loadDashboard() }
             .refreshable { await loadDashboard() }
+            .navigationDestination(isPresented: destinationPresented) {
+                if let destination { destination.view }
+            }
         }
+    }
+
+    private var destinationPresented: Binding<Bool> {
+        Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
     }
 
     private func loadDashboard() async {
@@ -642,18 +614,19 @@ private struct NativeQuickLedgerView: View {
     var body: some View {
         NavigationStack {
             ScrollView { VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 8) { Text("公司消费").font(.caption); Text(amount.isEmpty ? "¥ 0.00" : "¥ \(amount)").font(.system(size: 36, weight: .bold)); TextField("输入金额", text: $amount).keyboardType(.decimalPad).textFieldStyle(.roundedBorder) }.padding(20).frame(maxWidth: .infinity, alignment: .leading).background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 16)).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 8) { Text("公司消费").font(.caption).opacity(0.85); Text(amount.isEmpty ? "¥ 0.00" : "¥ \(amount)").font(.system(size: 38, weight: .bold, design: .rounded)).monospacedDigit(); Text("使用下方数字键输入金额").font(.caption2).opacity(0.72) }.padding(20).frame(maxWidth: .infinity, minHeight: 132, alignment: .leading).background(Color.blue, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(.white)
                 Text("消费分类").font(.headline)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], spacing: 10) { ForEach(categories, id: \.self) { value in Button(value) { category = value }.buttonStyle(.borderedProminent).tint(category == value ? .blue : .gray.opacity(0.25)) } }
+                ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 12) { ForEach(categories, id: \.self) { value in Button { category = value } label: { VStack(spacing: 7) { Image(systemName: categoryIcon(value)).font(.title3).frame(width: 42, height: 42).background(category == value ? Color.blue : Color(.secondarySystemGroupedBackground), in: Circle()).foregroundStyle(category == value ? .white : .primary); Text(value).font(.caption2).foregroundStyle(.primary).lineLimit(1) }.frame(width: 68) }.buttonStyle(.plain) } }.padding(.vertical, 2) }
                 TextField("写一句消费说明（可选）", text: $note).textFieldStyle(.roundedBorder)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) { ForEach(["1", "2", "3", "⌫", "4", "5", "6", "C", "7", "8", "9", "0", "."], id: \.self) { key in Button(key) { pressKey(key) }.font(.title2.weight(.semibold)).frame(maxWidth: .infinity).frame(height: 48).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10)) } }
+                Grid(horizontalSpacing: 10, verticalSpacing: 10) { GridRow { ledgerKey("1"); ledgerKey("2"); ledgerKey("3"); ledgerKey("⌫", symbol: "delete.left") }; GridRow { ledgerKey("4"); ledgerKey("5"); ledgerKey("6"); ledgerKey("C") }; GridRow { ledgerKey("7"); ledgerKey("8"); ledgerKey("9"); ledgerKey("00") }; GridRow { ledgerKey("."); ledgerKey("0", columns: 2); Button { Task { await save() } } label: { Image(systemName: saving ? "hourglass" : "checkmark").font(.title2.bold()).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(.plain).foregroundStyle(.white).background(Color.blue, in: RoundedRectangle(cornerRadius: 10)).disabled(saving || (Double(amount) ?? 0) <= 0) } }
                 if let error { Text(error).foregroundStyle(.red) }
-                Button { Task { await save() } } label: { Label(saving ? "保存中..." : "记账", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(saving || (Double(amount) ?? 0) <= 0)
             }.padding() }.background(Color(.systemGroupedBackground)).navigationTitle("记一笔").toolbar { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") } }
         }
     }
+    private func ledgerKey(_ key: String, symbol: String? = nil, columns: Int = 1) -> some View { Button { pressKey(key) } label: { Group { if let symbol { Image(systemName: symbol) } else { Text(key) } }.font(.title2.weight(.medium)).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(.plain).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10)).gridCellColumns(columns) }
+    private func categoryIcon(_ value: String) -> String { switch value { case "办公用品": "paperclip"; case "快递物流": "shippingbox"; case "餐饮招待": "fork.knife"; case "差旅交通": "car"; case "软件服务": "laptopcomputer"; case "广告推广": "megaphone"; case "采购货款": "cart"; default: "ellipsis.circle" } }
     private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch let requestError { error = session.message(for: requestError) } }
-    private func pressKey(_ key: String) { switch key { case "C": amount = ""; case "⌫": if !amount.isEmpty { amount.removeLast() }; case ".": if !amount.contains(".") { amount = amount.isEmpty ? "0." : amount + "." }; default: amount = amount == "0" ? key : amount + key } }
+    private func pressKey(_ key: String) { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); switch key { case "C": amount = ""; case "⌫": if !amount.isEmpty { amount.removeLast() }; case ".": if !amount.contains(".") { amount = amount.isEmpty ? "0." : amount + "." }; default: amount = amount == "0" ? key : amount + key } }
 }
 
 private struct NativeLedgerView: View {
@@ -795,21 +768,10 @@ private struct NativeLinksView: View {
                             } label: { Image(systemName: "ellipsis") }
                         }
                         Text(item.title).font(.headline)
-                        if let description = item.description, !description.isEmpty { Text(description).lineLimit(4).foregroundStyle(.secondary) }
+                        let bodyText = savedLinkPlainText(item.description)
+                        if !bodyText.isEmpty { Text(bodyText).lineLimit(4).foregroundStyle(.secondary) }
                         if let url = item.url, !url.isEmpty { Label(url, systemImage: "link").font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
-                        if !item.images.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in
-                                        if let url = nativeImageURL(image.url) {
-                                            CachedRemoteImage(url: url, contentMode: .fill, placeholder: Image(systemName: "photo").foregroundStyle(.secondary))
-                                                .frame(width: 84, height: 84)
-                                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        if let image = item.images.first, let url = nativeImageURL(image.url) { CachedRemoteImage(url: url, contentMode: .fit, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 170).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8)).clipShape(RoundedRectangle(cornerRadius: 8)); if item.images.count > 1 { Text("共 \(item.images.count) 张图片").font(.caption).foregroundStyle(.secondary) } }
                     }.padding(.vertical, 6)
                     }
                 }
@@ -997,6 +959,8 @@ private struct LinkForm: View {
     @State private var title: String; @State private var category: String; @State private var url: String
     @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
     @State private var importing = false; @State private var images: [URL] = []
+    @State private var previewing = false
+    @State private var editCommand: ArticleEditCommand?
 
     init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
         self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
@@ -1008,21 +972,27 @@ private struct LinkForm: View {
             Form {
                 if let error { Text(error).foregroundStyle(.red) }
                 Section(article ? "文章" : "帖子") { TextField("标题", text: $title); TextField("分类", text: $category); if !article { TextField("https://", text: $url).keyboardType(.URL).textInputAutocapitalization(.never); Toggle("置顶", isOn: $pinned) } }
-                Section(article ? "文章正文" : "正文") { TextField(article ? "输入文章内容" : "输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }
+                if article { Section { Picker("模式", selection: $previewing) { Text("写作").tag(false); Text("预览").tag(true) }.pickerStyle(.segmented) } }
+                if article && !previewing { Section("编写工具") { ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 10) { ArticleTool("H1", "一级标题") { editCommand = ArticleEditCommand(.heading1) }; ArticleTool("H2", "二级标题") { editCommand = ArticleEditCommand(.heading2) }; ArticleTool("bold", "粗体") { editCommand = ArticleEditCommand(.bold) }; ArticleTool("italic", "斜体") { editCommand = ArticleEditCommand(.italic) }; ArticleTool("text.quote", "引用") { editCommand = ArticleEditCommand(.quote) }; ArticleTool("list.bullet", "列表") { editCommand = ArticleEditCommand(.list) }; ArticleTool("link", "链接") { editCommand = ArticleEditCommand(.link) }; ArticleTool("text.aligncenter", "居中") { editCommand = ArticleEditCommand(.center) }; ArticleTool("photo", "插图") { importing = true } }.padding(.vertical, 4) } } }
+                if article && previewing { Section("文章预览") { Text(markdownPreview).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) } }
+                else { Section(article ? "文章正文" : "正文") { if article { NativeArticleTextEditor(text: $description, command: $editCommand).frame(minHeight: 280) } else { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) } } }
                 Section("配图") { Button(images.isEmpty ? "选择图片" : "已选择 \(images.count) 张") { importing = true } }
             }
             .navigationTitle(item == nil ? (article ? "发布文章" : "发布帖子") : (article ? "编辑文章" : "编辑帖子")).navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in images = (try? result.get()) ?? [] }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in images = Array(((try? result.get()) ?? []).prefix(9)) }
         }
     }
 
+    private var markdownPreview: AttributedString { (try? AttributedString(markdown: description)) ?? AttributedString(description) }
+
     private func save() async {
         saving = true; error = nil; defer { saving = false }
-        let normalizedCategory = article && !category.lowercased().hasPrefix("article:") ? "article:\(category.isEmpty ? "未分类" : category)" : category
+        let normalizedCategory = article && !category.lowercased().hasPrefix("tutorial:") ? "tutorial:\(category.isEmpty ? "未分类" : category)" : category
         let savedCategory: Any = normalizedCategory.isEmpty ? NSNull() : normalizedCategory
         let savedDescription: Any = description.isEmpty ? NSNull() : description
-        let savedURL: Any = url.isEmpty ? NSNull() : url
+        let articleURL = description.components(separatedBy: .whitespacesAndNewlines).first { $0.hasPrefix("http://") || $0.hasPrefix("https://") } ?? ""
+        let savedURL: Any = (article ? articleURL : url).isEmpty ? NSNull() : (article ? articleURL : url)
         let body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
         do { let saved: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body); if !images.isEmpty { var files: [MultipartFile] = []; for image in images { guard image.startAccessingSecurityScopedResource() else { continue }; defer { image.stopAccessingSecurityScopedResource() }; files.append(MultipartFile(field: "images", filename: image.lastPathComponent, data: try Data(contentsOf: image), mime: "image/jpeg")) }; if !files.isEmpty { let _: SavedLink = try await session.uploadMany(path: "saved-links/\(saved.id)/images/append", files: files) } }; await onSave(); dismiss() }
         catch { self.error = session.message(for: error) }
@@ -1047,18 +1017,89 @@ private struct NativeMineView: View {
                         Button("退出登录", role: .destructive) { Task { await session.logout() } }.frame(maxWidth: .infinity).padding().background(.background, in: RoundedRectangle(cornerRadius: 12))
                     }.padding(16)
                 }
-            }.background(Color(.systemGroupedBackground)).navigationBarHidden(true).fullScreenCover(item: $destination) { target in
-                NativeDestinationHost(destination: target)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationBarHidden(true)
+            .navigationDestination(isPresented: destinationPresented) {
+                if let destination { destination.view }
             }
         }
     }
 
+    private var destinationPresented: Binding<Bool> {
+        Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
+    }
 }
 
 private struct LinkLoadErrorView: View {
     let message: String
     let retry: () -> Void
     var body: some View { VStack(spacing: 10) { Label("加载失败", systemImage: "wifi.exclamationmark").font(.headline); Text(message).font(.caption).foregroundStyle(.secondary); Button("重新加载", action: retry) }.frame(maxWidth: .infinity).padding(.vertical, 20) }
+}
+
+private struct ArticleTool: View {
+    let symbol: String
+    let title: String
+    let action: () -> Void
+    init(_ symbol: String, _ title: String, action: @escaping () -> Void) { self.symbol = symbol; self.title = title; self.action = action }
+    var body: some View { Button(action: action) { VStack(spacing: 5) { if symbol == "H1" || symbol == "H2" { Text(symbol).font(.headline) } else { Image(systemName: symbol).font(.headline) }; Text(title).font(.caption2) }.frame(width: 52, height: 48) }.buttonStyle(.bordered) }
+}
+
+private struct ArticleEditCommand: Identifiable {
+    enum Kind { case heading1, heading2, bold, italic, quote, list, link, center }
+    let id = UUID()
+    let kind: Kind
+    init(_ kind: Kind) { self.kind = kind }
+}
+
+private struct NativeArticleTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var command: ArticleEditCommand?
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.font = .preferredFont(forTextStyle: .body)
+        view.adjustsFontForContentSizeCategory = true
+        view.backgroundColor = .clear
+        view.isScrollEnabled = true
+        view.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        view.accessibilityLabel = "文章正文"
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != text { view.text = text }
+        guard let command, context.coordinator.lastCommand != command.id else { return }
+        context.coordinator.lastCommand = command.id
+        context.coordinator.apply(command.kind, to: view)
+    }
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: NativeArticleTextEditor
+        var lastCommand: UUID?
+        init(_ parent: NativeArticleTextEditor) { self.parent = parent }
+        func textViewDidChange(_ textView: UITextView) { parent.text = textView.text }
+        func apply(_ kind: ArticleEditCommand.Kind, to view: UITextView) {
+            let source = view.text ?? ""
+            let range = view.selectedRange
+            let ns = source as NSString
+            let selected = range.length > 0 ? ns.substring(with: range) : ""
+            let replacement: String
+            switch kind {
+            case .bold: replacement = "**\(selected.isEmpty ? "粗体文字" : selected)**"
+            case .italic: replacement = "*\(selected.isEmpty ? "斜体文字" : selected)*"
+            case .link: replacement = "[\(selected.isEmpty ? "链接文字" : selected)](https://)"
+            case .heading1: replacement = "# \(selected.isEmpty ? "一级标题" : selected)"
+            case .heading2: replacement = "## \(selected.isEmpty ? "二级标题" : selected)"
+            case .quote: replacement = "> \(selected.isEmpty ? "引用内容" : selected.replacingOccurrences(of: "\n", with: "\n> "))"
+            case .list: replacement = "- \(selected.isEmpty ? "列表项目" : selected.replacingOccurrences(of: "\n", with: "\n- "))"
+            case .center: replacement = "::: align-center\n\(selected.isEmpty ? "居中内容" : selected)\n:::"
+            }
+            view.text = ns.replacingCharacters(in: range, with: replacement)
+            view.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+            parent.text = view.text
+            view.becomeFirstResponder()
+        }
+    }
 }
 
 private struct SavedLinkAvatar: View {
@@ -1706,29 +1747,28 @@ private struct ExpenseSummary: Codable {
 }
 
 private struct SavedLinkImage: Codable { let url: String; let name: String? }
+private func savedLinkPlainText(_ value: String?) -> String {
+    guard var text = value, !text.isEmpty else { return "" }
+    let patterns = [#"!\[[^\]]*\]\([^\)]*\)"#, #"\[[^\]]+\]\((/saved-links/[^\)]*)\)"#]
+    for pattern in patterns { text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression) }
+    text = text.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+}
 private struct SavedLinkDetail: View {
     let item: SavedLink
     @State private var previewURL: URL?
     var body: some View {
-        List {
-            Section {
-                HStack(spacing: 10) {
-                    Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white).frame(width: 38, height: 38).background(Color.blue, in: Circle())
-                    VStack(alignment: .leading) { Text(item.authorUsername).fontWeight(.semibold); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }
-                }
-                Text(item.title).font(.title3.bold())
-                if let category = item.category, !category.isEmpty { Label(category, systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
-            }
-            if let description = item.description, !description.isEmpty { Section("正文") { Text(description).textSelection(.enabled) } }
-            if let value = item.url, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) { Section("链接") { Link(destination: url) { Label("打开原链接", systemImage: "safari") }.lineLimit(3); Text(value).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) } }
-            if !item.images.isEmpty {
-                Section("图片") {
-                    ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in
-                        Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain)
-                    }
-                }
-            }
-        }.navigationTitle("链接详情").navigationBarTitleDisplayMode(.inline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 10) { SavedLinkAvatar(item: item).frame(width: 38, height: 38); VStack(alignment: .leading, spacing: 3) { Text(item.authorUsername).fontWeight(.semibold); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }; Spacer() }
+                Text(item.title).font(.title.bold())
+                if let category = item.category, !category.isEmpty { Label(category.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]), systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
+                let bodyText = savedLinkPlainText(item.description)
+                if !bodyText.isEmpty { Text((try? AttributedString(markdown: bodyText)) ?? AttributedString(bodyText)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                ForEach(Array(item.images.enumerated()), id: \.offset) { _, image in Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
+                if let value = item.url, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) { Link(destination: url) { Label("打开原链接", systemImage: "safari").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).padding(.top, 8) }
+            }.padding(20)
+        }.background(Color(.systemBackground)).navigationTitle("预览").navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) { NavigationStack { ZStack { Color.black.ignoresSafeArea(); if let previewURL { CachedRemoteImage(url: previewURL, contentMode: .fit, placeholder: ProgressView().tint(.white)) } }.toolbar { Button("关闭") { previewURL = nil } } } }
     }
 }
@@ -1941,6 +1981,7 @@ private struct HomeDashboard {
 
 private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 20)).foregroundStyle(color).frame(width: 48, height: 42).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12)); Text(title).font(.caption2).fontWeight(.semibold).lineLimit(1).foregroundStyle(.primary) } }.frame(width: 64).buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
+private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { Image(systemName: icon).font(.subheadline.weight(.semibold)).foregroundStyle(color).frame(width: 30, height: 30).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7)); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
