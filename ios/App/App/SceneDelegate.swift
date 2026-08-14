@@ -764,17 +764,27 @@ private struct NativeLinksView: View {
         return rows.sorted { $0.isPinned != $1.isPinned ? $0.isPinned : $0.updatedAt > $1.updatedAt }
     }
 
+    private var linkFilterSection: some View {
+        Section {
+            Picker("筛选", selection: $tab) {
+                Text("最新").tag("latest")
+                Text("带图").tag("with-images")
+                Text("我发布的").tag("mine")
+            }.pickerStyle(.segmented)
+        }.listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+    }
+
     var body: some View {
         NavigationStack {
             List {
-                Section { Picker("筛选", selection: $tab) { Text("最新").tag("latest"); Text("带图").tag("with-images"); Text("我发布的").tag("mine") }.pickerStyle(.segmented) }.listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                if let error { Section { VStack(spacing: 10) { Label("加载失败", systemImage: "wifi.exclamationmark").font(.headline); Text(error).font(.caption).foregroundStyle(.secondary); Button("重新加载") { Task { await load() } } }.frame(maxWidth: .infinity).padding(.vertical, 20) } }
-                if !loading && error == nil && filtered.isEmpty { Section { VStack(spacing: 10) { Image(systemName: query.isEmpty ? "link" : "magnifyingglass").font(.title2).foregroundStyle(.secondary); Text(query.isEmpty ? "暂无内容" : "没有搜索结果").font(.headline); Text(query.isEmpty ? "发布第一条帖子或文章" : "请尝试其他关键词").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 28) } }
+                linkFilterSection
+                if let error { LinkLoadErrorView(message: error) { Task { await load() } } }
+                if !loading && error == nil && filtered.isEmpty { LinkEmptyView(searching: !query.isEmpty) }
                 ForEach(filtered) { item in
                     NavigationLink { SavedLinkDetail(item: item) } label: {
                     VStack(alignment: .leading, spacing: 9) {
                         HStack(spacing: 9) {
-                            if let avatar = nativeImageURL(item.authorAvatarURL) { CachedRemoteImage(url: avatar, contentMode: .fill, placeholder: Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold())).frame(width: 30, height: 30).clipShape(Circle()) } else { Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white).frame(width: 30, height: 30).background(Color.blue, in: Circle()) }
+                            SavedLinkAvatar(item: item)
                             VStack(alignment: .leading) { Text(item.authorUsername).font(.subheadline.bold()); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             if item.isPinned { Image(systemName: "pin.fill").foregroundStyle(.orange) }
@@ -1042,6 +1052,30 @@ private struct NativeMineView: View {
             }
         }
     }
+
+}
+
+private struct LinkLoadErrorView: View {
+    let message: String
+    let retry: () -> Void
+    var body: some View { VStack(spacing: 10) { Label("加载失败", systemImage: "wifi.exclamationmark").font(.headline); Text(message).font(.caption).foregroundStyle(.secondary); Button("重新加载", action: retry) }.frame(maxWidth: .infinity).padding(.vertical, 20) }
+}
+
+private struct SavedLinkAvatar: View {
+    let item: SavedLink
+    var body: some View {
+        Group {
+            if let avatar = nativeImageURL(item.authorAvatarURL) {
+                CachedRemoteImage(url: avatar, contentMode: .fill, placeholder: initials)
+            } else { initials }
+        }.frame(width: 30, height: 30).clipShape(Circle())
+    }
+    private var initials: some View { Text(String(item.authorUsername.prefix(1)).uppercased()).font(.caption.bold()).foregroundStyle(.white).frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.blue) }
+}
+
+private struct LinkEmptyView: View {
+    let searching: Bool
+    var body: some View { VStack(spacing: 10) { Image(systemName: searching ? "magnifyingglass" : "link").font(.title2).foregroundStyle(.secondary); Text(searching ? "没有搜索结果" : "暂无内容").font(.headline); Text(searching ? "请尝试其他关键词" : "发布第一条帖子或文章").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 28) }
 }
 
 private struct MineStat: View { let value: String; let title: String; var body: some View { VStack(spacing: 4) { Text(value).font(.headline); Text(title).font(.caption2).opacity(0.8) }.frame(maxWidth: .infinity) } }
