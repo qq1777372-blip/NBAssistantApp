@@ -1768,7 +1768,35 @@ private struct NativeOperationsView: View {
             } else if section == .workflow {
                 ForEach(workflows) { item in VStack(alignment: .leading, spacing: 6) { HStack { Text(item.name).fontWeight(.medium); Spacer(); StatusBadge(text: item.enabled != 0 ? "启用" : "停用", done: item.enabled != 0) }; Text(item.description).font(.caption).foregroundStyle(.secondary) }.contentShape(Rectangle()).onTapGesture { editingWorkflow = item; showingWorkflow = true }.swipeActions { Button("运行") { runWorkflow = item }.tint(.green); Button("删除", role: .destructive) { Task { await deleteWorkflow(item) } } } }
             } else if section == .jobs {
-                ForEach(jobs) { item in NavigationLink { List { LabeledContent("类型", value: item.kind); LabeledContent("状态", value: jobStatus(item.status)); Section("结果") { Text(item.resultText).textSelection(.enabled) } }.navigationTitle("任务详情") } label: { VStack(alignment: .leading, spacing: 5) { HStack { Text(item.kind).fontWeight(.medium); Spacer(); Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status)) }; Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3) } }.swipeActions { if ["queued", "running"].contains(item.status) { Button("取消") { Task { await jobAction(item, "cancel") } }.tint(.orange) } else { Button("重试") { Task { await jobAction(item, "retry") } }.tint(.blue); Button("删除", role: .destructive) { Task { await jobAction(item, "delete") } } } }
+                ForEach(jobs) { item in
+                    NavigationLink {
+                        List {
+                            LabeledContent("类型", value: item.kind)
+                            LabeledContent("状态", value: jobStatus(item.status))
+                            Section("结果") {
+                                Text(item.resultText).textSelection(.enabled)
+                            }
+                        }
+                        .navigationTitle("任务详情")
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text(item.kind).fontWeight(.medium)
+                                Spacer()
+                                Text(jobStatus(item.status)).foregroundStyle(jobColor(item.status))
+                            }
+                            Text(item.resultText).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        }
+                    }
+                    .swipeActions {
+                        if ["queued", "running"].contains(item.status) {
+                            Button("取消") { Task { await jobAction(item, "cancel") } }.tint(.orange)
+                        } else {
+                            Button("重试") { Task { await jobAction(item, "retry") } }.tint(.blue)
+                            Button("删除", role: .destructive) { Task { await jobAction(item, "delete") } }
+                        }
+                    }
+                }
             } else {
                 ForEach(shares) { item in ShareLink(item: URL(string: "https://xiaoxu666.asia/ai/shared/\(item.id)")!) { VStack(alignment: .leading, spacing: 5) { Text(item.title).foregroundStyle(.primary).fontWeight(.medium); Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary) } } }
             }
