@@ -258,46 +258,93 @@ private struct NativeAIWorkspaceView: View {
     @State private var knowledge: [KnowledgeCollection] = []; @State private var skills: [CapabilityItem] = []; @State private var tools: [CapabilityItem] = []
     @State private var selectedKnowledge = ""; @State private var selectedSkills: Set<String> = []; @State private var selectedTools: Set<String> = []
     @State private var webSearch = false; @State private var imageMode = false; @State private var imageSize = "1024x1024"; @State private var showingTools = false
+    @State private var scrollRequest = 0
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
     private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                ScrollView { LazyVStack(spacing: 14) {
-                    if activeChat?.messages.isEmpty != false { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用语音开始").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
-                    ForEach(activeChat?.messages ?? []) { item in HStack { if item.role == "user" { Spacer(minLength: 48) }; VStack(alignment: .leading, spacing: 8) { if let imageURL = generatedImageURL(item.content) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280) } else { Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled) }; if item.role == "assistant" && !item.content.isEmpty { HStack { Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }; Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") } }.font(.caption) } }.padding(13).foregroundStyle(item.role == "user" ? .white : .primary).background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15)); if item.role != "user" { Spacer(minLength: 48) } }.id(item.id) }
-                }.padding() }.onChange(of: activeChat?.messages.count ?? 0) { _ in if let id = activeChat?.messages.last?.id { withAnimation { proxy.scrollTo(id, anchor: .bottom) } } }
+                ScrollView {
+                    LazyVStack(spacing: 14) {
+                        if activeChat?.messages.isEmpty != false { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用语音开始").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
+                        ForEach(activeChat?.messages ?? []) { item in HStack { if item.role == "user" { Spacer(minLength: 48) }; VStack(alignment: .leading, spacing: 8) { if let imageURL = generatedImageURL(item.content) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280) } else { Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled) }; if item.role == "assistant" && !item.content.isEmpty { HStack { Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }; Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") } }.font(.caption) } }.padding(13).foregroundStyle(item.role == "user" ? .white : .primary).background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15)); if item.role != "user" { Spacer(minLength: 48) } }.id(item.id) }
+                        Color.clear.frame(height: 1).id("ai-chat-bottom")
+                    }
+                    .padding()
+                }
+                .onAppear { scrollToBottom(proxy, animated: false) }
+                .onChange(of: activeChatID) { _ in scrollToBottom(proxy, animated: false) }
+                .onChange(of: activeChat?.messages.count ?? 0) { _ in scrollToBottom(proxy) }
+                .onChange(of: activeChat?.messages.last?.content.count ?? 0) { _ in scrollToBottom(proxy, animated: false) }
+                .onChange(of: scrollRequest) { _ in scrollToBottom(proxy, animated: false) }
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
-            HStack(alignment: .bottom, spacing: 10) {
-                Button { showingTools = true } label: { Image(systemName: (webSearch || imageMode || !selectedKnowledge.isEmpty || !selectedSkills.isEmpty || !selectedTools.isEmpty) ? "plus.circle.fill" : "plus.circle").font(.system(size: 28)) }
-                Button { Task { await toggleRecording() } } label: { Image(systemName: recorder.recording ? "stop.circle.fill" : "mic.circle.fill").font(.system(size: 32)).foregroundStyle(recorder.recording ? .red : .blue) }
-                TextField(imageMode ? "描述要生成的图片…" : "给 AI 发消息…", text: $question, axis: .vertical).lineLimit(1...5).nativeField()
-                Button { sending ? stop() : send() } label: { Image(systemName: sending ? "stop.circle.fill" : "arrow.up.circle.fill").font(.system(size: 34)) }.disabled(!sending && question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }.padding()
+            if let error { HStack(spacing: 6) { Image(systemName: "exclamationmark.circle"); Text(error).lineLimit(2); Spacer(); Button { Task { await loadWorkspace() } } label: { Image(systemName: "arrow.clockwise") }; Button { self.error = nil } label: { Image(systemName: "xmark") } }.font(.caption).foregroundStyle(.orange).padding(.horizontal, 14).padding(.top, 6) }
+            composer
         }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
         .sheet(isPresented: $showingHistory) { historySheet }
         .sheet(isPresented: $showingTools) { toolsSheet }
         .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
-        .task { await loadModels(); await loadCapabilities(); await loadChats() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
+        .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
     }
+    private var composer: some View {
+        VStack(spacing: 8) {
+            TextField(recorder.recording ? "正在录音…" : imageMode ? "描述要生成的图片…" : "给 AI 发消息…", text: $question, axis: .vertical)
+                .lineLimit(1...5)
+                .submitLabel(.send)
+                .onSubmit { if !sending { send() } }
+            HStack(spacing: 12) {
+                Button { showingTools = true } label: { Image(systemName: activeTools ? "plus.circle.fill" : "plus.circle").font(.title2) }
+                Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { HStack(spacing: 4) { Image(systemName: "cpu"); Text(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型").lineLimit(1); Image(systemName: "chevron.down").font(.caption2) }.font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength: 4)
+                if sending {
+                    Button { stop() } label: { Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(.primary, in: Circle()) }
+                } else if question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button { Task { await toggleRecording() } } label: { Image(systemName: recorder.recording ? "stop.fill" : "mic.fill").foregroundStyle(recorder.recording ? .red : .primary).frame(width: 32, height: 32).background(Color(.tertiarySystemFill), in: Circle()) }
+                } else {
+                    Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(.blue, in: Circle()) }
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+        .overlay { RoundedRectangle(cornerRadius: 18).stroke(Color(.separator).opacity(0.45), lineWidth: 0.5) }
+        .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+    private var activeTools: Bool { webSearch || imageMode || !selectedKnowledge.isEmpty || !selectedSkills.isEmpty || !selectedTools.isEmpty }
     private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; selectedModel = chat.modelID ?? selectedModel; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { Button("完成") { showingHistory = false } } } }
     private var toolsSheet: some View { NavigationStack { Form { Toggle("联网搜索", isOn: $webSearch); Toggle("生成图片", isOn: $imageMode); if imageMode { Picker("图片尺寸", selection: $imageSize) { Text("方图").tag("1024x1024"); Text("横图").tag("1536x1024"); Text("竖图").tag("1024x1536") } }; Picker("知识集合", selection: $selectedKnowledge) { Text("不使用知识库").tag(""); ForEach(knowledge) { Text($0.name).tag($0.id) } }; if !skills.isEmpty { Section("Skills") { ForEach(skills) { item in Toggle(item.displayName, isOn: setBinding($selectedSkills, item.id)) } } }; if !tools.isEmpty { Section("Tools") { ForEach(tools) { item in Toggle(item.displayName, isOn: setBinding($selectedTools, item.id)) } } } }.navigationTitle("对话能力").toolbar { Button("完成") { showingTools = false } } } }
-    private func loadModels() async { do { let result: AIModelsResponse = try await session.get("ai-api/models"); models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }; if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" }; audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? "" } catch { self.error = session.message(for: error) } }
-    private func loadCapabilities() async { do { async let a: KnowledgeResponse = session.get("ai-api/knowledge"); async let b: CapabilityResponse = session.get("ai-api/skills"); async let c: CapabilityResponse = session.get("ai-api/tools"); let result = try await (a,b,c); knowledge = result.0.knowledge; skills = result.1.skills ?? []; tools = result.2.tools ?? [] } catch { self.error = session.message(for: error) } }
-    private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats"); chats = result.chats; if let first = chats.first(where: { !$0.archived }) ?? chats.first { activeChatID = first.id; selectedModel = first.modelID ?? selectedModel } else { createChat() } } catch { self.error = session.message(for: error); if chats.isEmpty { createChat() } } }
+    private func loadWorkspace() async {
+        error = nil
+        restoreLocalChats()
+        await loadModels()
+        await loadCapabilities()
+        await loadChats()
+        scrollRequest += 1
+    }
+    private func loadModels() async { do { let result: AIModelsResponse = try await session.get("ai-api/models"); models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }; if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" }; audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? "" } catch { if models.isEmpty { self.error = "AI 模型暂时无法加载，请稍后重试。" } } }
+    private func loadCapabilities() async {
+        if let result: KnowledgeResponse = try? await session.get("ai-api/knowledge") { knowledge = result.knowledge }
+        if let result: CapabilityResponse = try? await session.get("ai-api/skills") { skills = result.skills ?? [] }
+        if let result: CapabilityResponse = try? await session.get("ai-api/tools") { tools = result.tools ?? [] }
+    }
+    private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats?user_id=\(session.currentUser?.id ?? 0)"); if !result.chats.isEmpty { chats = result.chats; activeChatID = chats.first(where: { !$0.archived })?.id ?? chats[0].id; selectedModel = activeChat?.modelID ?? selectedModel; persistChatsLocally() } } catch { } ; if chats.isEmpty { createChat() } }
     private func send() { let value = question.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; if activeIndex == nil { createChat() }; guard let index = activeIndex else { return }; question = ""; error = nil; chats[index].messages.append(AIChatMessage(role: "user", content: value)); let answerID = UUID().uuidString; chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: "")); if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }; chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true; streamTask = Task { do { if imageMode { let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt":value,"model_id":selectedModel,"size":imageSize]); if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = "image:\(response.url)" } } else { var documents: [SearchDocument] = []; if !selectedKnowledge.isEmpty { let result: SearchDocumentsResponse = try await session.send("ai-api/search", method: "POST", body: ["query":value,"limit":5,"knowledge_id":selectedKnowledge]); documents += result.documents }; if webSearch { let result: SearchDocumentsResponse = try await session.send("ai-api/web-search", method: "POST", body: ["query":value,"limit":5]); documents += result.documents }; try await session.streamChat(value, modelID: selectedModel, documents: documents, skillIDs: Array(selectedSkills), toolIDs: Array(selectedTools)) { chunk in guard let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }; chats[chatIndex].messages[messageIndex].content += chunk } } } catch is CancellationError { } catch { self.error = session.message(for: error) }; sending = false; await saveActiveChat() } }
     private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
-    private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id }
+    private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id; persistChatsLocally(); scrollRequest += 1 }
     private func updateActiveModel() { guard let index = activeIndex else { return }; chats[index].modelID = selectedModel; Task { await saveActiveChat() } }
-    private func saveActiveChat() async { guard let chat = activeChat else { return }; let messages = chat.messages.map { ["id": $0.id, "role": $0.role, "content": $0.content] }; let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: ["id": chat.id, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)], allowEmpty: true) }
+    private func saveActiveChat() async { persistChatsLocally(); guard let chat = activeChat else { return }; let messages = chat.messages.map { ["id": $0.id, "role": $0.role, "content": $0.content] }; let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)], allowEmpty: true) }
     private func update(_ chat: AIChat, favorite: Bool? = nil, archived: Bool? = nil) { guard let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; if let favorite { chats[index].favorite = favorite }; if let archived { chats[index].archived = archived }; activeChatID = chat.id; Task { await saveActiveChat() } }
     private func applyRename() { guard let chat = renaming, let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; chats[index].title = renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? chat.title : renameText; activeChatID = chat.id; renaming = nil; Task { await saveActiveChat() } }
-    private func delete(_ chat: AIChat) async { let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id], allowEmpty: true); chats.removeAll { $0.id == chat.id }; if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } } }
+    private func delete(_ chat: AIChat) async { let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0], allowEmpty: true); chats.removeAll { $0.id == chat.id }; if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } }; persistChatsLocally() }
     private func regenerate(_ messageID: String) { guard let index = activeIndex, let answerIndex = chats[index].messages.firstIndex(where: { $0.id == messageID }), answerIndex > 0 else { return }; let value = chats[index].messages[..<answerIndex].last(where: { $0.role == "user" })?.content ?? ""; chats[index].messages.removeSubrange((answerIndex - 1)...answerIndex); question = value; send() }
     private func exportText(_ chat: AIChat) -> String { chat.messages.map { "\($0.role == "user" ? "我" : "AI")：\($0.content)" }.joined(separator: "\n\n") }
     private func generatedImageURL(_ content: String) -> URL? { guard content.hasPrefix("image:") else { return nil }; return URL(string: String(content.dropFirst(6))) }
+    private var localChatsKey: String { "native-ai-chats-\(session.currentUser?.id ?? 0)" }
+    private func restoreLocalChats() { guard chats.isEmpty, let data = UserDefaults.standard.data(forKey: localChatsKey), let saved = try? JSONDecoder().decode([AIChat].self, from: data), !saved.isEmpty else { return }; chats = saved; activeChatID = saved.first(where: { !$0.archived })?.id ?? saved[0].id; selectedModel = activeChat?.modelID ?? selectedModel }
+    private func persistChatsLocally() { if let data = try? JSONEncoder().encode(Array(chats.prefix(60))) { UserDefaults.standard.set(data, forKey: localChatsKey) } }
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) { DispatchQueue.main.async { if animated { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("ai-chat-bottom", anchor: .bottom) } } else { proxy.scrollTo("ai-chat-bottom", anchor: .bottom) } } }
     private func setBinding(_ selection: Binding<Set<String>>, _ id: String) -> Binding<Bool> { Binding(get: { selection.wrappedValue.contains(id) }, set: { enabled in if enabled { selection.wrappedValue.insert(id) } else { selection.wrappedValue.remove(id) } }) }
     private func toggleRecording() async { if recorder.recording { guard let data = recorder.stop() else { return }; recorder.transcribing = true; defer { recorder.transcribing = false }; do { let result: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": "recording.m4a", "data": data.base64EncodedString(), "model_id": audioModel]); question = [question, result.text].filter { !$0.isEmpty }.joined(separator: " ") } catch { self.error = session.message(for: error) } } else { do { try await recorder.start() } catch { self.error = "无法使用麦克风，请在系统设置中允许权限。" } } }
 }
@@ -846,7 +893,7 @@ private struct NativeLinksView: View {
 
     private func load() async {
         loading = true; error = nil; defer { loading = false }
-        do { records = try await session.get("saved-links?offset=0&limit=\(pageSize)"); hasMore = records.count == pageSize }
+        do { records = try await session.get("saved-links?offset=0&limit=\(pageSize)"); hasMore = records.count == pageSize; prefetchImages(in: records) }
         catch { self.error = session.message(for: error) }
     }
 
@@ -855,6 +902,7 @@ private struct NativeLinksView: View {
         do {
             let more: [SavedLink] = try await session.get("saved-links?offset=\(records.count)&limit=\(pageSize)")
             let ids = Set(records.map(\.id)); records.append(contentsOf: more.filter { !ids.contains($0.id) }); hasMore = more.count == pageSize
+            prefetchImages(in: more)
         } catch { self.error = session.message(for: error) }
     }
 
@@ -877,25 +925,25 @@ private struct TaskDetail: View {
     let onChange: () async -> Void
     @State private var error: String?
     @State private var updating = false
+    @State private var copiedField: String?
 
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             Section("任务信息") {
-                LabeledContent("订单号", value: item.orderNo); LabeledContent("店铺", value: item.shopName)
-                LabeledContent("负责人", value: item.ownerName); LabeledContent("任务时间", value: shortDate(item.taskTime))
-                LabeledContent("刷单数量", value: "\(item.orderCount)")
+                ForEach(taskFields.prefix(5)) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) }
             }
             Section("金额") {
-                LabeledContent("本金", value: money(item.principalAmount)); LabeledContent("佣金", value: money(item.commissionAmount)); LabeledContent("礼品", value: money(item.giftAmount))
+                ForEach(taskFields.dropFirst(5).prefix(3)) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) }
             }
             Section("状态") {
                 Toggle("已签收", isOn: Binding(get: { item.signedStatus == "completed" }, set: { value in Task { await update("signed_status", value) } })).disabled(updating)
                 Toggle("已结算", isOn: Binding(get: { item.settlementStatus == "completed" }, set: { value in Task { await update("settlement_status", value) } })).disabled(updating)
             }
-            if let note = item.note, !note.isEmpty { Section("备注") { Text(note) } }
-        }.navigationTitle(item.shopName).navigationBarTitleDisplayMode(.inline)
+            if let note = item.note, !note.isEmpty { Section("备注") { NativeCopyRow(label: "备注", value: note, copiedField: $copiedField) } }
+        }.navigationTitle(item.shopName).navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: taskFields, copiedField: $copiedField) }
     }
+    private var taskFields: [NativeCopyField] { [NativeCopyField(label: "订单号", value: item.orderNo), NativeCopyField(label: "店铺", value: item.shopName), NativeCopyField(label: "负责人", value: item.ownerName), NativeCopyField(label: "任务时间", value: shortDate(item.taskTime)), NativeCopyField(label: "刷单数量", value: "\(item.orderCount)"), NativeCopyField(label: "本金", value: money(item.principalAmount)), NativeCopyField(label: "佣金", value: money(item.commissionAmount)), NativeCopyField(label: "礼品", value: money(item.giftAmount)), NativeCopyField(label: "备注", value: item.note ?? "-")] }
 
     private func update(_ field: String, _ done: Bool) async {
         updating = true; defer { updating = false }
@@ -1144,6 +1192,14 @@ private struct LinkForm: View {
         title = draft.title; category = draft.category; description = draft.description
         draftNotice = "已恢复 \(shortTimestamp(draft.updatedAt.timeIntervalSince1970)) 的草稿"
     }
+    private func prefetchImages(in rows: [SavedLink]) {
+        var requests: [(URL, CGFloat)] = []
+        for item in rows.prefix(8) {
+            if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value, maxPixelSize: 144) { requests.append((avatar, 144)) }
+            requests.append(contentsOf: item.images.prefix(3).compactMap { nativeThumbnailURL($0.url, maxPixelSize: 720).map { ($0, 720) } })
+        }
+        Task(priority: .utility) { await NativeImagePipeline.shared.prefetch(requests) }
+    }
 }
 
 private struct LinkDraft: Codable { let title: String; let category: String; let description: String; let updatedAt: Date }
@@ -1334,31 +1390,33 @@ private struct SavedLinkFeedRow: View {
             }
         }
         .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
     }
 }
 
 private struct SavedLinkImageGrid: View {
     let images: [SavedLinkImage]
     var body: some View {
-        let urls = images.compactMap { nativeThumbnailURL($0.url) }
+        let urls = images.compactMap { nativeThumbnailURL($0.url, maxPixelSize: 720) }
         if urls.isEmpty {
             EmptyView()
         } else if urls.count == 1 {
-            CachedRemoteImage(url: urls[0], contentMode: .fill, maxPixelSize: 1400, placeholder: ProgressView())
-                .frame(maxWidth: .infinity).frame(height: 180)
+            SavedLinkFeedImage(url: urls[0], maxPixelSize: 1400)
+                .frame(height: 180)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
-            HStack(spacing: 4) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
                 ForEach(Array(urls.prefix(3).enumerated()), id: \.offset) { index, url in
                     ZStack {
-                        CachedRemoteImage(url: url, contentMode: .fill, maxPixelSize: 600, placeholder: ProgressView())
+                        SavedLinkFeedImage(url: url, maxPixelSize: 600)
                         if index == 2 && urls.count > 3 {
                             Color.black.opacity(0.38)
                             Text("+\(urls.count - 3)").font(.headline).foregroundStyle(.white)
                         }
                     }
-                    .frame(maxWidth: .infinity).frame(height: 118)
+                    .frame(height: 118)
                     .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 6))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
@@ -1367,11 +1425,24 @@ private struct SavedLinkImageGrid: View {
     }
 }
 
+private struct SavedLinkFeedImage: View {
+    let url: URL
+    let maxPixelSize: CGFloat
+
+    var body: some View {
+        GeometryReader { proxy in
+            CachedRemoteImage(url: url, contentMode: .fill, maxPixelSize: maxPixelSize, placeholder: ProgressView())
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+        }
+    }
+}
+
 private struct SavedLinkAvatar: View {
     let item: SavedLink
     var body: some View {
         Group {
-            if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value) {
+            if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value, maxPixelSize: 144) {
                 CachedRemoteImage(url: avatar, contentMode: .fill, placeholder: initials)
             } else { initials }
         }.frame(width: 30, height: 30).clipShape(Circle())
@@ -1408,7 +1479,7 @@ private struct NativeShopsView: View {
     private func remove(_ record: ShopRecord) async { do { try await session.delete("shop-records/\(record.id)"); records.removeAll { $0.id == record.id } } catch { self.error = session.message(for: error) } }
 }
 
-private struct ShopDetail: View { let record: ShopRecord; let fields: [ShopField]; var body: some View { List { ForEach(fields) { field in LabeledContent(field.label, value: record.values[field.fieldName]?.display ?? "-") } }.navigationTitle("店铺详情").navigationBarTitleDisplayMode(.inline) } }
+private struct ShopDetail: View { let record: ShopRecord; let fields: [ShopField]; @State private var copiedField: String?; private var copyFields:[NativeCopyField]{fields.map{NativeCopyField(label:$0.label,value:record.values[$0.fieldName]?.display ?? "-")}}; var body: some View { List { ForEach(copyFields) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } }.navigationTitle("店铺详情").navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: copyFields, copiedField: $copiedField) } } }
 
 private struct ShopForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
@@ -1470,7 +1541,7 @@ private struct NativePeerShopsView: View {
     private func load() async { do { rows = try await session.get("peer-shops") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: PeerShopRecord) async { do { try await session.delete("peer-shops/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
-private struct PeerShopDetail: View { let item: PeerShopRecord; var body: some View { List { NativeRemoteImage(url: item.imageURL, size: 180); LabeledContent("店铺", value: item.shopName); LabeledContent("链接", value: item.shopURL ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("同行店铺详情") } }
+private struct PeerShopDetail: View { let item: PeerShopRecord; @State private var copiedField:String?; private var fields:[NativeCopyField]{[NativeCopyField(label:"店铺",value:item.shopName),NativeCopyField(label:"链接",value:item.shopURL ?? "-"),NativeCopyField(label:"备注",value:item.remark ?? "无")]}; var body: some View { List { NativeRemoteImage(url: item.imageURL, size: 180); Section("资料") { ForEach(fields) { field in NativeCopyRow(label:field.label,value:field.value,copiedField:$copiedField) } } }.navigationTitle("同行店铺详情").toolbar { NativeCopyAllButton(fields:fields,copiedField:$copiedField) } } }
 private struct PeerShopForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: PeerShopRecord?; let onSave: () async -> Void; @State private var name: String; @State private var url: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
     init(item: PeerShopRecord?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.shopName ?? ""); _url = State(initialValue: item?.shopURL ?? ""); _remark = State(initialValue: item?.remark ?? "") }
@@ -1481,11 +1552,77 @@ private struct PeerShopForm: View {
 
 private struct NativeLicenseRecordsView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [LicenseRecordItem] = []; @State private var query = ""; @State private var error: String?; @State private var editing: LicenseRecordItem?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.subjectName) \($0.creditCode) \($0.legalRepresentative ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { LicenseRecordDetail(item: row) } label: { HStack(spacing: 10) { NativeRemoteImage(url: row.imageURL, size: 48); VStack(alignment: .leading, spacing: 5) { Text(row.subjectName).fontWeight(.medium); Text(row.creditCode).font(.caption).foregroundStyle(.secondary); Text(row.expiryDate ?? "未填写到期日").font(.caption2).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("执照档案").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { LicenseRecordForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.subjectName) \($0.creditCode) \($0.legalRepresentative ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { LicenseRecordDetail(item: row, records: rows) } label: { HStack(spacing: 10) { NativeRemoteImage(url: row.imageURL, size: 48); VStack(alignment: .leading, spacing: 5) { Text(row.subjectName).fontWeight(.medium); Text(row.creditCode).font(.caption).foregroundStyle(.secondary); Text(row.expiryDate ?? "未填写到期日").font(.caption2).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("执照档案").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { LicenseRecordForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("license-records") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: LicenseRecordItem) async { do { try await session.delete("license-records/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
 }
-private struct LicenseRecordDetail: View { let item: LicenseRecordItem; var body: some View { List { NativeRemoteImage(url: item.imageURL, size: 220); LabeledContent("主体名称", value: item.subjectName); LabeledContent("统一信用代码", value: item.creditCode); LabeledContent("法定代表人", value: item.legalRepresentative ?? "-"); LabeledContent("签发日期", value: item.issueDate ?? "-"); LabeledContent("到期日期", value: item.expiryDate ?? "-"); Section("备注") { Text(item.remark ?? "无") } }.navigationTitle("执照详情") } }
+private struct LicenseRecordDetail: View {
+    let item: LicenseRecordItem
+    let records: [LicenseRecordItem]
+    @State private var showingViewer = false
+    @State private var selectedImageID = 0
+    @State private var copiedField: String?
+    private var imageRecords: [LicenseRecordItem] { records.filter { $0.imageURL?.isEmpty == false } }
+    var body: some View {
+        List {
+            if item.imageURL != nil {
+                Button { selectedImageID = item.id; showingViewer = true } label: {
+                    VStack(spacing: 8) {
+                        NativeRemoteImage(url: item.imageURL, size: 220)
+                        Label("查看大图", systemImage: "arrow.up.left.and.arrow.down.right").font(.caption)
+                    }.frame(maxWidth: .infinity)
+                }.buttonStyle(.plain)
+            }
+            Section("执照信息") {
+                NativeCopyRow(label: "主体名称", value: item.subjectName, copiedField: $copiedField)
+                NativeCopyRow(label: "统一社会信用代码", value: item.creditCode, copiedField: $copiedField)
+                NativeCopyRow(label: "法定代表人", value: item.legalRepresentative ?? "-", copiedField: $copiedField)
+                NativeCopyRow(label: "签发日期", value: item.issueDate ?? "-", copiedField: $copiedField)
+                NativeCopyRow(label: "到期日期", value: item.expiryDate ?? "-", copiedField: $copiedField)
+            }
+            Section("备注") { Text(item.remark ?? "无").textSelection(.enabled) }
+        }
+        .navigationTitle("执照详情")
+        .toolbar { Menu { Button("复制全部信息", systemImage: "doc.on.doc") { UIPasteboard.general.string = copyText; copiedField = "全部信息" }; if item.imageURL != nil { Button("查看大图", systemImage: "photo") { selectedImageID = item.id; showingViewer = true } } } label: { Image(systemName: copiedField == "全部信息" ? "checkmark.circle" : "ellipsis.circle") } }
+        .fullScreenCover(isPresented: $showingViewer) { LicenseImageViewer(records: imageRecords, selection: $selectedImageID) }
+    }
+    private var copyText: String { ["主体名称：\(item.subjectName)", "统一社会信用代码：\(item.creditCode)", "法定代表人：\(item.legalRepresentative ?? "-")", "签发日期：\(item.issueDate ?? "-")", "到期日期：\(item.expiryDate ?? "-")", "备注：\(item.remark ?? "无")"].joined(separator: "\n") }
+}
+
+private struct NativeCopyRow: View {
+    let label: String
+    let value: String
+    @Binding var copiedField: String?
+    var body: some View { Button { UIPasteboard.general.string = value; copiedField = label } label: { HStack { VStack(alignment: .leading, spacing: 4) { Text(label).font(.caption).foregroundStyle(.secondary); Text(value).foregroundStyle(.primary).textSelection(.enabled) }; Spacer(); Image(systemName: copiedField == label ? "checkmark.circle.fill" : "doc.on.doc").foregroundStyle(copiedField == label ? .green : .secondary) } }.buttonStyle(.plain) }
+}
+
+private struct NativeCopyField: Identifiable {
+    let label: String
+    let value: String
+    var id: String { label }
+}
+
+private struct NativeCopyAllButton: View {
+    let fields: [NativeCopyField]
+    @Binding var copiedField: String?
+    var body: some View { Button { UIPasteboard.general.string = fields.map { "\($0.label)：\($0.value)" }.joined(separator: "\n"); copiedField = "全部信息" } label: { Label("复制全部信息", systemImage: copiedField == "全部信息" ? "checkmark.circle.fill" : "doc.on.doc") } }
+}
+
+private struct LicenseImageViewer: View {
+    @Environment(\.dismiss) private var dismiss
+    let records: [LicenseRecordItem]
+    @Binding var selection: Int
+    var body: some View { NavigationStack { ZStack { Color.black.ignoresSafeArea(); TabView(selection: $selection) { ForEach(records) { record in ZoomableLicenseImage(url: record.imageURL).tag(record.id).overlay(alignment: .bottom) { Text(record.subjectName).font(.caption).foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 7).background(.black.opacity(0.55), in: Capsule()).padding(.bottom, 24) } } }.tabViewStyle(.page(indexDisplayMode: records.count > 1 ? .automatic : .never)) }.navigationTitle("执照图片").navigationBarTitleDisplayMode(.inline).toolbarColorScheme(.dark, for: .navigationBar).toolbarBackground(.black, for: .navigationBar).toolbar { ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() }.foregroundStyle(.white) } } } }
+}
+
+private struct ZoomableLicenseImage: View {
+    let url: String?
+    @State private var scale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @GestureState private var gestureScale: CGFloat = 1
+    @GestureState private var gestureOffset: CGSize = .zero
+    var body: some View { GeometryReader { proxy in ZStack { if let url, let imageURL = nativeImageURL(url) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 2600, placeholder: ProgressView().tint(.white)) } else { Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary) } }.frame(width: proxy.size.width, height: proxy.size.height).scaleEffect(min(max(scale * gestureScale, 1), 5)).offset(x: offset.width + gestureOffset.width, y: offset.height + gestureOffset.height).contentShape(Rectangle()).simultaneousGesture(MagnificationGesture().updating($gestureScale) { value, state, _ in state = value }.onEnded { value in scale = min(max(scale * value, 1), 5); if scale == 1 { offset = .zero } }).simultaneousGesture(DragGesture().updating($gestureOffset) { value, state, _ in if scale > 1 { state = value.translation } }.onEnded { value in if scale > 1 { offset.width += value.translation.width; offset.height += value.translation.height } }).onTapGesture(count: 2) { withAnimation(.easeInOut(duration: 0.2)) { if scale > 1 { scale = 1; offset = .zero } else { scale = 2.5 } } } } }
+}
 private struct LicenseRecordForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: LicenseRecordItem?; let onSave: () async -> Void; @State private var subject: String; @State private var code: String; @State private var legal: String; @State private var issue: String; @State private var expiry: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
     init(item: LicenseRecordItem?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _subject = State(initialValue: item?.subjectName ?? ""); _code = State(initialValue: item?.creditCode ?? ""); _legal = State(initialValue: item?.legalRepresentative ?? ""); _issue = State(initialValue: item?.issueDate ?? ""); _expiry = State(initialValue: item?.expiryDate ?? ""); _remark = State(initialValue: item?.remark ?? "") }
@@ -1496,9 +1633,14 @@ private struct LicenseRecordForm: View {
 
 private struct NativeDevicesView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [MobileDevice] = []; @State private var query = ""; @State private var error: String?; @State private var editing: MobileDevice?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.deviceName) \($0.primaryCard ?? "") \($0.secondaryCard ?? "")".localizedCaseInsensitiveContains(query) }) { row in VStack(alignment: .leading, spacing: 5) { Text(row.deviceName).fontWeight(.medium); Text([row.primaryCard, row.secondaryCard].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("手机设备").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { DeviceForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.deviceName) \($0.primaryCard ?? "") \($0.secondaryCard ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { DeviceDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { Text(row.deviceName).fontWeight(.medium); Text([row.primaryCard, row.secondaryCard].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) } }.swipeActions { Button("删除", role: .destructive) { Task { await remove(row) } }; Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("手机设备").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { DeviceForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("mobile-devices") } catch { self.error = session.message(for: error) } }
     private func remove(_ row: MobileDevice) async { do { try await session.delete("mobile-devices/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
+}
+private struct DeviceDetail: View {
+    let item: MobileDevice; @State private var copiedField: String?
+    private var fields: [NativeCopyField] { [.init(label: "设备名称", value: item.deviceName), .init(label: "主卡", value: item.primaryCard ?? "-"), .init(label: "副卡", value: item.secondaryCard ?? "-"), .init(label: "备注", value: item.remark ?? "无")] }
+    var body: some View { List { Section("设备资料") { ForEach(fields) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } } }.navigationTitle("设备详情").navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: fields, copiedField: $copiedField) } }
 }
 private struct DeviceForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: MobileDevice?; let onSave: () async -> Void; @State private var name: String; @State private var primary: String; @State private var secondary: String; @State private var remark: String; @State private var saving = false; @State private var error: String?
@@ -1509,9 +1651,14 @@ private struct DeviceForm: View {
 
 private struct NativeAccountUsageView: View {
     @EnvironmentObject private var session: NativeSession; @State private var rows: [AccountUsage] = []; @State private var query = ""; @State private var error: String?; @State private var editing: AccountUsage?; @State private var showing = false
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.accountName) \($0.phoneNumber ?? "") \($0.deviceName ?? "")".localizedCaseInsensitiveContains(query) }) { row in VStack(alignment: .leading, spacing: 5) { HStack { Text(row.accountName).fontWeight(.medium); Spacer(); StatusBadge(text: row.isBanned ? "已封禁" : "正常", done: !row.isBanned) }; Text([row.phoneNumber, row.deviceName].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }.swipeActions { Button(row.isBanned ? "恢复" : "封禁") { Task { await setBanned(row, !row.isBanned) } }.tint(row.isBanned ? .green : .orange); Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("账号使用").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { AccountUsageForm(item: editing) { await load() } } }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; ForEach(rows.filter { query.isEmpty || "\($0.accountName) \($0.phoneNumber ?? "") \($0.deviceName ?? "")".localizedCaseInsensitiveContains(query) }) { row in NavigationLink { AccountUsageDetail(item: row) } label: { VStack(alignment: .leading, spacing: 5) { HStack { Text(row.accountName).fontWeight(.medium); Spacer(); StatusBadge(text: row.isBanned ? "已封禁" : "正常", done: !row.isBanned) }; Text([row.phoneNumber, row.deviceName].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) } }.swipeActions { Button(row.isBanned ? "恢复" : "封禁") { Task { await setBanned(row, !row.isBanned) } }.tint(row.isBanned ? .green : .orange); Button("编辑") { editing = row; showing = true }.tint(.blue) } } }.navigationTitle("账号使用").searchable(text: $query).task { await load() }.refreshable { await load() }.toolbar { Button { editing = nil; showing = true } label: { Image(systemName: "plus") } }.sheet(isPresented: $showing) { AccountUsageForm(item: editing) { await load() } } }
     private func load() async { do { rows = try await session.get("account-usage-records") } catch { self.error = session.message(for: error) } }
     private func setBanned(_ row: AccountUsage, _ banned: Bool) async { do { let _: EmptyResponse = try await session.send("account-usage-records/batch-status", method: "PATCH", body: ["record_ids": [row.id], "is_banned": banned], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+}
+private struct AccountUsageDetail: View {
+    let item: AccountUsage; @State private var copiedField: String?
+    private var fields: [NativeCopyField] { [.init(label: "账号名称", value: item.accountName), .init(label: "手机号", value: item.phoneNumber ?? "-"), .init(label: "手机设备", value: item.deviceName ?? "-"), .init(label: "状态", value: item.isBanned ? "已封禁" : "正常"), .init(label: "使用说明", value: item.usageNotes ?? "无"), .init(label: "封禁原因", value: item.bannedReason ?? "无")] }
+    var body: some View { List { Section("账号资料") { ForEach(fields) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } } }.navigationTitle("账号详情").navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: fields, copiedField: $copiedField) } }
 }
 private struct AccountUsageForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: AccountUsage?; let onSave: () async -> Void; @State private var account: String; @State private var password = ""; @State private var phone: String; @State private var device: String; @State private var notes: String; @State private var reason: String; @State private var saving = false; @State private var error: String?
@@ -1521,8 +1668,9 @@ private struct AccountUsageForm: View {
 }
 
 private struct LicenseDetail: View {
-    @EnvironmentObject private var session: NativeSession; let item: LicenseRecord; let onChange: () async -> Void; @State private var error: String?
-    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; Section("授权") { LabeledContent("授权码", value: item.licenseKey); LabeledContent("套餐", value: item.planName); LabeledContent("状态", value: licenseStatus(item.status)); LabeledContent("到期", value: item.expiresAt ?? "-") }; Section("绑定设备") { ForEach(item.devices) { device in HStack { VStack(alignment: .leading) { Text(device.deviceName ?? device.deviceID); Text("\(device.platform ?? "未知平台") · \(device.appVersion ?? "未知版本")").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("解绑", role: .destructive) { Task { await unbind(device) } } } } } }.navigationTitle("授权详情").navigationBarTitleDisplayMode(.inline) }
+    @EnvironmentObject private var session: NativeSession; let item: LicenseRecord; let onChange: () async -> Void; @State private var error: String?; @State private var copiedField: String?
+    private var fields: [NativeCopyField] { var result = [NativeCopyField(label: "授权码", value: item.licenseKey), .init(label: "套餐", value: item.planName), .init(label: "状态", value: licenseStatus(item.status)), .init(label: "到期", value: item.expiresAt ?? "-"), .init(label: "设备上限", value: "\(item.maxDevices)")]; for (index, device) in item.devices.enumerated() { result.append(.init(label: "绑定设备\(index + 1)", value: "\(device.deviceName ?? device.deviceID) | \(device.deviceID) | \(device.platform ?? "未知平台") | \(device.appVersion ?? "未知版本")")) }; return result }
+    var body: some View { List { if let error { Text(error).foregroundStyle(.red) }; Section("授权") { ForEach(fields.prefix(5)) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } }; Section("绑定设备") { ForEach(Array(item.devices.enumerated()), id: \.element.id) { index, device in HStack { Button { UIPasteboard.general.string = fields[index + 5].value; copiedField = "绑定设备\(index + 1)" } label: { VStack(alignment: .leading) { Text(device.deviceName ?? device.deviceID); Text("\(device.platform ?? "未知平台") · \(device.appVersion ?? "未知版本")").font(.caption).foregroundStyle(.secondary) } }.buttonStyle(.plain); Spacer(); Button("解绑", role: .destructive) { Task { await unbind(device) } } } } } }.navigationTitle("授权详情").navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: fields, copiedField: $copiedField) } }
     private func unbind(_ device: LicenseDevice) async { let key = item.licenseKey.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? item.licenseKey; do { let _: EmptyResponse = try await session.send("license-admin/licenses/\(key)/unbind", method: "POST", body: ["device_id": device.deviceID], allowEmpty: true); await onChange() } catch { self.error = session.message(for: error) } }
 }
 
@@ -1832,15 +1980,9 @@ private struct WorkflowForm: View {
 }
 
 private struct ExpenseDetail: View {
-    let item: CompanyExpense
-    var body: some View {
-        List {
-            LabeledContent("金额", value: money(item.amount)); LabeledContent("分类", value: item.category)
-            LabeledContent("付款账户", value: item.paymentAccount); LabeledContent("消费日期", value: item.expenseDate)
-            LabeledContent("提交人", value: item.submitterName); LabeledContent("消费范围", value: item.expenseScope)
-            Section("说明") { Text(item.description.isEmpty ? "无" : item.description) }
-        }.navigationTitle(item.expenseNo).navigationBarTitleDisplayMode(.inline)
-    }
+    let item: CompanyExpense; @State private var copiedField: String?
+    private var fields: [NativeCopyField] { [.init(label: "流水号", value: item.expenseNo), .init(label: "金额", value: money(item.amount)), .init(label: "分类", value: item.category), .init(label: "付款账户", value: item.paymentAccount), .init(label: "消费日期", value: item.expenseDate), .init(label: "提交人", value: item.submitterName), .init(label: "消费范围", value: item.expenseScope), .init(label: "说明", value: item.description.isEmpty ? "无" : item.description)] }
+    var body: some View { List { Section("流水资料") { ForEach(fields) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } } }.navigationTitle(item.expenseNo).navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: fields, copiedField: $copiedField) } }
 }
 
 struct Metric: View {
@@ -1867,8 +2009,8 @@ private struct NativeWarehouseView: View {
             Section { Picker("分类", selection: $tab) { ForEach(WarehouseTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu) }
             if let error { Text(error).foregroundStyle(.red) }
             switch tab {
-            case .stocks: ForEach(stocks.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName).fontWeight(.medium); Text("\(row.sku) · \(row.warehouseName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(row.availableQuantity) \(row.unit)").foregroundStyle(row.isLowStock ? .red : .primary); if row.lockedQuantity > 0 { Text("锁定 \(row.lockedQuantity)").font(.caption2).foregroundStyle(.orange) } } } }
-            case .products: ForEach(products.filter { matches("\($0.sku) \($0.name) \($0.barcode ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.sku) · \(row.specification ?? row.unit) · \(money(row.costPrice))", status: row.isActive ? "启用" : "停用").swipeActions { Button("删除", role: .destructive) { Task { await deleteProduct(row) } }; Button("编辑") { editingProduct = row; sheet = .product }.tint(.blue) } }
+            case .stocks: ForEach(stocks.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName)") }) { row in HStack(spacing: 11) { NativeRemoteImage(url: row.imageURL, size: 48); VStack(alignment: .leading) { Text(row.productName).fontWeight(.medium); Text("\(row.sku) · \(row.warehouseName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(row.availableQuantity) \(row.unit)").foregroundStyle(row.isLowStock ? .red : .primary); if row.lockedQuantity > 0 { Text("锁定 \(row.lockedQuantity)").font(.caption2).foregroundStyle(.orange) } } } }
+            case .products: ForEach(products.filter { matches("\($0.sku) \($0.name) \($0.barcode ?? "")") }) { row in HStack(spacing: 11) { NativeRemoteImage(url: row.imageURL, size: 48); WarehouseTextRow(title: row.name, detail: "\(row.sku) · \(row.specification ?? row.unit) · \(money(row.costPrice))", status: row.isActive ? "启用" : "停用") }.swipeActions { Button("删除", role: .destructive) { Task { await deleteProduct(row) } }; Button("编辑") { editingProduct = row; sheet = .product }.tint(.blue) } }
             case .warehouses: ForEach(warehouses.filter { matches("\($0.code) \($0.name) \($0.address ?? "")") }) { row in WarehouseTextRow(title: row.name, detail: "\(row.code) · \(row.address ?? "未填写地址")", status: row.isActive ? "启用" : "停用").swipeActions { Button("删除", role: .destructive) { Task { await deleteWarehouse(row) } }; Button("编辑") { editingWarehouse = row; sheet = .warehouse }.tint(.blue) } }
             case .inbound: ForEach(inbound.filter { matches("\($0.orderNo) \($0.warehouseName) \(lineSummary($0.items))") }) { row in WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: row.status == "completed" ? "已入库" : "已撤销").swipeActions { if row.status == "completed" { Button("撤销", role: .destructive) { Task { await cancel(row) } } } } }
             case .outbound: ForEach(outbound.filter { matches("\($0.orderNo) \($0.warehouseName) \($0.trackingNo ?? "")") }) { row in NavigationLink { WarehouseOutboundDetail(row: row) } label: { WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: outboundStatus(row.status)) }.swipeActions { if let next = nextStatus(row.status) { Button("推进") { Task { await setStatus(row, next) } }.tint(.blue) }; if !["shipped","cancelled"].contains(row.status) { Button("取消", role: .destructive) { Task { await setStatus(row, "cancelled") } } } } }
@@ -1879,7 +2021,8 @@ private struct NativeWarehouseView: View {
         .sheet(item: $sheet) { value in switch value { case .warehouse: WarehouseBasicEditor(kind: .warehouse, warehouse: editingWarehouse, product: nil) { await load() }; case .product: WarehouseBasicEditor(kind: .product, warehouse: nil, product: editingProduct) { await load() }; case .inbound: WarehouseOrderEditor(outbound: false, warehouses: warehouses, products: products) { await load() }; case .outbound: WarehouseOrderEditor(outbound: true, warehouses: warehouses, products: products) { await load() } } }
     }
     private func matches(_ value: String) -> Bool { query.isEmpty || value.localizedCaseInsensitiveContains(query) }
-    private func load() async { loading = true; defer { loading = false }; do { async let a: WarehouseSummary = session.get("warehouse/summary"); async let b: [WarehouseRecord] = session.get("warehouse/warehouses"); async let c: [WarehouseProduct] = session.get("warehouse/products"); async let d: [WarehouseStock] = session.get("warehouse/stocks"); async let e: [WarehouseInbound] = session.get("warehouse/inbound-orders"); async let f: [WarehouseOutbound] = session.get("warehouse/outbound-orders"); async let g: [WarehouseMovement] = session.get("warehouse/movements"); (summary,warehouses,products,stocks,inbound,outbound,movements) = try await (a,b,c,d,e,f,g) } catch { self.error = session.message(for: error) } }
+    private func load() async { loading = true; defer { loading = false }; do { async let a: WarehouseSummary = session.get("warehouse/summary"); async let b: [WarehouseRecord] = session.get("warehouse/warehouses"); async let c: [WarehouseProduct] = session.get("warehouse/products"); async let d: [WarehouseStock] = session.get("warehouse/stocks"); async let e: [WarehouseInbound] = session.get("warehouse/inbound-orders"); async let f: [WarehouseOutbound] = session.get("warehouse/outbound-orders"); async let g: [WarehouseMovement] = session.get("warehouse/movements"); (summary,warehouses,products,stocks,inbound,outbound,movements) = try await (a,b,c,d,e,f,g); prefetchProductImages() } catch { self.error = session.message(for: error) } }
+    private func prefetchProductImages() { let requests = products.prefix(12).compactMap { product -> (URL, CGFloat)? in guard let value = product.imageURL, let url = nativeThumbnailURL(value, maxPixelSize: 144) else { return nil }; return (url, 144) }; Task(priority: .utility) { await NativeImagePipeline.shared.prefetch(requests) } }
     private func cancel(_ row: WarehouseInbound) async { do { let _: WarehouseInbound = try await session.send("warehouse/inbound-orders/\(row.id)", method: "DELETE"); await load() } catch { self.error = session.message(for: error) } }
     private func setStatus(_ row: WarehouseOutbound, _ status: String) async { do { let _: WarehouseOutbound = try await session.send("warehouse/outbound-orders/\(row.id)/status", method: "PATCH", body: ["status":status,"carrier":row.carrier ?? "","tracking_no":row.trackingNo ?? ""]); await load() } catch { self.error = session.message(for: error) } }
     private func deleteWarehouse(_ row: WarehouseRecord) async { do { try await session.delete("warehouse/warehouses/\(row.id)"); await load() } catch { self.error = session.message(for: error) } }
@@ -1887,7 +2030,12 @@ private struct NativeWarehouseView: View {
 }
 private struct WarehouseMetric: View { let title:String,value:String; init(_ title:String,_ value:String){self.title=title;self.value=value}; var body:some View{VStack(alignment:.leading){Text(title).font(.caption).foregroundStyle(.secondary);Text(value).font(.headline)}.padding(12).background(Color(.secondarySystemGroupedBackground),in:RoundedRectangle(cornerRadius:8))} }
 private struct WarehouseTextRow: View { let title:String,detail:String,status:String; var body:some View{VStack(alignment:.leading,spacing:5){HStack{Text(title).fontWeight(.medium);Spacer();Text(status).foregroundStyle(.secondary)};Text(detail).font(.caption).foregroundStyle(.secondary)}} }
-private struct WarehouseOutboundDetail: View { let row: WarehouseOutbound; var body: some View { List { Section("订单") { LabeledContent("出库单号", value: row.orderNo); LabeledContent("仓库", value: row.warehouseName); LabeledContent("状态", value: outboundStatus(row.status)); if let external = row.externalOrderNo, !external.isEmpty { LabeledContent("平台订单", value: external) } }; Section("收货信息") { LabeledContent("收件人", value: row.recipientName ?? "-"); LabeledContent("联系电话", value: row.recipientPhone ?? "-"); LabeledContent("地址", value: row.recipientAddress ?? "-"); LabeledContent("快递", value: row.carrier ?? "-"); LabeledContent("物流单号", value: row.trackingNo ?? "-") }; Section("商品") { ForEach(row.items, id: \.productID) { item in LabeledContent("\(item.sku) · \(item.productName)", value: "× \(item.quantity) \(item.unit)") } } }.navigationTitle("出库详情").navigationBarTitleDisplayMode(.inline) } }
+private struct WarehouseOutboundDetail: View {
+    let row: WarehouseOutbound; @State private var copiedField: String?
+    private var fields: [NativeCopyField] { var result = [NativeCopyField(label: "出库单号", value: row.orderNo), .init(label: "仓库", value: row.warehouseName), .init(label: "状态", value: outboundStatus(row.status))]; if let external = row.externalOrderNo, !external.isEmpty { result.append(.init(label: "平台订单", value: external)) }; result.append(contentsOf: [.init(label: "收件人", value: row.recipientName ?? "-"), .init(label: "联系电话", value: row.recipientPhone ?? "-"), .init(label: "地址", value: row.recipientAddress ?? "-"), .init(label: "快递", value: row.carrier ?? "-"), .init(label: "物流单号", value: row.trackingNo ?? "-")]); for (index, item) in row.items.enumerated() { result.append(.init(label: "商品\(index + 1)", value: "\(item.sku) · \(item.productName) × \(item.quantity) \(item.unit)")) }; return result }
+    private var orderCount: Int { 3 + ((row.externalOrderNo?.isEmpty == false) ? 1 : 0) }
+    var body: some View { List { Section("订单") { ForEach(fields.prefix(orderCount)) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } }; Section("收货信息") { ForEach(fields.dropFirst(orderCount).prefix(5)) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } }; Section("商品") { ForEach(fields.dropFirst(orderCount + 5)) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } } }.navigationTitle("出库详情").navigationBarTitleDisplayMode(.inline).toolbar { NativeCopyAllButton(fields: fields, copiedField: $copiedField) } }
+}
 
 private struct WarehouseBasicEditor: View {
     enum Kind { case warehouse, product }; @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let kind:Kind; let warehouse: WarehouseRecord?; let product: WarehouseProduct?; let onSave:() async->Void
@@ -1912,7 +2060,7 @@ private struct AIChatMessage: Codable, Identifiable {
     let id: String; let role: String; var content: String
     init(id: String = UUID().uuidString, role: String, content: String) { self.id = id; self.role = role; self.content = content }
 }
-private struct AIChat: Decodable, Identifiable {
+private struct AIChat: Codable, Identifiable {
     let id: String; var title: String; var messages: [AIChatMessage]; var modelID: String?; var favorite: Bool; var archived: Bool; var folder: String; let createdAt: TimeInterval; var updatedAt: TimeInterval
     enum CodingKeys: String, CodingKey { case id, title, messages, favorite, archived, folder; case modelID = "model_id"; case createdAt = "created_at"; case updatedAt = "updated_at" }
     init(id: String, title: String, messages: [AIChatMessage], modelID: String?, favorite: Bool, archived: Bool, folder: String, createdAt: TimeInterval, updatedAt: TimeInterval) { self.id = id; self.title = title; self.messages = messages; self.modelID = modelID; self.favorite = favorite; self.archived = archived; self.folder = folder; self.createdAt = createdAt; self.updatedAt = updatedAt }
@@ -1926,6 +2074,13 @@ private struct AIChat: Decodable, Identifiable {
         archived = (try? values.decode(Bool.self, forKey: .archived)) ?? (((try? values.decode(Int.self, forKey: .archived)) ?? 0) != 0)
         folder = (try? values.decode(String.self, forKey: .folder)) ?? ""
         createdAt = TimeInterval((try? values.decode(Int.self, forKey: .createdAt)) ?? 0); updatedAt = TimeInterval((try? values.decode(Int.self, forKey: .updatedAt)) ?? 0)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id); try values.encode(title, forKey: .title); try values.encode(messages, forKey: .messages)
+        try values.encodeIfPresent(modelID, forKey: .modelID); try values.encode(favorite, forKey: .favorite); try values.encode(archived, forKey: .archived); try values.encode(folder, forKey: .folder)
+        try values.encode(Int(createdAt), forKey: .createdAt); try values.encode(Int(updatedAt), forKey: .updatedAt)
     }
 }
 private struct AIChatsResponse: Decodable { let chats: [AIChat] }
@@ -2027,8 +2182,8 @@ private struct MobileDevice: Codable, Identifiable { let id: Int; let deviceName
 private struct AccountUsage: Codable, Identifiable { let id: Int; let accountName: String; let phoneNumber: String?; let deviceName: String?; let usageNotes: String?; let isBanned: Bool; let bannedReason: String?; enum CodingKeys: String, CodingKey { case id; case accountName = "account_name"; case phoneNumber = "phone_number"; case deviceName = "device_name"; case usageNotes = "usage_notes"; case isBanned = "is_banned"; case bannedReason = "banned_reason" } }
 private struct WarehouseSummary: Codable { let warehouseCount:Int;let productCount:Int;let totalQuantity:Int;let totalCost:Double;let lowStockCount:Int;let pendingOutboundCount:Int;let todayInboundQuantity:Int;let todayOutboundQuantity:Int; enum CodingKeys:String,CodingKey{case warehouseCount="warehouse_count",productCount="product_count",totalQuantity="total_quantity",totalCost="total_cost",lowStockCount="low_stock_count",pendingOutboundCount="pending_outbound_count",todayInboundQuantity="today_inbound_quantity",todayOutboundQuantity="today_outbound_quantity"} }
 private struct WarehouseRecord: Codable, Identifiable { let id:Int;let code:String;let name:String;let address:String?;let contactName:String?;let contactPhone:String?;let isActive:Bool;let remark:String?; enum CodingKeys:String,CodingKey{case id,code,name,address,remark;case contactName="contact_name",contactPhone="contact_phone",isActive="is_active"} }
-private struct WarehouseProduct: Codable, Identifiable { let id:Int;let sku:String;let name:String;let barcode:String?;let specification:String?;let unit:String;let costPrice:Double;let warningQuantity:Int;let isActive:Bool;let remark:String?; enum CodingKeys:String,CodingKey{case id,sku,name,barcode,specification,unit,remark;case costPrice="cost_price",warningQuantity="warning_quantity",isActive="is_active"} }
-private struct WarehouseStock: Codable, Identifiable { var id:String{"\(warehouseID)-\(productID)"};let warehouseID:Int;let warehouseName:String;let productID:Int;let sku:String;let productName:String;let unit:String;let quantity:Int;let lockedQuantity:Int;let availableQuantity:Int;let isLowStock:Bool; enum CodingKeys:String,CodingKey{case sku,unit,quantity;case warehouseID="warehouse_id",warehouseName="warehouse_name",productID="product_id",productName="product_name",lockedQuantity="locked_quantity",availableQuantity="available_quantity",isLowStock="is_low_stock"} }
+private struct WarehouseProduct: Codable, Identifiable { let id:Int;let sku:String;let name:String;let barcode:String?;let specification:String?;let unit:String;let costPrice:Double;let warningQuantity:Int;let isActive:Bool;let remark:String?;let imageURL:String?; enum CodingKeys:String,CodingKey{case id,sku,name,barcode,specification,unit,remark;case costPrice="cost_price",warningQuantity="warning_quantity",isActive="is_active",imageURL="image_url"} }
+private struct WarehouseStock: Codable, Identifiable { var id:String{"\(warehouseID)-\(productID)"};let warehouseID:Int;let warehouseName:String;let productID:Int;let sku:String;let productName:String;let unit:String;let quantity:Int;let lockedQuantity:Int;let availableQuantity:Int;let isLowStock:Bool;let imageURL:String?; enum CodingKeys:String,CodingKey{case sku,unit,quantity;case warehouseID="warehouse_id",warehouseName="warehouse_name",productID="product_id",productName="product_name",lockedQuantity="locked_quantity",availableQuantity="available_quantity",isLowStock="is_low_stock",imageURL="image_url"} }
 private struct WarehouseLine: Codable { let productID:Int;let sku:String;let productName:String;let unit:String;let quantity:Int; enum CodingKeys:String,CodingKey{case sku,unit,quantity;case productID="product_id",productName="product_name"} }
 private struct WarehouseInbound: Codable, Identifiable { let id:Int;let orderNo:String;let warehouseName:String;let status:String;let items:[WarehouseLine]; enum CodingKeys:String,CodingKey{case id,status,items;case orderNo="order_no",warehouseName="warehouse_name"} }
 private struct WarehouseOutbound: Codable, Identifiable { let id:Int;let orderNo:String;let warehouseName:String;let externalOrderNo:String?;let status:String;let carrier:String?;let trackingNo:String?;let recipientName:String?;let recipientPhone:String?;let recipientAddress:String?;let items:[WarehouseLine]; enum CodingKeys:String,CodingKey{case id,status,carrier,items;case orderNo="order_no",warehouseName="warehouse_name",externalOrderNo="external_order_no",trackingNo="tracking_no",recipientName="recipient_name",recipientPhone="recipient_phone",recipientAddress="recipient_address"} }
@@ -2381,10 +2536,15 @@ private func nativeImageURL(_ value: String) -> URL? {
     let base = URL(string: "https://xiaoxu666.asia/")!
     return URL(string: trimmed, relativeTo: base)?.absoluteURL
 }
-private func nativeThumbnailURL(_ value: String) -> URL? {
+private func nativeThumbnailURL(_ value: String, maxPixelSize: CGFloat = 720) -> URL? {
     guard let url = nativeImageURL(value), var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nativeImageURL(value) }
-    var items = components.queryItems ?? []
-    if !items.contains(where: { $0.name == "thumb" }) { items.append(URLQueryItem(name: "thumb", value: "1")) }
+    let requested = max(Int(maxPixelSize.rounded(.up)), 1)
+    let width = [96, 320, 720, 1280].first(where: { $0 >= requested }) ?? 1280
+    var items = (components.queryItems ?? []).filter { !["thumb", "width", "format", "quality"].contains($0.name) }
+    items.append(URLQueryItem(name: "thumb", value: "1"))
+    items.append(URLQueryItem(name: "width", value: String(width)))
+    items.append(URLQueryItem(name: "format", value: "webp"))
+    items.append(URLQueryItem(name: "quality", value: "76"))
     components.queryItems = items
     return components.url ?? url
 }
@@ -2393,7 +2553,7 @@ private struct NativeRemoteImage: View {
     let size: CGFloat
     var body: some View {
         Group {
-            if let url, let imageURL = nativeThumbnailURL(url) {
+            if let url, let imageURL = nativeThumbnailURL(url, maxPixelSize: size * 3) {
                 CachedRemoteImage(url: imageURL, contentMode: .fill, maxPixelSize: size * 3, placeholder: placeholder)
             } else { placeholder }
         }
@@ -2412,14 +2572,18 @@ private actor NativeImagePipeline {
 
     private let memoryCache = NSCache<NSString, UIImage>()
     private let session: URLSession
+    private let responseCache: URLCache
     private var inFlight: [String: Task<UIImage, Error>] = [:]
 
     private init() {
         memoryCache.countLimit = 200
         memoryCache.totalCostLimit = 64 * 1024 * 1024
+        let cache = URLCache(memoryCapacity: 48 * 1024 * 1024, diskCapacity: 384 * 1024 * 1024)
+        responseCache = cache
         let configuration = URLSessionConfiguration.default
-        configuration.urlCache = URLCache(memoryCapacity: 32 * 1024 * 1024, diskCapacity: 256 * 1024 * 1024)
+        configuration.urlCache = cache
         configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.httpMaximumConnectionsPerHost = 6
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 60
         configuration.waitsForConnectivity = true
@@ -2433,24 +2597,34 @@ private actor NativeImagePipeline {
         if let task = inFlight[key] { return try await task.value }
 
         let session = session
-        let task = Task.detached(priority: .utility) {
+        let responseCache = responseCache
+        let task = Task.detached(priority: .userInitiated) {
             var lastError: Error = NativeImageError.invalidResponse
             let requestURLs = NativeImagePipeline.requestURLs(for: url)
-            for attempt in 0..<3 {
+            for requestURL in requestURLs {
                 do {
-                    var request = URLRequest(url: requestURLs[min(attempt, requestURLs.count - 1)])
+                    var request = URLRequest(url: requestURL)
                     request.cachePolicy = .returnCacheDataElseLoad
                     request.timeoutInterval = 20
+                    request.networkServiceType = .responsiveData
                     request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
-                    let (data, response) = try await session.data(for: request)
+                    let data: Data
+                    let response: URLResponse
+                    let shouldStore: Bool
+                    if let cached = responseCache.cachedResponse(for: request) {
+                        data = cached.data; response = cached.response; shouldStore = false
+                    } else {
+                        (data, response) = try await session.data(for: request)
+                        shouldStore = true
+                    }
                     guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NativeImageError.invalidResponse }
                     if let mime = http.mimeType, !mime.lowercased().hasPrefix("image/") { throw NativeImageError.invalidImage }
+                    if shouldStore { responseCache.storeCachedResponse(CachedURLResponse(response: response, data: data, storagePolicy: .allowed), for: request) }
                     guard let image = NativeImagePipeline.downsample(data: data, maxPixelSize: bucket) else { throw NativeImageError.invalidImage }
                     return image
                 } catch {
                     lastError = error
-                    guard attempt < 2, !Task.isCancelled else { break }
-                    try? await Task.sleep(nanoseconds: UInt64(350 * (1 << attempt)) * 1_000_000)
+                    guard !Task.isCancelled else { break }
                 }
             }
             throw lastError
@@ -2485,7 +2659,15 @@ private actor NativeImagePipeline {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.queryItems?.contains(where: { $0.name == "thumb" }) == true else { return [url] }
         components.queryItems = components.queryItems?.filter { $0.name != "thumb" }
         guard let original = components.url else { return [url] }
-        return [url, url, original]
+        return original == url ? [url] : [url, original]
+    }
+
+    func prefetch(_ requests: [(URL, CGFloat)]) async {
+        await withTaskGroup(of: Void.self) { group in
+            for (url, size) in requests.prefix(18) {
+                group.addTask { _ = try? await self.image(for: url, maxPixelSize: size) }
+            }
+        }
     }
 }
 
