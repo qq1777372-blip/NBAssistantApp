@@ -917,6 +917,14 @@ private struct NativeLinksView: View {
         do { try await session.delete("saved-links/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
         catch { self.error = session.message(for: error); deleting = nil }
     }
+    private func prefetchImages(in rows: [SavedLink]) {
+        var requests: [(URL, CGFloat)] = []
+        for item in rows.prefix(8) {
+            if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value, maxPixelSize: 144) { requests.append((avatar, 144)) }
+            requests.append(contentsOf: item.images.prefix(3).compactMap { nativeThumbnailURL($0.url, maxPixelSize: 720).map { ($0, 720) } })
+        }
+        Task(priority: .utility) { await NativeImagePipeline.shared.prefetch(requests) }
+    }
 }
 
 private struct TaskDetail: View {
@@ -1191,14 +1199,6 @@ private struct LinkForm: View {
         guard item == nil, title.isEmpty, description.isEmpty, let data = UserDefaults.standard.data(forKey: draftKey), let draft = try? JSONDecoder().decode(LinkDraft.self, from: data) else { return }
         title = draft.title; category = draft.category; description = draft.description
         draftNotice = "已恢复 \(shortTimestamp(draft.updatedAt.timeIntervalSince1970)) 的草稿"
-    }
-    private func prefetchImages(in rows: [SavedLink]) {
-        var requests: [(URL, CGFloat)] = []
-        for item in rows.prefix(8) {
-            if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value, maxPixelSize: 144) { requests.append((avatar, 144)) }
-            requests.append(contentsOf: item.images.prefix(3).compactMap { nativeThumbnailURL($0.url, maxPixelSize: 720).map { ($0, 720) } })
-        }
-        Task(priority: .utility) { await NativeImagePipeline.shared.prefetch(requests) }
     }
 }
 
