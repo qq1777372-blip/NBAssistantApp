@@ -150,11 +150,11 @@ private enum NativeDestination: String, Identifiable, Hashable {
 
     @ViewBuilder var view: some View {
         Group { switch self {
-        case .tasks: NativeTaskView()
+        case .tasks: NativeTaskView(embedded: true)
         case .shops: NativeShopsView()
         case .warehouse: NativeWarehouseView()
-        case .links: NativeLinksView()
-        case .expenses: NativeQuickLedgerView()
+        case .links: NativeLinksView(embedded: true)
+        case .expenses: NativeQuickLedgerView(embedded: true)
         case .owners: NativeOwnersView()
         case .peers: NativePeerShopsView()
         case .licenses: NativeLicenseRecordsView()
@@ -191,6 +191,21 @@ private enum NativeDestination: String, Identifiable, Hashable {
     }
 }
 
+private struct NativeNavigationContainer<Content: View>: View {
+    let embedded: Bool
+    private let content: () -> Content
+
+    init(embedded: Bool, @ViewBuilder content: @escaping () -> Content) {
+        self.embedded = embedded
+        self.content = content
+    }
+
+    @ViewBuilder var body: some View {
+        if embedded { content() }
+        else { NavigationStack { content() } }
+    }
+}
+
 private struct NativeWorkbenchView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var query = ""
@@ -219,12 +234,9 @@ private struct NativeWorkbenchView: View {
         }
         .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
         .searchable(text: $query, prompt: "搜索功能")
-        .navigationDestination(isPresented: destinationPresented) {
-            if let destination { destination.view }
+        .navigationDestination(item: $destination) { destination in
+            destination.view
         }
-    }
-    private var destinationPresented: Binding<Bool> {
-        Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
     }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
         groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
@@ -237,14 +249,22 @@ private struct NativeProfitView: View {
     @State private var months: [ProfitMonth] = []
     @State private var rows: [ProfitRecord] = []
     @State private var query = ""
+    @State private var period = "month"
     @State private var error: String?
     private var filtered: [ProfitRecord] { rows.filter { query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query) } }
-    private var maximum: Double { max(months.map { abs($0.totalProfit) }.max() ?? 1, 1) }
+    private var buckets: [(String, Double)] {
+        let grouped = Dictionary(grouping: rows) { item -> String in
+            switch period { case "day": String(item.reportDate.prefix(10)); case "year": String(item.reportDate.prefix(4)); default: String(item.reportDate.prefix(7)) }
+        }
+        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.profit }) }.sorted { $0.0 < $1.0 }
+    }
+    private var maximum: Double { max(buckets.map { abs($0.1) }.max() ?? 1, 1) }
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             Section { HStack { Metric(title: "累计利润", value: money(summary?.totalProfit ?? 0)); Metric(title: "店铺数", value: "\(summary?.uniqueStoreCount ?? 0) 家"); Metric(title: "报表人数", value: "\(summary?.uniqueReporterCount ?? 0) 人") } }
-            Section("月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(months) { item in VStack { Text(money(item.totalProfit)).font(.caption2).foregroundStyle(item.totalProfit < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.totalProfit < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.totalProfit) / maximum) * 115, 5)); Text(String(item.month.suffix(2)) + "月").font(.caption) } } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
+            Section { Picker("统计周期", selection: $period) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented) }
+            Section(period == "day" ? "日利润趋势" : period == "year" ? "年度利润趋势" : "月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(buckets, id: \.0) { item in VStack { Text(money(item.1)).font(.caption2).foregroundStyle(item.1 < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.1 < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.1) / maximum) * 115, 5)); Text(period == "day" ? String(item.0.suffix(5)) : period == "month" ? String(item.0.suffix(2)) + "月" : item.0).font(.caption) } } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
             Section("利润明细") { ForEach(filtered) { item in HStack { VStack(alignment: .leading, spacing: 4) { Text(item.storeName).fontWeight(.medium); Text("\(item.reportDate) · \(item.reporterName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(money(item.profit)).foregroundStyle(item.profit < 0 ? .red : .green) } } }
         }.listStyle(.plain).navigationTitle("钉钉利润").searchable(text: $query, prompt: "搜索店铺、上报人或日期").task { await load() }.refreshable { await load() }
     }
@@ -375,6 +395,8 @@ private struct NativeHomeView: View {
     @State private var streamTask: Task<Void, Never>?
     @State private var showingHistory = false
     @State private var deletingChat: AIChat?
+    @State private var homeModuleKeys = defaultHomeModuleKeys
+    @State private var showingHomeModules = false
 
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
     private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
@@ -383,15 +405,9 @@ private struct NativeHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("常用功能").font(.headline).padding(.horizontal, 16)
+                    HStack { Text("常用功能").font(.headline); Spacer(); Button("排序") { showingHomeModules = true }.font(.subheadline) }.padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
-                        HomeShortcut("生意参谋", "chart.bar.fill", .teal) { destination = .sycm }
-                        HomeShortcut("任务记录", "doc.text.fill", .indigo) { destination = .tasks }
-                        HomeShortcut("店铺账号", "storefront.fill", .mint) { destination = .shops }
-                        HomeShortcut("仓储管理", "shippingbox.fill", .orange) { destination = .warehouse }
-                        HomeShortcut("链接广场", "link", .blue) { destination = .links }
-                        HomeShortcut("AI 工作台", "sparkles", .cyan) { destination = .aiWorkspace }
-                        HomeShortcut("负责人", "person.2.fill", .green) { destination = .owners }
+                        ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { destination = item.destination } }
                         HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { destination = .workbench }
                     }.padding(.horizontal, 16)
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
@@ -421,15 +437,13 @@ private struct NativeHomeView: View {
                 }
             }
             .task { await loadDashboard() }
+            .task { await loadHomeModules() }
+            .sheet(isPresented: $showingHomeModules) { HomeModuleManager(keys: $homeModuleKeys) }
             .refreshable { await loadDashboard() }
-            .navigationDestination(isPresented: destinationPresented) {
-                if let destination { destination.view }
+            .navigationDestination(item: $destination) { destination in
+                destination.view
             }
         }
-    }
-
-    private var destinationPresented: Binding<Bool> {
-        Binding(get: { destination != nil }, set: { if !$0 { destination = nil } })
     }
 
     private func loadDashboard() async {
@@ -446,6 +460,7 @@ private struct NativeHomeView: View {
         for result in results { if dashboard.apply(result) { successes += 1 } }
         if successes == 0 { dashboardError = "经营数据加载失败，请下拉重试" }
     }
+    private func loadHomeModules() async { if let response: HomeModulesSettingResponse = try? await session.get("ui-settings/home-modules"), let value = response.value, !value.isEmpty { homeModuleKeys = value.filter { key in homeModuleCatalog.contains { $0.id == key } } } }
 
     /* AI chat actions remain available to the home view. */
     /* legacy chat presentation removed; the dashboard is the home body. */
@@ -604,6 +619,8 @@ private struct NativeHomeView: View {
 }
 
 private struct NativeTaskView: View {
+    let embedded: Bool
+    init(embedded: Bool = false) { self.embedded = embedded }
     @EnvironmentObject private var session: NativeSession
     @State private var records: [TaskRecord] = []
     @State private var summary: TaskSummary?
@@ -619,7 +636,7 @@ private struct NativeTaskView: View {
     @State private var exporting = false
 
     var body: some View {
-        NavigationStack {
+        NativeNavigationContainer(embedded: embedded) {
             List(selection: $selectedIDs) {
                 if let summary {
                     Section {
@@ -705,16 +722,84 @@ private struct TaskCSVDocument: FileDocument {
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { let header = "订单号,店铺,负责人,本金,数量,签收,结算,时间\n"; let rows = records.map { "\($0.orderNo),\($0.shopName),\($0.ownerName),\($0.principalAmount),\($0.orderCount),\($0.signedStatus),\($0.settlementStatus),\($0.taskTime ?? "")" }.joined(separator: "\n"); return FileWrapper(regularFileWithContents: Data((header + rows).utf8)) }
 }
 
+private let defaultExpenseCategories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
+private let expenseCategoriesKey = "native-expense-categories"
+
+private func loadExpenseCategories() -> [String] {
+    guard let values = UserDefaults.standard.stringArray(forKey: expenseCategoriesKey), !values.isEmpty else { return defaultExpenseCategories }
+    return values
+}
+
+private func saveExpenseCategories(_ values: [String]) {
+    UserDefaults.standard.set(values, forKey: expenseCategoriesKey)
+}
+
+private struct ExpenseCategoryManager: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    @Binding var categories: [String]
+    @Binding var selection: String
+    @State private var name = ""
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("新增分类") {
+                    HStack {
+                        TextField("分类名称", text: $name)
+                        Button("添加") { add() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                Section("消费分类") {
+                    ForEach(categories, id: \.self) { value in
+                        HStack { Image(systemName: value == selection ? "checkmark.circle.fill" : "circle").foregroundStyle(value == selection ? .blue : .secondary); Text(value); Spacer() }
+                            .contentShape(Rectangle()).onTapGesture { selection = value }
+                    }
+                    .onDelete(perform: remove)
+                }
+            }
+            .navigationTitle("分类管理")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+        }
+    }
+
+    private func add() {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !categories.contains(value) else { return }
+        categories.append(value); selection = value; name = ""; persist()
+    }
+
+    private func remove(at offsets: IndexSet) {
+        guard categories.count > offsets.count else { return }
+        let removedSelection = offsets.contains { categories[$0] == selection }
+        categories.remove(atOffsets: offsets)
+        if removedSelection { selection = categories[0] }
+        persist()
+    }
+
+    private func persist() {
+        saveExpenseCategories(categories)
+        Task { saving = true; defer { saving = false }; do { let response: ExpenseCategoriesResponse = try await session.send("expense-categories", method: "PUT", body: ["categories": categories]); categories = response.categories; saveExpenseCategories(categories) } catch { error = session.message(for: error) } }
+    }
+}
+
 private struct NativeQuickLedgerView: View {
+    let embedded: Bool
+    init(embedded: Bool = false) { self.embedded = embedded; _categories = State(initialValue: loadExpenseCategories()) }
     @EnvironmentObject private var session: NativeSession
     @State private var amount = ""
     @State private var category = "办公用品"
     @State private var note = ""
     @State private var saving = false
     @State private var error: String?
-    private let categories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
+    @State private var categories: [String]
+    @State private var showingCategories = false
     var body: some View {
-        NavigationStack {
+        NativeNavigationContainer(embedded: embedded) {
             GeometryReader { geometry in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
@@ -732,11 +817,14 @@ private struct NativeQuickLedgerView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("记一笔")
-            .toolbar { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") } }
+            .toolbar { ToolbarItemGroup { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") }; Button { showingCategories = true } label: { Label("分类管理", systemImage: "square.grid.2x2") } } }
+            .sheet(isPresented: $showingCategories) { ExpenseCategoryManager(categories: $categories, selection: $category) }
+            .task { await syncCategories() }
         }
     }
     private func ledgerKey(_ key: String, symbol: String? = nil, columns: Int = 1) -> some View { Button { pressKey(key) } label: { Group { if let symbol { Image(systemName: symbol) } else { Text(key) } }.font(.title2.weight(.medium)).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(.plain).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10)).gridCellColumns(columns) }
     private func categoryIcon(_ value: String) -> String { switch value { case "办公用品": "paperclip"; case "快递物流": "shippingbox"; case "餐饮招待": "fork.knife"; case "差旅交通": "car"; case "软件服务": "laptopcomputer"; case "广告推广": "megaphone"; case "采购货款": "cart"; default: "ellipsis.circle" } }
+    private func syncCategories() async { if let response: ExpenseCategoriesResponse = try? await session.get("expense-categories") { categories = response.categories; saveExpenseCategories(categories); if !categories.contains(category), let first = categories.first { category = first } } }
     private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch let requestError { error = session.message(for: requestError) } }
     private func pressKey(_ key: String) { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); switch key { case "C": amount = ""; case "⌫": if !amount.isEmpty { amount.removeLast() }; case ".": if !amount.contains(".") { amount = amount.isEmpty ? "0." : amount + "." }; default: amount = amount == "0" ? key : amount + key } }
 }
@@ -759,8 +847,7 @@ private struct NativeLedgerView: View {
     private var groupedByDay: [(String, [CompanyExpense])] { Dictionary(grouping: filtered, by: { $0.expenseDate }).map { ($0.key, $0.value.sorted { $0.id > $1.id }) }.sorted { $0.0 > $1.0 } }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
                 if let summary {
                     Section {
                         VStack(alignment: .leading, spacing: 10) {
@@ -792,7 +879,6 @@ private struct NativeLedgerView: View {
                         }
                     }
                 }
-            }
             }
             .listStyle(.plain)
             .overlay { if loading && records.isEmpty { ProgressView() } }
@@ -830,6 +916,8 @@ private func dayLabel(_ value: String) -> String {
 }
 
 private struct NativeLinksView: View {
+    let embedded: Bool
+    init(embedded: Bool = false) { self.embedded = embedded }
     @EnvironmentObject private var session: NativeSession
     @State private var records: [SavedLink] = []
     @State private var query = ""
@@ -844,7 +932,7 @@ private struct NativeLinksView: View {
     @State private var showingForm = false
     @State private var tab = "latest"
     @State private var publishingArticle = false
-    private let pageSize = 50
+    private let pageSize = 24
 
     private var filtered: [SavedLink] {
         let scoped = records.filter { tab == "latest" || (tab == "with-images" && !$0.images.isEmpty) || (tab == "mine" && $0.authorUsername == session.username) }
@@ -865,7 +953,7 @@ private struct NativeLinksView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NativeNavigationContainer(embedded: embedded) {
             List {
                 linkFilterSection
                 if let error { LinkLoadErrorView(message: error) { Task { await load() } } }
@@ -952,9 +1040,9 @@ private struct NativeLinksView: View {
     }
     private func prefetchImages(in rows: [SavedLink]) {
         var requests: [(URL, CGFloat)] = []
-        for item in rows.prefix(8) {
+        for item in rows.prefix(4) {
             if let value = item.authorAvatarURL, let avatar = nativeThumbnailURL(value, maxPixelSize: 144) { requests.append((avatar, 144)) }
-            requests.append(contentsOf: item.images.prefix(3).compactMap { nativeThumbnailURL($0.url, maxPixelSize: 720).map { ($0, 720) } })
+            requests.append(contentsOf: item.images.prefix(1).compactMap { nativeThumbnailURL($0.url, maxPixelSize: 520).map { ($0, 520) } })
         }
         Task(priority: .utility) { await NativeImagePipeline.shared.prefetch(requests) }
     }
@@ -1055,7 +1143,7 @@ private struct ExpenseForm: View {
     @State private var scope: String; @State private var description: String; @State private var employeePaid: Bool
     @State private var saving = false; @State private var error: String?
     @State private var importing = false; @State private var attachment: URL?
-    private let categories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
+    private var categories: [String] { let saved = loadExpenseCategories(); return saved.contains(category) ? saved : [category] + saved }
 
     init(item: CompanyExpense?, onSave: @escaping () async -> Void) {
         self.item = item; self.onSave = onSave; _amount = State(initialValue: item.map { String($0.amount) } ?? "")
@@ -2380,6 +2468,7 @@ private func savedLinkPlainText(_ value: String?) -> String {
     text = text.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
 }
+private struct ExpenseCategoriesResponse: Codable { let categories: [String]; let isDefault: Bool?; let usage: [String: Int]?; enum CodingKeys: String, CodingKey { case categories, usage; case isDefault = "is_default" } }
 private func savedLinkMarkdown(_ value: String?) -> AttributedString {
     let source = savedLinkPlainText(value)
     let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -2678,6 +2767,19 @@ private struct HomeDashboard {
     } }
 }
 
+private struct HomeModuleItem: Identifiable { let id: String; let title: String; let icon: String; let color: Color; let destination: NativeDestination }
+private let homeModuleCatalog = [HomeModuleItem(id: "sycm", title: "生意参谋", icon: "chart.bar.fill", color: .teal, destination: .sycm), HomeModuleItem(id: "company-expenses", title: "公司记账", icon: "creditcard.fill", color: .blue, destination: .expenses), HomeModuleItem(id: "tasks", title: "任务记录", icon: "doc.text.fill", color: .indigo, destination: .tasks), HomeModuleItem(id: "profits", title: "钉钉利润", icon: "chart.line.uptrend.xyaxis", color: .orange, destination: .profits), HomeModuleItem(id: "shops", title: "店铺账号", icon: "storefront.fill", color: .mint, destination: .shops), HomeModuleItem(id: "warehouse", title: "仓储管理", icon: "shippingbox.fill", color: .orange, destination: .warehouse), HomeModuleItem(id: "links", title: "链接广场", icon: "link", color: .blue, destination: .links), HomeModuleItem(id: "ai-workspace", title: "AI 工作台", icon: "sparkles", color: .cyan, destination: .aiWorkspace), HomeModuleItem(id: "owners", title: "负责人", icon: "person.2.fill", color: .green, destination: .owners)]
+private let defaultHomeModuleKeys = ["sycm", "company-expenses", "tasks", "profits", "shops", "warehouse", "links"]
+private struct HomeModulesSettingResponse: Codable { let key: String; let value: [String]? }
+private struct HomeModuleManager: View {
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    @Binding var keys: [String]
+    @State private var saving = false
+    @State private var error: String?
+    var body: some View { NavigationStack { List { if let error { Text(error).font(.caption).foregroundStyle(.red) }; Section("已显示 · 拖动排序") { ForEach(keys, id: \.self) { key in if let item = homeModuleCatalog.first(where: { $0.id == key }) { Label(item.title, systemImage: item.icon) } }.onMove { keys.move(fromOffsets: $0, toOffset: $1) }.onDelete { guard keys.count > $0.count else { return }; keys.remove(atOffsets: $0) } }; let available = homeModuleCatalog.filter { !keys.contains($0.id) }; if !available.isEmpty { Section("更多功能") { ForEach(available) { item in Button { keys.append(item.id) } label: { Label(item.title, systemImage: "plus.circle") } } } } }.environment(\.editMode, .constant(.active)).navigationTitle("常用功能排序").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving) } } } }
+    private func save() async { saving = true; defer { saving = false }; do { let response: HomeModulesSettingResponse = try await session.send("ui-settings/home-modules", method: "PUT", body: ["value": keys]); if let value = response.value { keys = value }; dismiss() } catch { self.error = session.message(for: error) } }
+}
 private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 7) { Image(systemName: icon).font(.system(size: 23, weight: .semibold)).foregroundStyle(color).frame(width: 36, height: 30); Text(title).font(.caption2).lineLimit(1).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 58) }.buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
 private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { Image(systemName: icon).font(.subheadline.weight(.semibold)).foregroundStyle(color).frame(width: 30, height: 30).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7)); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
@@ -2730,7 +2832,7 @@ private actor NativeImagePipeline {
     private var inFlight: [String: Task<UIImage, Error>] = [:]
 
     private init() {
-        memoryCache.countLimit = 200
+        memoryCache.countLimit = 300
         memoryCache.totalCostLimit = 64 * 1024 * 1024
         let cache = URLCache(memoryCapacity: 48 * 1024 * 1024, diskCapacity: 384 * 1024 * 1024)
         responseCache = cache
@@ -2738,9 +2840,9 @@ private actor NativeImagePipeline {
         configuration.urlCache = cache
         configuration.requestCachePolicy = .returnCacheDataElseLoad
         configuration.httpMaximumConnectionsPerHost = 6
-        configuration.timeoutIntervalForRequest = 20
-        configuration.timeoutIntervalForResource = 60
-        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 15
+        configuration.waitsForConnectivity = false
         session = URLSession(configuration: configuration)
     }
 
@@ -2759,7 +2861,7 @@ private actor NativeImagePipeline {
                 do {
                     var request = URLRequest(url: requestURL)
                     request.cachePolicy = .returnCacheDataElseLoad
-                    request.timeoutInterval = 20
+                    request.timeoutInterval = 8
                     request.networkServiceType = .responsiveData
                     request.setValue("image/avif,image/webp,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
                     let data: Data
