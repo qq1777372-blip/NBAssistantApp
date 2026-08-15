@@ -234,10 +234,9 @@ private struct NativeWorkbenchView: View {
         }
         .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
         .searchable(text: $query, prompt: "搜索功能")
-        .navigationDestination(item: $destination) { destination in
-            destination.view
-        }
+        .navigationDestination(isPresented: destinationPresented) { if let destination { destination.view } }
     }
+    private var destinationPresented: Binding<Bool> { Binding(get: { destination != nil }, set: { if !$0 { destination = nil } }) }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
         groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
     }
@@ -440,12 +439,11 @@ private struct NativeHomeView: View {
             .task { await loadHomeModules() }
             .sheet(isPresented: $showingHomeModules) { HomeModuleManager(keys: $homeModuleKeys) }
             .refreshable { await loadDashboard() }
-            .navigationDestination(item: $destination) { destination in
-                destination.view
-            }
+            .navigationDestination(isPresented: destinationPresented) { if let destination { destination.view } }
         }
     }
 
+    private var destinationPresented: Binding<Bool> { Binding(get: { destination != nil }, set: { if !$0 { destination = nil } }) }
     private func loadDashboard() async {
         guard !dashboardLoading else { return }
         dashboardLoading = true; dashboardError = nil
@@ -783,7 +781,7 @@ private struct ExpenseCategoryManager: View {
 
     private func persist() {
         saveExpenseCategories(categories)
-        Task { saving = true; defer { saving = false }; do { let response: ExpenseCategoriesResponse = try await session.send("expense-categories", method: "PUT", body: ["categories": categories]); categories = response.categories; saveExpenseCategories(categories) } catch { error = session.message(for: error) } }
+        Task { saving = true; defer { saving = false }; do { let response: ExpenseCategoriesResponse = try await session.send("expense-categories", method: "PUT", body: ["categories": categories]); categories = response.categories; saveExpenseCategories(categories) } catch { self.error = session.message(for: error) } }
     }
 }
 
