@@ -257,15 +257,22 @@ private struct NativeProfitView: View {
         rows
             .filter { query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query) }
             .sorted {
-                if $0.reportDate == $1.reportDate { return $0.sourceRecordID > $1.sourceRecordID }
-                return $0.reportDate > $1.reportDate
+                let left = normalizedProfitDate($0.reportDate)
+                let right = normalizedProfitDate($1.reportDate)
+                if left == right { return $0.sourceRecordID > $1.sourceRecordID }
+                return left > right
             }
     }
     private var buckets: [(String, Double)] {
-        let grouped = Dictionary(grouping: rows) { item -> String in
-            switch period { case "day": String(item.reportDate.prefix(10)); case "year": String(item.reportDate.prefix(4)); default: String(item.reportDate.prefix(7)) }
+        if period == "month", !months.isEmpty {
+            return months.map { (normalizedProfitMonth($0.month), $0.totalProfit) }.sorted { $0.0 > $1.0 }
         }
-        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.profit }) }.sorted { $0.0 < $1.0 }
+        if period == "year", !months.isEmpty {
+            let grouped = Dictionary(grouping: months) { String(normalizedProfitMonth($0.month).prefix(4)) }
+            return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.totalProfit }) }.sorted { $0.0 > $1.0 }
+        }
+        let grouped = Dictionary(grouping: rows) { normalizedProfitDate($0.reportDate) }
+        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.profit }) }.sorted { $0.0 > $1.0 }
     }
     private var maximum: Double { max(buckets.map { abs($0.1) }.max() ?? 1, 1) }
     var body: some View {
@@ -273,11 +280,23 @@ private struct NativeProfitView: View {
             if let error { Text(error).foregroundStyle(.red) }
             Section { HStack { Metric(title: "累计利润", value: money(summary?.totalProfit ?? 0)); Metric(title: "店铺数", value: "\(summary?.uniqueStoreCount ?? 0) 家"); Metric(title: "报表人数", value: "\(summary?.uniqueReporterCount ?? 0) 人") } }
             Section { Picker("统计周期", selection: $period) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented) }
-            Section(period == "day" ? "日利润趋势" : period == "year" ? "年度利润趋势" : "月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(buckets, id: \.0) { item in VStack { Text(money(item.1)).font(.caption2).foregroundStyle(item.1 < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.1 < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.1) / maximum) * 115, 5)); Text(period == "day" ? String(item.0.suffix(5)) : period == "month" ? String(item.0.suffix(2)) + "月" : item.0).font(.caption) } } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
-            Section("利润明细") { ForEach(filtered) { item in HStack { VStack(alignment: .leading, spacing: 4) { Text(item.storeName).fontWeight(.medium); Text("\(item.reportDate) · \(item.reporterName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(money(item.profit)).foregroundStyle(item.profit < 0 ? .red : .green) } } }
+            Section(period == "day" ? "日利润趋势" : period == "year" ? "年度利润趋势" : "月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(buckets, id: \.0) { item in VStack { Text(money(item.1)).font(.caption2).monospacedDigit().foregroundStyle(item.1 < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.1 < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.1) / maximum) * 115, 5)); Text(period == "day" ? String(item.0.suffix(5)) : period == "month" ? String(item.0.suffix(2)) + "月" : item.0).font(.caption).monospacedDigit() }.accessibilityElement(children: .combine).accessibilityLabel("\(item.0)，利润 \(money(item.1))") } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
+            Section("利润明细") { ForEach(filtered) { item in HStack { VStack(alignment: .leading, spacing: 4) { Text(item.storeName).fontWeight(.medium); Text("\(normalizedProfitDate(item.reportDate)) · \(item.reporterName)").font(.caption).monospacedDigit().foregroundStyle(.secondary) }; Spacer(); Text(money(item.profit)).monospacedDigit().foregroundStyle(item.profit < 0 ? .red : .green) } } }
         }.listStyle(.plain).navigationTitle("钉钉利润").searchable(text: $query, prompt: "搜索店铺、上报人或日期").task { await load() }.refreshable { await load() }
     }
     private func load() async { do { async let a: ProfitListSummary = session.get("dingtalk-profits/summary"); async let b: [ProfitMonth] = session.get("dingtalk-profits/monthly-summary"); async let c: [ProfitRecord] = session.get("dingtalk-profits"); (summary, months, rows) = try await (a, b, c) } catch { self.error = session.message(for: error) } }
+
+    private func normalizedProfitDate(_ value: String) -> String {
+        let parts = String(value.prefix(10)).split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return value }
+        return String(format: "%04d-%02d-%02d", parts[0], parts[1], parts[2])
+    }
+
+    private func normalizedProfitMonth(_ value: String) -> String {
+        let parts = String(value.prefix(7)).split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 2 else { return value }
+        return String(format: "%04d-%02d", parts[0], parts[1])
+    }
 }
 
 private struct NativeAIWorkspaceView: View {
@@ -415,7 +434,7 @@ private struct NativeHomeView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("常用功能").font(.headline); Spacer(); if session.currentUser?.role == "superadmin" { Button("排序") { showingHomeModules = true }.font(.subheadline) } }.padding(.horizontal, 16)
+                    HStack { Text("常用功能").font(.headline); Spacer(); Button("排序") { showingHomeModules = true }.font(.subheadline).frame(minHeight: 44) }.padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 14) {
                         ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
                         HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { path.append(.workbench) }
@@ -451,7 +470,7 @@ private struct NativeHomeView: View {
             }
             .task { await loadDashboard() }
             .task { await loadHomeModules() }
-            .sheet(isPresented: $showingHomeModules) { HomeModuleManager(keys: $homeModuleKeys) }
+            .sheet(isPresented: $showingHomeModules) { HomeModuleManager(keys: $homeModuleKeys, storageKey: homeModulesStorageKey, syncsToServer: session.currentUser?.role == "superadmin") }
             .refreshable { await loadDashboard() }
             .navigationDestination(for: NativeDestination.self) { destination in destination.view }
         }
@@ -471,7 +490,17 @@ private struct NativeHomeView: View {
         for result in results { if dashboard.apply(result) { successes += 1 } }
         if successes == 0 { dashboardError = "经营数据加载失败，请下拉重试" }
     }
-    private func loadHomeModules() async { if let response: HomeModulesSettingResponse = try? await session.get("ui-settings/home-modules"), let value = response.value, !value.isEmpty { homeModuleKeys = value.filter { key in homeModuleCatalog.contains { $0.id == key } } } }
+    private var homeModulesStorageKey: String { "native-home-modules-\(session.currentUser?.id ?? 0)" }
+    private func loadHomeModules() async {
+        if let local = UserDefaults.standard.stringArray(forKey: homeModulesStorageKey), !local.isEmpty {
+            homeModuleKeys = normalizedHomeModuleKeys(local)
+            return
+        }
+        if let response: HomeModulesSettingResponse = try? await session.get("ui-settings/home-modules"), let value = response.value, !value.isEmpty {
+            homeModuleKeys = normalizedHomeModuleKeys(value)
+            UserDefaults.standard.set(homeModuleKeys, forKey: homeModulesStorageKey)
+        }
+    }
 
     /* AI chat actions remain available to the home view. */
     /* legacy chat presentation removed; the dashboard is the home body. */
@@ -3035,18 +3064,104 @@ private struct HomeDashboard {
 }
 
 private struct HomeModuleItem: Identifiable { let id: String; let title: String; let icon: String; let color: Color; let destination: NativeDestination }
-private let homeModuleCatalog = [HomeModuleItem(id: "sycm", title: "生意参谋", icon: "chart.bar.fill", color: .teal, destination: .sycm), HomeModuleItem(id: "company-expenses", title: "公司记账", icon: "creditcard.fill", color: .blue, destination: .expenses), HomeModuleItem(id: "tasks", title: "任务记录", icon: "doc.text.fill", color: .indigo, destination: .tasks), HomeModuleItem(id: "profits", title: "钉钉利润", icon: "chart.line.uptrend.xyaxis", color: .orange, destination: .profits), HomeModuleItem(id: "shops", title: "店铺账号", icon: "storefront.fill", color: .mint, destination: .shops), HomeModuleItem(id: "warehouse", title: "仓储管理", icon: "shippingbox.fill", color: .orange, destination: .warehouse), HomeModuleItem(id: "links", title: "链接广场", icon: "link", color: .blue, destination: .links), HomeModuleItem(id: "ai-workspace", title: "AI 工作台", icon: "sparkles", color: .cyan, destination: .aiWorkspace), HomeModuleItem(id: "owners", title: "负责人", icon: "person.2.fill", color: .green, destination: .owners)]
+private let homeModuleCatalog = [
+    HomeModuleItem(id: "sycm", title: "生意参谋", icon: "chart.bar.fill", color: .teal, destination: .sycm),
+    HomeModuleItem(id: "company-expenses", title: "公司记账", icon: "creditcard.fill", color: .blue, destination: .expenses),
+    HomeModuleItem(id: "tasks", title: "任务记录", icon: "doc.text.fill", color: .indigo, destination: .tasks),
+    HomeModuleItem(id: "profits", title: "钉钉利润", icon: "chart.line.uptrend.xyaxis", color: .orange, destination: .profits),
+    HomeModuleItem(id: "shops", title: "店铺账号", icon: "storefront.fill", color: .mint, destination: .shops),
+    HomeModuleItem(id: "warehouse", title: "仓储管理", icon: "shippingbox.fill", color: .orange, destination: .warehouse),
+    HomeModuleItem(id: "links", title: "链接广场", icon: "link", color: .blue, destination: .links),
+    HomeModuleItem(id: "ai-workspace", title: "AI 工作台", icon: "sparkles", color: .cyan, destination: .aiWorkspace),
+    HomeModuleItem(id: "owners", title: "负责人", icon: "person.2.fill", color: .green, destination: .owners),
+    HomeModuleItem(id: "peers", title: "同行店铺", icon: "building.2.fill", color: .green, destination: .peers),
+    HomeModuleItem(id: "licenses", title: "执照档案", icon: "doc.badge.gearshape", color: .pink, destination: .licenses),
+    HomeModuleItem(id: "account-usage", title: "账号使用", icon: "person.text.rectangle", color: .teal, destination: .accountUsage),
+    HomeModuleItem(id: "devices", title: "手机设备", icon: "iphone", color: .cyan, destination: .devices),
+    HomeModuleItem(id: "ai-models", title: "模型管理", icon: "cpu.fill", color: .purple, destination: .aiModels),
+    HomeModuleItem(id: "ai-knowledge", title: "知识库", icon: "books.vertical.fill", color: .brown, destination: .aiKnowledge),
+    HomeModuleItem(id: "ai-capabilities", title: "AI 能力", icon: "wand.and.stars", color: .indigo, destination: .aiCapabilities),
+    HomeModuleItem(id: "ai-operations", title: "AI 运营", icon: "chart.bar.xaxis", color: .green, destination: .aiOperations),
+    HomeModuleItem(id: "server", title: "服务器运行", icon: "server.rack", color: .green, destination: .server),
+    HomeModuleItem(id: "alerts", title: "通知中心", icon: "bell.badge.fill", color: .red, destination: .alerts),
+    HomeModuleItem(id: "users", title: "账号与权限", icon: "person.badge.key.fill", color: .gray, destination: .users),
+    HomeModuleItem(id: "license-keys", title: "卡密管理", icon: "key.fill", color: .purple, destination: .licenseKeys),
+    HomeModuleItem(id: "system-settings", title: "系统设置", icon: "gearshape.fill", color: .gray, destination: .systemSettings)
+]
 private let defaultHomeModuleKeys = ["sycm", "company-expenses", "tasks", "profits", "shops", "warehouse", "links", "ai-workspace", "owners"]
+private let maximumHomeModuleCount = 9
+private func normalizedHomeModuleKeys(_ value: [String]) -> [String] {
+    var seen: Set<String> = []
+    let valid = value.compactMap { key -> String? in
+        guard homeModuleCatalog.contains(where: { $0.id == key }), seen.insert(key).inserted else { return nil }
+        return key
+    }
+    let result = Array(valid.prefix(maximumHomeModuleCount))
+    return result.isEmpty ? defaultHomeModuleKeys : result
+}
 private struct HomeModulesSettingResponse: Codable { let key: String; let value: [String]? }
 private struct HomeModuleManager: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
     @Binding var keys: [String]
+    let storageKey: String
+    let syncsToServer: Bool
     @State private var saving = false
     @State private var error: String?
+    @State private var originalKeys: [String] = []
     private var available: [HomeModuleItem] { homeModuleCatalog.filter { !keys.contains($0.id) } }
-    var body: some View { NavigationStack { List { if let error { Text(error).font(.caption).foregroundStyle(.red) }; Section("已显示 · 拖动排序") { ForEach(keys, id: \.self) { key in if let item = homeModuleCatalog.first(where: { $0.id == key }) { Label(item.title, systemImage: item.icon) } }.onMove { keys.move(fromOffsets: $0, toOffset: $1) }.onDelete { offsets in guard keys.count > offsets.count else { return }; keys.remove(atOffsets: offsets) } }; if !available.isEmpty { Section("更多功能") { ForEach(available) { item in Button { keys.append(item.id) } label: { Label(item.title, systemImage: "plus.circle") } } } } }.environment(\.editMode, .constant(.active)).navigationTitle("常用功能排序").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving) } } } }
-    private func save() async { saving = true; defer { saving = false }; do { let response: HomeModulesSettingResponse = try await session.send("ui-settings/home-modules", method: "PUT", body: ["value": keys]); if let value = response.value { keys = value }; dismiss() } catch { self.error = session.message(for: error) } }
+    private var reachedLimit: Bool { keys.count >= maximumHomeModuleCount }
+    var body: some View {
+        NavigationStack {
+            List {
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                Section("已显示 \(keys.count)/\(maximumHomeModuleCount) · 拖动排序") {
+                    ForEach(keys, id: \.self) { key in
+                        if let item = homeModuleCatalog.first(where: { $0.id == key }) { Label(item.title, systemImage: item.icon) }
+                    }
+                    .onMove { keys.move(fromOffsets: $0, toOffset: $1) }
+                    .onDelete { offsets in guard keys.count > offsets.count else { return }; keys.remove(atOffsets: offsets) }
+                }
+                if !available.isEmpty {
+                    Section("更多功能") {
+                        if reachedLimit { Label("首页已放满，删除一个后可继续添加", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(available) { item in
+                            Button { guard !reachedLimit else { return }; keys.append(item.id) } label: { Label(item.title, systemImage: "plus.circle") }
+                                .disabled(reachedLimit)
+                        }
+                    }
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("常用功能排序")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear { if originalKeys.isEmpty { originalKeys = keys } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { keys = originalKeys; dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving) }
+            }
+            .interactiveDismissDisabled(keys != originalKeys)
+        }
+    }
+    private func save() async {
+        saving = true; error = nil
+        defer { saving = false }
+        let candidate = normalizedHomeModuleKeys(keys)
+        guard syncsToServer else {
+            keys = candidate
+            UserDefaults.standard.set(keys, forKey: storageKey)
+            dismiss()
+            return
+        }
+        do {
+            let response: HomeModulesSettingResponse = try await session.send("ui-settings/home-modules", method: "PUT", body: ["value": candidate])
+            keys = normalizedHomeModuleKeys(response.value ?? candidate)
+            UserDefaults.standard.set(keys, forKey: storageKey)
+            dismiss()
+        } catch {
+            self.error = session.message(for: error)
+        }
+    }
 }
 private struct NativeAppIconTile: View {
     let symbol: String
