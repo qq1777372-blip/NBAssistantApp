@@ -97,10 +97,9 @@ private struct NativeLoginView: View {
 
 private struct NativeTabView: View {
     @State private var selected = 0
-    @State private var destination: NativeDestination?
     var body: some View {
         TabView(selection: $selected) {
-            NativeHomeView(destination: $destination)
+            NativeHomeView()
                 .tabItem { Label("首页", systemImage: "house") }
                 .tag(0)
             NativeTaskView()
@@ -209,7 +208,6 @@ private struct NativeNavigationContainer<Content: View>: View {
 private struct NativeWorkbenchView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var query = ""
-    @State private var destination: NativeDestination?
     private let groups: [(String, [(String, String, Color, NativeDestination)])] = [
         ("任务记账", [("任务记录", "doc.text", .indigo, .tasks), ("负责人管理", "person.badge.plus", .cyan, .owners), ("钉钉利润", "chart.bar", .orange, .profits), ("公司记账", "creditcard", .blue, .expenses)]),
         ("店铺管理", [("生意参谋", "chart.bar", .teal, .sycm), ("店铺账号", "storefront", .mint, .shops), ("同行店铺", "building.2", .green, .peers), ("执照档案", "doc.badge.gearshape", .pink, .licenses), ("账号使用", "person.text.rectangle", .teal, .accountUsage), ("手机设备", "iphone", .cyan, .devices)]),
@@ -225,7 +223,7 @@ private struct NativeWorkbenchView: View {
                         Text(entry.0).font(.headline)
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 20) {
                             ForEach(Array(entry.1.enumerated()), id: \.offset) { _, item in
-                                HomeShortcut(item.0, item.1, item.2) { destination = item.3 }
+                                NavigationLink { item.3.view } label: { HomeShortcutLabel(item.0, item.1, item.2) }.buttonStyle(.plain)
                             }
                         }
                     }
@@ -234,9 +232,7 @@ private struct NativeWorkbenchView: View {
         }
         .background(Color(.systemGroupedBackground)).navigationTitle("全部功能")
         .searchable(text: $query, prompt: "搜索功能")
-        .navigationDestination(isPresented: destinationPresented) { if let destination { destination.view } }
     }
-    private var destinationPresented: Binding<Bool> { Binding(get: { destination != nil }, set: { if !$0 { destination = nil } }) }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
         groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
     }
@@ -378,7 +374,7 @@ private struct NativeAIWorkspaceView: View {
 
 private struct NativeHomeView: View {
     @EnvironmentObject private var session: NativeSession
-    @Binding var destination: NativeDestination?
+    @State private var path: [NativeDestination] = []
     @State private var dashboard = HomeDashboard()
     @State private var dashboardLoading = false
     @State private var dashboardError: String?
@@ -401,13 +397,13 @@ private struct NativeHomeView: View {
     private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("常用功能").font(.headline); Spacer(); Button("排序") { showingHomeModules = true }.font(.subheadline) }.padding(.horizontal, 16)
+                    HStack { Text("常用功能").font(.headline); Spacer(); if session.currentUser?.role == "superadmin" { Button("排序") { showingHomeModules = true }.font(.subheadline) } }.padding(.horizontal, 16)
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
-                        ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { destination = item.destination } }
-                        HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { destination = .workbench }
+                        ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
+                        HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { path.append(.workbench) }
                     }.padding(.horizontal, 16)
                     HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -430,20 +426,19 @@ private struct NativeHomeView: View {
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { destination = .appSettings } label: { Image(systemName: "moon") }
-                    Button { destination = .alerts } label: { Image(systemName: "bell.badge.fill") }
-                    Button { destination = .search } label: { Image(systemName: "magnifyingglass") }
+                    Button { path.append(.appSettings) } label: { Image(systemName: "moon") }
+                    Button { path.append(.alerts) } label: { Image(systemName: "bell.badge.fill") }
+                    Button { path.append(.search) } label: { Image(systemName: "magnifyingglass") }
                 }
             }
             .task { await loadDashboard() }
             .task { await loadHomeModules() }
             .sheet(isPresented: $showingHomeModules) { HomeModuleManager(keys: $homeModuleKeys) }
             .refreshable { await loadDashboard() }
-            .navigationDestination(isPresented: destinationPresented) { if let destination { destination.view } }
+            .navigationDestination(for: NativeDestination.self) { destination in destination.view }
         }
     }
 
-    private var destinationPresented: Binding<Bool> { Binding(get: { destination != nil }, set: { if !$0 { destination = nil } }) }
     private func loadDashboard() async {
         guard !dashboardLoading else { return }
         dashboardLoading = true; dashboardError = nil
@@ -1631,6 +1626,10 @@ private struct LinkEmptyView: View {
     let searching: Bool
     var body: some View { VStack(spacing: 10) { Image(systemName: searching ? "magnifyingglass" : "link").font(.title2).foregroundStyle(.secondary); Text(searching ? "没有搜索结果" : "暂无内容").font(.headline); Text(searching ? "请尝试其他关键词" : "发布第一条帖子或文章").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 28) }
 }
+private struct NativeEmptyState: View {
+    let icon: String; let title: String; let message: String
+    var body: some View { VStack(spacing: 8) { Image(systemName: icon).font(.title2).foregroundStyle(.secondary); Text(title).font(.headline); Text(message).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center) }.frame(maxWidth: .infinity).padding(.vertical, 30).listRowSeparator(.hidden) }
+}
 
 private struct MineEntry: View {
     let title: String; let subtitle: String; let icon: String; let color: Color; let action: () -> Void
@@ -1639,7 +1638,7 @@ private struct MineEntry: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundStyle(color).frame(width: 34, height: 34).background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 3) { Text(title).font(.body).foregroundStyle(.primary); Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                VStack(alignment: .leading, spacing: 3) { Text(title).font(.body).foregroundStyle(.primary); Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
@@ -1680,6 +1679,7 @@ private struct NativeOwnersView: View {
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
+            if owners.isEmpty && error == nil { NativeEmptyState(icon: "person.2", title: "暂无负责人", message: "点击右上角添加负责人") }
             ForEach(owners.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }) { owner in
                 HStack(spacing: 14) {
                     Image(systemName: "person.fill")
@@ -1757,11 +1757,11 @@ private struct NativePeerShopsView: View {
 }
 private struct PeerShopDetail: View { let item: PeerShopRecord; @State private var copiedField:String?; private var fields:[NativeCopyField]{[NativeCopyField(label:"店铺",value:item.shopName),NativeCopyField(label:"链接",value:item.shopURL ?? "-"),NativeCopyField(label:"备注",value:item.remark ?? "无")]}; var body: some View { List { NativeRemoteImage(url: item.imageURL, size: 180); Section("资料") { ForEach(fields) { field in NativeCopyRow(label:field.label,value:field.value,copiedField:$copiedField) } } }.navigationTitle("同行店铺详情").toolbar { NativeCopyAllButton(fields:fields,copiedField:$copiedField) } } }
 private struct PeerShopForm: View {
-    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: PeerShopRecord?; let onSave: () async -> Void; @State private var name: String; @State private var url: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
+    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: PeerShopRecord?; let onSave: () async -> Void; @State private var name: String; @State private var url: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var photoItem: PhotosPickerItem?
     init(item: PeerShopRecord?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.shopName ?? ""); _url = State(initialValue: item?.shopURL ?? ""); _remark = State(initialValue: item?.remark ?? "") }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("店铺名称", text: $name); TextField("店铺链接", text: $url); TextField("备注", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { Button("选择店铺图片") { importing = true } } }.navigationTitle(item == nil ? "新增同行店铺" : "编辑同行店铺").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || name.isEmpty) } }.fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in Task { await uploadImage(result) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("店铺名称", text: $name); TextField("店铺链接", text: $url); TextField("备注", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { PhotosPicker(selection: $photoItem, matching: .images) { Label("从照片中选择店铺图片", systemImage: "photo.on.rectangle") } } }.navigationTitle(item == nil ? "新增同行店铺" : "编辑同行店铺").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || name.isEmpty) } }.onChange(of: photoItem) { value in if let value { Task { await uploadImage(value) } } } } }
     private func save() async { saving = true; defer { saving = false }; let shopURL: Any = url.isEmpty ? NSNull() : url; let savedRemark: Any = remark.isEmpty ? NSNull() : remark; let extra: [String: Any] = [:]; let body: [String: Any] = ["shop_name": name, "shop_url": shopURL, "remark": savedRemark, "extra_fields": extra]; do { let _: PeerShopRecord = try await session.send(item.map { "peer-shops/\($0.id)" } ?? "peer-shops", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
-    private func uploadImage(_ result: Result<URL, Error>) async { guard let item else { return }; do { let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: url); let ext = url.pathExtension.lowercased(); let mime = ext == "png" ? "image/png" : ext == "webp" ? "image/webp" : "image/jpeg"; let _: PeerShopRecord = try await session.upload(path: "peer-shops/\(item.id)/image", field: "image", filename: url.lastPathComponent, data: data, mime: mime); await onSave() } catch { self.error = session.message(for: error) } }
+    private func uploadImage(_ photo: PhotosPickerItem) async { guard let item else { return }; do { guard let raw = try await photo.loadTransferable(type: Data.self), let image = UIImage(data: raw), let data = image.jpegData(compressionQuality: 0.86) else { throw NativeAPIError.invalidResponse }; let _: PeerShopRecord = try await session.upload(path: "peer-shops/\(item.id)/image", field: "image", filename: "peer-shop.jpg", data: data, mime: "image/jpeg"); await onSave() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeLicenseRecordsView: View {
@@ -1838,11 +1838,11 @@ private struct ZoomableLicenseImage: View {
     var body: some View { GeometryReader { proxy in ZStack { if let url, let imageURL = nativeImageURL(url) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 2600, placeholder: ProgressView().tint(.white)) } else { Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary) } }.frame(width: proxy.size.width, height: proxy.size.height).scaleEffect(min(max(scale * gestureScale, 1), 5)).offset(x: offset.width + gestureOffset.width, y: offset.height + gestureOffset.height).contentShape(Rectangle()).simultaneousGesture(MagnificationGesture().updating($gestureScale) { value, state, _ in state = value }.onEnded { value in scale = min(max(scale * value, 1), 5); if scale == 1 { offset = .zero } }).simultaneousGesture(DragGesture().updating($gestureOffset) { value, state, _ in if scale > 1 { state = value.translation } }.onEnded { value in if scale > 1 { offset.width += value.translation.width; offset.height += value.translation.height } }).onTapGesture(count: 2) { withAnimation(.easeInOut(duration: 0.2)) { if scale > 1 { scale = 1; offset = .zero } else { scale = 2.5 } } } } }
 }
 private struct LicenseRecordForm: View {
-    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: LicenseRecordItem?; let onSave: () async -> Void; @State private var subject: String; @State private var code: String; @State private var legal: String; @State private var issue: String; @State private var expiry: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var importing = false
+    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: LicenseRecordItem?; let onSave: () async -> Void; @State private var subject: String; @State private var code: String; @State private var legal: String; @State private var issue: String; @State private var expiry: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var photoItem: PhotosPickerItem?
     init(item: LicenseRecordItem?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _subject = State(initialValue: item?.subjectName ?? ""); _code = State(initialValue: item?.creditCode ?? ""); _legal = State(initialValue: item?.legalRepresentative ?? ""); _issue = State(initialValue: item?.issueDate ?? ""); _expiry = State(initialValue: item?.expiryDate ?? ""); _remark = State(initialValue: item?.remark ?? "") }
-    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("主体名称", text: $subject); TextField("统一信用代码", text: $code); TextField("法定代表人", text: $legal); TextField("签发日期", text: $issue); TextField("到期日期", text: $expiry); TextField("备注", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { Button("选择执照图片") { importing = true } } }.navigationTitle(item == nil ? "新增执照" : "编辑执照").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || subject.isEmpty || code.isEmpty) } }.fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in Task { await uploadImage(result) } } } }
+    var body: some View { NavigationStack { Form { if let error { Text(error).foregroundStyle(.red) }; TextField("主体名称", text: $subject); TextField("统一信用代码", text: $code); TextField("法定代表人", text: $legal); TextField("签发日期", text: $issue); TextField("到期日期", text: $expiry); TextField("备注", text: $remark, axis: .vertical).lineLimit(4...8); if item != nil { PhotosPicker(selection: $photoItem, matching: .images) { Label("从照片中选择执照图片", systemImage: "photo.on.rectangle") } } }.navigationTitle(item == nil ? "新增执照" : "编辑执照").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("保存") { Task { await save() } }.disabled(saving || subject.isEmpty || code.isEmpty) } }.onChange(of: photoItem) { value in if let value { Task { await uploadImage(value) } } } } }
     private func save() async { saving = true; defer { saving = false }; let savedLegal: Any = legal.isEmpty ? NSNull() : legal; let savedIssue: Any = issue.isEmpty ? NSNull() : issue; let savedExpiry: Any = expiry.isEmpty ? NSNull() : expiry; let savedRemark: Any = remark.isEmpty ? NSNull() : remark; let extra: [String: Any] = [:]; let body: [String: Any] = ["subject_name": subject, "credit_code": code, "legal_representative": savedLegal, "issue_date": savedIssue, "expiry_date": savedExpiry, "remark": savedRemark, "extra_fields": extra]; do { let _: LicenseRecordItem = try await session.send(item.map { "license-records/\($0.id)" } ?? "license-records", method: item == nil ? "POST" : "PUT", body: body); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
-    private func uploadImage(_ result: Result<URL, Error>) async { guard let item else { return }; do { let url = try result.get(); guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: url); let ext = url.pathExtension.lowercased(); let mime = ext == "png" ? "image/png" : ext == "webp" ? "image/webp" : "image/jpeg"; let _: LicenseRecordItem = try await session.upload(path: "license-records/\(item.id)/image", field: "image", filename: url.lastPathComponent, data: data, mime: mime); await onSave() } catch { self.error = session.message(for: error) } }
+    private func uploadImage(_ photo: PhotosPickerItem) async { guard let item else { return }; do { guard let raw = try await photo.loadTransferable(type: Data.self), let image = UIImage(data: raw), let data = image.jpegData(compressionQuality: 0.9) else { throw NativeAPIError.invalidResponse }; let _: LicenseRecordItem = try await session.upload(path: "license-records/\(item.id)/image", field: "image", filename: "license.jpg", data: data, mime: "image/jpeg"); await onSave() } catch { self.error = session.message(for: error) } }
 }
 
 private struct NativeDevicesView: View {
@@ -2779,7 +2779,8 @@ private struct HomeModuleManager: View {
     var body: some View { NavigationStack { List { if let error { Text(error).font(.caption).foregroundStyle(.red) }; Section("已显示 · 拖动排序") { ForEach(keys, id: \.self) { key in if let item = homeModuleCatalog.first(where: { $0.id == key }) { Label(item.title, systemImage: item.icon) } }.onMove { keys.move(fromOffsets: $0, toOffset: $1) }.onDelete { offsets in guard keys.count > offsets.count else { return }; keys.remove(atOffsets: offsets) } }; if !available.isEmpty { Section("更多功能") { ForEach(available) { item in Button { keys.append(item.id) } label: { Label(item.title, systemImage: "plus.circle") } } } } }.environment(\.editMode, .constant(.active)).navigationTitle("常用功能排序").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving) } } } }
     private func save() async { saving = true; defer { saving = false }; do { let response: HomeModulesSettingResponse = try await session.send("ui-settings/home-modules", method: "PUT", body: ["value": keys]); if let value = response.value { keys = value }; dismiss() } catch { self.error = session.message(for: error) } }
 }
-private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { VStack(spacing: 7) { Image(systemName: icon).font(.system(size: 23, weight: .semibold)).foregroundStyle(color).frame(width: 36, height: 30); Text(title).font(.caption2).lineLimit(1).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 58) }.buttonStyle(.plain) } }
+private struct HomeShortcutLabel: View { let title: String; let icon: String; let color: Color; init(_ title: String, _ icon: String, _ color: Color) { self.title = title; self.icon = icon; self.color = color }; var body: some View { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 22, weight: .semibold)).foregroundStyle(color).frame(width: 36, height: 29); Text(title).font(.caption2).lineLimit(2).minimumScaleFactor(0.8).multilineTextAlignment(.center).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 64) } }
+private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HomeShortcutLabel(title, icon, color) }.buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
 private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { Image(systemName: icon).font(.subheadline.weight(.semibold)).foregroundStyle(color).frame(width: 30, height: 30).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7)); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
