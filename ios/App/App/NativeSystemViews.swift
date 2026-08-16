@@ -103,8 +103,80 @@ struct NativeSystemSettingsView: View {
 }
 
 struct NativeAppSettingsView: View {
+    @EnvironmentObject private var session: NativeSession
     @AppStorage("native-dark-mode") private var dark = false
-    var body: some View { Form { Section("外观") { Toggle("深色模式", isOn: $dark) }; Section("应用") { LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.4"); LabeledContent("界面", value: "SwiftUI 原生") } }.navigationTitle("App 设置") }
+    @State private var confirmingLogout = false
+    @State private var loggingOut = false
+
+    var body: some View {
+        Form {
+            Section("外观") {
+                Toggle("深色模式", isOn: $dark)
+            }
+
+            Section("应用") {
+                NavigationLink { NativeAboutView() } label: {
+                    Label("关于 NBAssistant", systemImage: "info.circle")
+                }
+            }
+
+            Section {
+                Button(role: .destructive) { confirmingLogout = true } label: {
+                    HStack {
+                        Spacer()
+                        Label(loggingOut ? "正在退出…" : "退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                        Spacer()
+                    }
+                }
+                .disabled(loggingOut)
+            }
+        }
+        .navigationTitle("设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("确定退出登录吗？", isPresented: $confirmingLogout, titleVisibility: .visible) {
+            Button("退出登录", role: .destructive) {
+                Task {
+                    loggingOut = true
+                    await session.logout()
+                    loggingOut = false
+                }
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("退出后需要重新输入账号和密码才能进入。")
+        }
+    }
+}
+
+private struct NativeAboutView: View {
+    private var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "--" }
+    private var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "--" }
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(spacing: 12) {
+                    Image(systemName: "sparkles.rectangle.stack.fill")
+                        .font(.system(size: 42, weight: .semibold))
+                        .foregroundStyle(.blue)
+                        .frame(width: 72, height: 72)
+                        .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+                    Text("NBAssistant").font(.title2.bold())
+                    Text("内部管理工作台").font(.subheadline).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            }
+            Section("应用信息") {
+                LabeledContent("版本", value: version)
+                LabeledContent("构建版本", value: build)
+                LabeledContent("界面", value: "SwiftUI 原生")
+            }
+        }
+        .navigationTitle("关于")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+    }
 }
 
 struct NativeProfileView: View {
