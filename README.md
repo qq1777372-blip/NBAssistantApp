@@ -2,6 +2,34 @@
 
 Capacitor iOS app with a bundled Vue frontend and remote API at https://xiaoxu666.asia.
 
+## Local demo
+
+Run the bundled frontend against local in-memory sample data:
+
+```bash
+npm run demo
+```
+
+Open `http://127.0.0.1:4174` and sign in with:
+
+- Username: `demo`
+- Password: `Demo@123456`
+
+The demo server only listens on localhost. Its changes are kept in memory and are
+reset whenever the server restarts. It does not call or modify the remote API.
+
+Run the local data and interaction check with:
+
+```bash
+npm run check:demo
+```
+
+To restore all sample rows while the server is running, sign in and send a
+`POST` request to `/demo/reset`, or simply restart `npm run demo`.
+
+The Debug iOS scheme also points at this local server, so the same credentials work
+in the simulator. Release builds continue to use the production API.
+
 ## Local synchronization
 
 ```powershell

@@ -29,6 +29,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
 private struct NativeRootView: View {
     @StateObject private var session = NativeSession()
+    @AppStorage("native-dark-mode") private var darkMode = false
 
     var body: some View {
         Group {
@@ -38,6 +39,7 @@ private struct NativeRootView: View {
             else { NativeLoginView().environmentObject(session) }
         }
         .tint(Color(red: 0.08, green: 0.49, blue: 0.96))
+        .preferredColorScheme(darkMode ? .dark : .light)
         .animation(.easeOut(duration: 0.25), value: session.restoring)
         .task { await session.restoreSession() }
     }
@@ -45,8 +47,13 @@ private struct NativeRootView: View {
 
 private struct NativeLoginView: View {
     @EnvironmentObject private var session: NativeSession
+#if DEBUG
+    @State private var account = "demo"
+    @State private var password = "Demo@123456"
+#else
     @State private var account = ""
     @State private var password = ""
+#endif
     @State private var showsPassword = false
     @State private var totpCode = ""
     @State private var captchaCode = ""
@@ -246,7 +253,14 @@ private struct NativeProfitView: View {
     @State private var query = ""
     @State private var period = "month"
     @State private var error: String?
-    private var filtered: [ProfitRecord] { rows.filter { query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query) } }
+    private var filtered: [ProfitRecord] {
+        rows
+            .filter { query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query) }
+            .sorted {
+                if $0.reportDate == $1.reportDate { return $0.sourceRecordID > $1.sourceRecordID }
+                return $0.reportDate > $1.reportDate
+            }
+    }
     private var buckets: [(String, Double)] {
         let grouped = Dictionary(grouping: rows) { item -> String in
             switch period { case "day": String(item.reportDate.prefix(10)); case "year": String(item.reportDate.prefix(4)); default: String(item.reportDate.prefix(7)) }
@@ -374,6 +388,7 @@ private struct NativeAIWorkspaceView: View {
 
 private struct NativeHomeView: View {
     @EnvironmentObject private var session: NativeSession
+    @AppStorage("native-dark-mode") private var darkMode = false
     @State private var path: [NativeDestination] = []
     @State private var dashboard = HomeDashboard()
     @State private var dashboardLoading = false
@@ -401,7 +416,7 @@ private struct NativeHomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack { Text("常用功能").font(.headline); Spacer(); if session.currentUser?.role == "superadmin" { Button("排序") { showingHomeModules = true }.font(.subheadline) } }.padding(.horizontal, 16)
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 14) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 14) {
                         ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
                         HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { path.append(.workbench) }
                     }.padding(.horizontal, 16)
@@ -410,8 +425,6 @@ private struct NativeHomeView: View {
                         HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue)
                         HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green)
                         HomeDashboardMetric("本月钉钉利润", dashboard.monthlyProfit.map(money) ?? "--", "calendar", .orange)
-                        HomeDashboardMetric("待签收", dashboard.pendingSigned.map(String.init) ?? "--", "shippingbox", .purple)
-                        HomeDashboardMetric("待结算", dashboard.pendingSettlement.map(String.init) ?? "--", "clock.badge.checkmark", .pink)
                         HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal)
                         HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo)
                         HomeDashboardMetric("库存预警", dashboard.lowStock.map(String.init) ?? "--", "exclamationmark.triangle", .orange)
@@ -423,10 +436,15 @@ private struct NativeHomeView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("首页")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { path.append(.appSettings) } label: { Image(systemName: "moon") }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { darkMode.toggle() }
+                    } label: {
+                        Image(systemName: darkMode ? "sun.max.fill" : "moon.fill")
+                    }
+                    .accessibilityLabel(darkMode ? "切换浅色模式" : "切换深色模式")
                     Button { path.append(.alerts) } label: { Image(systemName: "bell.badge.fill") }
                     Button { path.append(.search) } label: { Image(systemName: "magnifyingglass") }
                 }
@@ -639,8 +657,9 @@ private struct NativeTaskView: View {
                             Metric(title: "待结算", value: "\(summary.pendingSettlementCount)")
                         }
                         HStack {
-                            Text("本金合计").foregroundStyle(.secondary)
-                            Spacer(); Text(money(summary.principalTotal)).fontWeight(.semibold)
+                            Metric(title: "本金合计", value: money(summary.principalTotal))
+                            Metric(title: "佣金合计", value: money(summary.commissionTotal))
+                            Metric(title: "礼品合计", value: money(summary.giftTotal))
                         }
                     }
                 }
@@ -650,8 +669,13 @@ private struct NativeTaskView: View {
                         NavigationLink {
                             TaskDetail(item: item) { await load() }
                         } label: { VStack(alignment: .leading, spacing: 8) {
-                            HStack { Text(item.shopName).font(.headline); Spacer(); Text(money(item.principalAmount)).fontWeight(.semibold) }
+                            Text(item.shopName).font(.headline)
                             Text("\(item.orderNo) · \(item.ownerName)").font(.subheadline).foregroundStyle(.secondary)
+                            HStack {
+                                Metric(title: "本金", value: money(item.principalAmount))
+                                Metric(title: "佣金", value: money(item.commissionAmount))
+                                Metric(title: "礼品", value: money(item.giftAmount))
+                            }
                             HStack {
                                 StatusBadge(text: item.signedStatus == "completed" ? "已签收" : "待签收", done: item.signedStatus == "completed")
                                 StatusBadge(text: item.settlementStatus == "completed" ? "已结算" : "待结算", done: item.settlementStatus == "completed")
@@ -672,6 +696,7 @@ private struct NativeTaskView: View {
             .searchable(text: $query, prompt: "搜索订单、店铺或负责人")
             .refreshable { await load(reset: true) }
             .navigationTitle("任务")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItemGroup { EditButton(); if !selectedIDs.isEmpty { Menu { Button("标记已签收") { Task { await batchStatus("signed_status") } }; Button("标记已结算") { Task { await batchStatus("settlement_status") } }; Button("导出所选") { exporting = true }; Button("删除所选", role: .destructive) { Task { await batchDelete() } } } label: { Image(systemName: "ellipsis.circle") } }; Button { editing = nil; showingForm = true } label: { Image(systemName: "plus") } } }
             .sheet(isPresented: $showingForm) { TaskForm(item: editing) { await load() } }
             .environment(\.editMode, $editMode)
@@ -712,7 +737,7 @@ private struct TaskCSVDocument: FileDocument {
     let records: [TaskRecord]
     init(records: [TaskRecord]) { self.records = records }
     init(configuration: ReadConfiguration) throws { records = [] }
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { let header = "订单号,店铺,负责人,本金,数量,签收,结算,时间\n"; let rows = records.map { "\($0.orderNo),\($0.shopName),\($0.ownerName),\($0.principalAmount),\($0.orderCount),\($0.signedStatus),\($0.settlementStatus),\($0.taskTime ?? "")" }.joined(separator: "\n"); return FileWrapper(regularFileWithContents: Data((header + rows).utf8)) }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { let header = "订单号,店铺,负责人,本金,佣金,礼品,数量,签收,结算,时间\n"; let rows = records.map { "\($0.orderNo),\($0.shopName),\($0.ownerName),\($0.principalAmount),\($0.commissionAmount),\($0.giftAmount),\($0.orderCount),\($0.signedStatus),\($0.settlementStatus),\($0.taskTime ?? "")" }.joined(separator: "\n"); return FileWrapper(regularFileWithContents: Data((header + rows).utf8)) }
 }
 
 private let defaultExpenseCategories = ["办公用品", "快递物流", "餐饮招待", "差旅交通", "软件服务", "广告推广", "采购货款", "其他消费"]
@@ -798,7 +823,7 @@ private struct NativeQuickLedgerView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         VStack(alignment: .leading, spacing: 8) { Text("公司消费").font(.caption).opacity(0.85); Text(amount.isEmpty ? "¥ 0.00" : "¥ \(amount)").font(.system(size: 38, weight: .bold, design: .rounded)).monospacedDigit(); Text("使用下方数字键输入金额").font(.caption2).opacity(0.72) }.padding(20).frame(maxWidth: .infinity, minHeight: 132, alignment: .leading).background(Color.blue, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(.white)
                         Text("消费分类").font(.headline)
-                        ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 12) { ForEach(categories, id: \.self) { value in Button { category = value } label: { VStack(spacing: 7) { Image(systemName: categoryIcon(value)).font(.title3).frame(width: 42, height: 42).background(category == value ? Color.blue : Color(.secondarySystemGroupedBackground), in: Circle()).foregroundStyle(category == value ? .white : .primary); Text(value).font(.caption2).foregroundStyle(.primary).lineLimit(1) }.frame(width: 68) }.buttonStyle(.plain) } }.padding(.vertical, 2) }
+                        ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 12) { ForEach(categories, id: \.self) { value in Button { category = value } label: { VStack(spacing: 7) { NativeAppIconTile(symbol: categoryIcon(value), color: categoryColor(value), size: 42, iconSize: 19, selected: category == value); Text(value).font(.caption2).foregroundStyle(.primary).lineLimit(1) }.frame(width: 68) }.buttonStyle(.plain) } }.padding(.vertical, 2) }
                         TextField("写一句消费说明（可选）", text: $note).textFieldStyle(.roundedBorder)
                         if let error { Text(error).font(.caption).foregroundStyle(.red) }
                         Spacer(minLength: 16)
@@ -810,6 +835,7 @@ private struct NativeQuickLedgerView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("记一笔")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItemGroup { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") }; Button { showingCategories = true } label: { Label("分类管理", systemImage: "square.grid.2x2") } } }
             .sheet(isPresented: $showingCategories) { ExpenseCategoryManager(categories: $categories, selection: $category) }
             .task { await syncCategories() }
@@ -817,6 +843,7 @@ private struct NativeQuickLedgerView: View {
     }
     private func ledgerKey(_ key: String, symbol: String? = nil, columns: Int = 1) -> some View { Button { pressKey(key) } label: { Group { if let symbol { Image(systemName: symbol) } else { Text(key) } }.font(.title2.weight(.medium)).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(.plain).background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10)).gridCellColumns(columns) }
     private func categoryIcon(_ value: String) -> String { switch value { case "办公用品": "paperclip"; case "快递物流": "shippingbox"; case "餐饮招待": "fork.knife"; case "差旅交通": "car"; case "软件服务": "laptopcomputer"; case "广告推广": "megaphone"; case "采购货款": "cart"; default: "ellipsis.circle" } }
+    private func categoryColor(_ value: String) -> Color { switch value { case "办公用品": .blue; case "快递物流": .orange; case "餐饮招待": .red; case "差旅交通": .teal; case "软件服务": .indigo; case "广告推广": .pink; case "采购货款": .green; default: .gray } }
     private func syncCategories() async { if let response: ExpenseCategoriesResponse = try? await session.get("expense-categories") { categories = response.categories; saveExpenseCategories(categories); if !categories.contains(category), let first = categories.first { category = first } } }
     private func save() async { saving = true; defer { saving = false }; let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]; do { let _: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body); amount = ""; note = "" } catch let requestError { error = session.message(for: requestError) } }
     private func pressKey(_ key: String) { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); switch key { case "C": amount = ""; case "⌫": if !amount.isEmpty { amount.removeLast() }; case ".": if !amount.contains(".") { amount = amount.isEmpty ? "0." : amount + "." }; default: amount = amount == "0" ? key : amount + key } }
@@ -908,6 +935,12 @@ private func dayLabel(_ value: String) -> String {
     return value
 }
 
+private struct LinkComposerRoute: Identifiable {
+    let id = UUID()
+    let item: SavedLink?
+    let article: Bool
+}
+
 private struct NativeLinksView: View {
     let embedded: Bool
     init(embedded: Bool = false) { self.embedded = embedded }
@@ -921,14 +954,13 @@ private struct NativeLinksView: View {
     @State private var deleting: SavedLink?
     @State private var pushing: SavedLink?
     @State private var scheduling: SavedLink?
-    @State private var editing: SavedLink?
-    @State private var showingForm = false
+    @State private var viewing: SavedLink?
+    @State private var composer: LinkComposerRoute?
     @State private var tab = "latest"
-    @State private var publishingArticle = false
     private let pageSize = 24
 
     private var filtered: [SavedLink] {
-        let scoped = records.filter { tab == "latest" || (tab == "with-images" && !$0.images.isEmpty) || (tab == "mine" && $0.authorUsername == session.username) }
+        let scoped = records.filter { tab == "latest" || (tab == "with-images" && savedLinkIsArticle($0) && !$0.images.isEmpty) || (tab == "mine" && $0.authorUsername == session.username) }
         let rows = query.isEmpty ? scoped : scoped.filter { "\($0.title) \($0.url ?? "") \($0.category ?? "") \($0.description ?? "") \($0.authorUsername)".localizedCaseInsensitiveContains(query) }
         return rows.sorted { $0.isPinned != $1.isPinned ? $0.isPinned : $0.updatedAt > $1.updatedAt }
     }
@@ -952,18 +984,18 @@ private struct NativeLinksView: View {
                 if let error { LinkLoadErrorView(message: error) { Task { await load() } } }
                 if !loading && error == nil && filtered.isEmpty { LinkEmptyView(searching: !query.isEmpty) }
                 ForEach(filtered) { item in
-                    NavigationLink { SavedLinkDetail(item: item) } label: {
-                        SavedLinkFeedRow(item: item) {
-                            editing = item; showingForm = true
-                        } onTogglePin: {
-                            Task { await togglePin(item) }
-                        } onDelete: {
-                            deleting = item
-                        } onPushNow: {
-                            pushing = item
-                        } onSchedule: {
-                            scheduling = item
-                        }
+                    SavedLinkFeedRow(item: item) {
+                        viewing = item
+                    } onEdit: {
+                        composer = LinkComposerRoute(item: item, article: savedLinkIsArticle(item))
+                    } onTogglePin: {
+                        Task { await togglePin(item) }
+                    } onDelete: {
+                        deleting = item
+                    } onPushNow: {
+                        pushing = item
+                    } onSchedule: {
+                        scheduling = item
                     }
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 12))
                 }
@@ -975,17 +1007,22 @@ private struct NativeLinksView: View {
             .scrollContentBackground(.visible)
             .overlay { if loading && records.isEmpty { ProgressView() } }
             .searchable(text: $query, prompt: "搜索标题、用户或正文")
-            .refreshable { await load() }.navigationTitle("链接广场")
+            .refreshable { await load() }
+            .navigationTitle("链接广场")
+            .navigationBarTitleDisplayMode(.inline)
             .task { if records.isEmpty { await load() } }
+            .navigationDestination(isPresented: Binding(get: { viewing != nil }, set: { if !$0 { viewing = nil } })) {
+                if let viewing { SavedLinkDetail(item: viewing) }
+            }
             .toolbar {
                 Menu {
-                    Button("发布帖子", systemImage: "bubble.left.and.bubble.right") { editing = nil; publishingArticle = false; showingForm = true }
-                    Button("发布文章", systemImage: "doc.text") { editing = nil; publishingArticle = true; showingForm = true }
+                    Button("发布帖子", systemImage: "bubble.left.and.bubble.right") { composer = LinkComposerRoute(item: nil, article: false) }
+                    Button("发布文章", systemImage: "doc.text") { composer = LinkComposerRoute(item: nil, article: true) }
                 } label: { Image(systemName: "square.and.pencil") }
             }
-            .sheet(isPresented: $showingForm) { LinkForm(item: editing, article: publishingArticle) { await load() } }
+            .sheet(item: $composer) { route in LinkForm(item: route.item, article: route.article) { await load() } }
             .sheet(item: $scheduling) { item in SavedLinkPushSheet(item: item) { updated in update(updated) } }
-            .confirmationDialog("确定删除这个帖子吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+            .confirmationDialog("确定删除这条内容吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
                 Button("取消", role: .cancel) { deleting = nil }
             }
@@ -1180,6 +1217,8 @@ private struct LinkForm: View {
     @State private var editCommand: ArticleEditCommand?
     @State private var pendingInlineImages: [PendingInlineImage] = []
     @State private var draftNotice: String?
+    @State private var showingLinkPrompt = false
+    @State private var linkURL = "https://"
 
     init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
         self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
@@ -1196,26 +1235,49 @@ private struct LinkForm: View {
             .onChange(of: title) { _ in saveDraft() }
             .onChange(of: category) { _ in saveDraft() }
             .onChange(of: description) { _ in saveDraft() }
+            .alert("插入链接", isPresented: $showingLinkPrompt) {
+                TextField("https://example.com", text: $linkURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("取消", role: .cancel) { }
+                Button("插入") {
+                    if let value = normalizedLinkURL { editCommand = ArticleEditCommand(.link(value)) }
+                }
+                .disabled(normalizedLinkURL == nil)
+            } message: {
+                Text("输入完整网页地址，链接文字会使用当前选中的内容。")
+            }
         }
     }
 
     private var postEditorBody: some View {
-        Form { if let error { Text(error).foregroundStyle(.red) }; Section("帖子") { TextField("标题", text: $title); TextField("分类", text: $category); Toggle("置顶", isOn: $pinned) }; Section("正文") { TextField("输入正文内容", text: $description, axis: .vertical).lineLimit(8...16) }; Section("图片") { PhotosPicker(selection: $photoItems, maxSelectionCount: max(9 - images.count, 1), matching: .images) { Label(images.isEmpty ? "从照片图库选择" : "已选择 \(images.count) 张，继续添加", systemImage: "photo.on.rectangle") }.disabled(images.count >= 9) } }
+        Form {
+            if let error { Text(error).foregroundStyle(.red) }
+            if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary) }
+            Section("帖子") {
+                TextField("标题", text: $title)
+                TextField("分类", text: $category)
+                Toggle("置顶", isOn: $pinned)
+            }
+            Section("正文") {
+                TextField("输入纯文字正文", text: $description, axis: .vertical).lineLimit(8...16)
+            }
+        }
     }
 
     private var articleEditorBody: some View {
         VStack(spacing: 0) {
             if let error { Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
-            if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
-            VStack(spacing: 0) {
-                TextField("输入标题", text: $title, axis: .vertical).font(.title2.weight(.semibold)).lineLimit(1...3).padding(.horizontal, 20).padding(.vertical, 14)
-                Divider().padding(.horizontal, 20)
-                HStack(spacing: 8) { Image(systemName: "tag").foregroundStyle(.secondary); TextField("添加分类", text: $category) }.padding(.horizontal, 20).padding(.vertical, 11)
-                Divider()
-            }
             if previewing {
                 articlePreviewBody
             } else {
+                if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
+                VStack(spacing: 0) {
+                    TextField("输入标题", text: $title, axis: .vertical).font(.title2.weight(.semibold)).lineLimit(1...3).padding(.horizontal, 20).padding(.vertical, 14)
+                    Divider().padding(.horizontal, 20)
+                    HStack(spacing: 8) { Image(systemName: "tag").foregroundStyle(.secondary); TextField("添加分类", text: $category) }.padding(.horizontal, 20).padding(.vertical, 11)
+                    Divider()
+                }
                 NativeArticleTextEditor(text: $description, command: $editCommand).frame(maxWidth: .infinity, maxHeight: .infinity).padding(.horizontal, 20)
             }
         }
@@ -1242,7 +1304,7 @@ private struct LinkForm: View {
                     Button { editCommand = ArticleEditCommand(.bold) } label: { Label("粗体", systemImage: "bold") }
                     Button { editCommand = ArticleEditCommand(.italic) } label: { Label("斜体", systemImage: "italic") }
                     Button { editCommand = ArticleEditCommand(.strikethrough) } label: { Label("删除线", systemImage: "strikethrough") }
-                    Button { editCommand = ArticleEditCommand(.link) } label: { Label("链接", systemImage: "link") }
+                    Button { linkURL = "https://"; showingLinkPrompt = true } label: { Label("链接", systemImage: "link") }
                     Button { editCommand = ArticleEditCommand(.center) } label: { Label("居中", systemImage: "text.aligncenter") }
                 } label: { ArticleToolIcon("paintbrush", "样式") }.frame(maxWidth: .infinity)
 
@@ -1262,18 +1324,33 @@ private struct LinkForm: View {
 
     private var articlePreviewBody: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                ForEach(Array(savedLinkContentSegments(description).enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case .text(let value):
-                        if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text(savedLinkMarkdown(value)).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-                    case .image(let source, _):
-                        if let pending = pendingInlineImages.first(where: { source.contains($0.token) }), let image = UIImage(contentsOfFile: pending.url.path) { Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: .infinity).clipShape(RoundedRectangle(cornerRadius: 8)) }
-                        else { SavedLinkDetailImage(url: source) }
-                    }
+            VStack(alignment: .leading, spacing: 16) {
+                Text(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名文章" : title)
+                    .font(.title.bold())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Label(category, systemImage: "tag").font(.caption).foregroundStyle(.secondary)
                 }
-            }.padding(20)
+                Divider()
+                SavedLinkArticleContent(source: description, pendingImages: pendingInlineImages)
+            }
+            .padding(20)
         }
+    }
+
+    private var normalizedLinkURL: String? {
+        let value = linkURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil else { return nil }
+        return value
+    }
+
+    private var firstArticleURL: String? {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue),
+              let match = detector.firstMatch(in: description, range: NSRange(description.startIndex..., in: description)),
+              let value = match.url,
+              let scheme = value.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else { return nil }
+        return value.absoluteString
     }
 
     @MainActor private func receivePhotos(_ items: [PhotosPickerItem]) async {
@@ -1314,16 +1391,16 @@ private struct LinkForm: View {
             initialDescription = initialDescription.replacingOccurrences(of: "!\\[[^\\]]*\\]\\(\(token)\\)", with: "", options: .regularExpression)
         }
         let savedDescription: Any = initialDescription.isEmpty ? NSNull() : initialDescription
-        let articleURL = description.components(separatedBy: .whitespacesAndNewlines).first { $0.hasPrefix("http://") || $0.hasPrefix("https://") } ?? ""
-        let savedURL: Any = (article ? articleURL : url).isEmpty ? NSNull() : (article ? articleURL : url)
+        let savedURLValue = article ? firstArticleURL : url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedURL: Any = savedURLValue?.isEmpty == false ? savedURLValue! : NSNull()
         var body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
         do {
             var saved: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body)
             if !images.isEmpty {
                 var files: [MultipartFile] = []
                 for image in images {
-                    guard image.startAccessingSecurityScopedResource() else { continue }
-                    defer { image.stopAccessingSecurityScopedResource() }
+                    let hasSecurityScope = image.startAccessingSecurityScopedResource()
+                    defer { if hasSecurityScope { image.stopAccessingSecurityScopedResource() } }
                     let mime = UTType(filenameExtension: image.pathExtension)?.preferredMIMEType ?? "image/jpeg"
                     files.append(MultipartFile(field: "images", filename: image.lastPathComponent, data: try Data(contentsOf: image), mime: mime))
                 }
@@ -1414,7 +1491,7 @@ private struct NativeMineView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("我的")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: NativeDestination.self) { destination in destination.view }
             .onChange(of: isActive) { active in if !active { path.removeAll() } }
         }
@@ -1437,7 +1514,7 @@ private struct PendingInlineImage {
 }
 
 private struct ArticleEditCommand: Identifiable {
-    enum Kind { case heading1, heading2, body, bold, italic, strikethrough, quote, list, numberedList, checklist, link, center, emoji(String), images([PendingInlineImage]) }
+    enum Kind { case heading1, heading2, body, bold, italic, strikethrough, quote, list, numberedList, checklist, link(String), center, emoji(String), images([PendingInlineImage]) }
     let id = UUID()
     let kind: Kind
     init(_ kind: Kind) { self.kind = kind }
@@ -1479,15 +1556,17 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
             case .bold: replacement = "**\(selected.isEmpty ? "粗体文字" : selected)**"
             case .italic: replacement = "*\(selected.isEmpty ? "斜体文字" : selected)*"
             case .strikethrough: replacement = "~~\(selected.isEmpty ? "删除线文字" : selected)~~"
-            case .link: replacement = "[\(selected.isEmpty ? "链接文字" : selected)](https://)"
-            case .heading1: replacement = "# \(selected.isEmpty ? "一级标题" : selected)"
-            case .heading2: replacement = "## \(selected.isEmpty ? "二级标题" : selected)"
+            case .link(let url): replacement = "[\(selected.isEmpty ? "链接文字" : selected)](\(url))"
+            case .heading1: replacement = isolatedBlock("# \(selected.isEmpty ? "一级标题" : selected)", in: ns, replacing: range)
+            case .heading2: replacement = isolatedBlock("## \(selected.isEmpty ? "二级标题" : selected)", in: ns, replacing: range)
             case .body: replacement = (selected.isEmpty ? "正文" : selected).replacingOccurrences(of: #"(?m)^(#{1,6}\s+|>\s+|[-*]\s+|\d+\.\s+|- \[[ xX]\]\s+)"#, with: "", options: .regularExpression)
-            case .quote: replacement = "> \(selected.isEmpty ? "引用内容" : selected.replacingOccurrences(of: "\n", with: "\n> "))"
-            case .list: replacement = "- \(selected.isEmpty ? "列表项目" : selected.replacingOccurrences(of: "\n", with: "\n- "))"
-            case .numberedList: replacement = (selected.isEmpty ? ["列表项目"] : selected.components(separatedBy: "\n")).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-            case .checklist: replacement = "- [ ] \(selected.isEmpty ? "待办事项" : selected.replacingOccurrences(of: "\n", with: "\n- [ ] "))"
-            case .center: replacement = "\n::: align-center\n\(selected.isEmpty ? "居中内容" : selected)\n:::\n"
+            case .quote: replacement = isolatedBlock("> \(selected.isEmpty ? "引用内容" : selected.replacingOccurrences(of: "\n", with: "\n> "))", in: ns, replacing: range)
+            case .list: replacement = isolatedBlock("- \(selected.isEmpty ? "列表项目" : selected.replacingOccurrences(of: "\n", with: "\n- "))", in: ns, replacing: range)
+            case .numberedList:
+                let value = (selected.isEmpty ? ["列表项目"] : selected.components(separatedBy: "\n")).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+                replacement = isolatedBlock(value, in: ns, replacing: range)
+            case .checklist: replacement = isolatedBlock("- [ ] \(selected.isEmpty ? "待办事项" : selected.replacingOccurrences(of: "\n", with: "\n- [ ] "))", in: ns, replacing: range)
+            case .center: replacement = isolatedBlock("::: align-center\n\(selected.isEmpty ? "居中内容" : selected)\n:::", in: ns, replacing: range)
             case .emoji(let value): replacement = value
             case .images(let images): replacement = images.map { image in
                 let alt = image.url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "]", with: "")
@@ -1499,31 +1578,45 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
             parent.text = view.text
             view.becomeFirstResponder()
         }
+
+        private func isolatedBlock(_ value: String, in source: NSString, replacing range: NSRange) -> String {
+            let needsLeadingBreak = range.location > 0 && source.substring(with: NSRange(location: range.location - 1, length: 1)) != "\n"
+            let end = range.location + range.length
+            let needsTrailingBreak = end < source.length && source.substring(with: NSRange(location: end, length: 1)) != "\n"
+            return (needsLeadingBreak ? "\n" : "") + value + (needsTrailingBreak ? "\n" : "")
+        }
     }
 }
 
 private struct SavedLinkFeedRow: View {
     let item: SavedLink
+    let onOpen: () -> Void
     let onEdit: () -> Void
     let onTogglePin: () -> Void
     let onDelete: () -> Void
     let onPushNow: () -> Void
     let onSchedule: () -> Void
-    private var isArticle: Bool { item.category?.lowercased().hasPrefix("tutorial:") == true }
+    private var isArticle: Bool { savedLinkIsArticle(item) }
     private var category: String? { item.category?.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]).trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
-    private var bodyText: String { savedLinkPlainText(item.description) }
+    private var bodyText: String { isArticle ? savedLinkPlainText(item.description) : (item.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
     private var pushLabel: String? { item.pushStatus == "idle" ? nil : item.pushStatus == "scheduled" ? "已定时" : item.pushStatus == "sending" ? "推送中" : item.pushStatus == "sent" ? "已推送" : "推送失败" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 9) {
-                SavedLinkAvatar(item: item)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.authorUsername).font(.subheadline.bold())
-                    Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary)
+                Button(action: onOpen) {
+                    HStack(spacing: 9) {
+                        SavedLinkAvatar(item: item)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.authorUsername).font(.subheadline.bold())
+                            Text(shortDate(item.createdAt)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if item.isPinned { Label("置顶", systemImage: "pin.fill").font(.caption2).foregroundStyle(.orange) }
+                    }
+                    .contentShape(Rectangle())
                 }
-                Spacer()
-                if item.isPinned { Label("置顶", systemImage: "pin.fill").font(.caption2).foregroundStyle(.orange) }
+                .buttonStyle(.plain)
                 Menu {
                     Button("编辑") { onEdit() }
                     Button(item.isPinned ? "取消置顶" : "置顶") { onTogglePin() }
@@ -1533,24 +1626,31 @@ private struct SavedLinkFeedRow: View {
                 } label: { Image(systemName: "ellipsis").font(.headline).frame(width: 28, height: 28).contentShape(Rectangle()) }
                 .buttonStyle(.plain)
             }
-            HStack(spacing: 6) {
-                Image(systemName: isArticle ? "doc.text" : "bubble.left").foregroundStyle(.blue)
-                Text(item.title).font(.headline).lineLimit(2)
-                if let category { Text(category).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
-                if let pushLabel { Text(pushLabel).font(.caption2).foregroundStyle(item.pushStatus == "failed" ? .red : .blue) }
-            }
-            if !bodyText.isEmpty {
-                Text(bodyText).lineLimit(4).fixedSize(horizontal: false, vertical: true).foregroundStyle(.secondary)
-                if bodyText.count > 120 { Text("全文").font(.subheadline).foregroundStyle(.blue) }
-            }
-            if !item.images.isEmpty { SavedLinkImageGrid(images: item.images) }
-            if let url = item.url, !url.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "safari").foregroundStyle(.blue)
-                    Text(linkHost(url) ?? "打开原链接").font(.subheadline).foregroundStyle(.blue).lineLimit(1)
-                    Spacer()
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        Image(systemName: isArticle ? "doc.text" : "bubble.left").foregroundStyle(.blue)
+                        Text(item.title).font(.headline).lineLimit(2)
+                        if let category { Text(category).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                        if let pushLabel { Text(pushLabel).font(.caption2).foregroundStyle(item.pushStatus == "failed" ? .red : .blue) }
+                    }
+                    if !bodyText.isEmpty {
+                        Text(bodyText).lineLimit(4).fixedSize(horizontal: false, vertical: true).foregroundStyle(.secondary)
+                        if bodyText.count > 120 { Text("全文").font(.subheadline).foregroundStyle(.blue) }
+                    }
+                    if isArticle && !item.images.isEmpty { SavedLinkImageGrid(images: item.images) }
+                    if let url = item.url, !url.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "safari").foregroundStyle(.blue)
+                            Text(linkHost(url) ?? "打开原链接").font(.subheadline).foregroundStyle(.blue).lineLimit(1)
+                            Spacer()
+                        }
+                    }
                 }
+                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1637,7 +1737,7 @@ private struct MineEntry: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 17, weight: .semibold)).foregroundStyle(color).frame(width: 34, height: 34).background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 8))
+                NativeAppIconTile(symbol: icon, color: color, size: 34, iconSize: 16)
                 VStack(alignment: .leading, spacing: 3) { Text(title).font(.body).foregroundStyle(.primary); Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
@@ -2201,7 +2301,7 @@ private struct ExpenseDetail: View {
 
 struct Metric: View {
     let title: String; let value: String
-    var body: some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).fontWeight(.semibold).lineLimit(1).minimumScaleFactor(0.75) }.frame(maxWidth: .infinity, alignment: .leading) }
+    var body: some View { VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(value).fontWeight(.semibold).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72) }.frame(maxWidth: .infinity, alignment: .leading) }
 }
 
 private struct StatusBadge: View {
@@ -2441,8 +2541,9 @@ private struct TaskRecord: Codable, Identifiable {
 }
 
 private struct TaskSummary: Codable {
-    let totalRecords: Int; let principalTotal: Double; let pendingSignedCount: Int; let pendingSettlementCount: Int
-    enum CodingKeys: String, CodingKey { case totalRecords = "total_records"; case principalTotal = "principal_total"; case pendingSignedCount = "pending_signed_count"; case pendingSettlementCount = "pending_settlement_count" }
+    let totalRecords: Int; let principalTotal: Double; let commissionTotal: Double; let giftTotal: Double
+    let pendingSignedCount: Int; let pendingSettlementCount: Int
+    enum CodingKeys: String, CodingKey { case totalRecords = "total_records"; case principalTotal = "principal_total"; case commissionTotal = "commission_total"; case giftTotal = "gift_total"; case pendingSignedCount = "pending_signed_count"; case pendingSettlementCount = "pending_settlement_count" }
 }
 
 private struct CompanyExpense: Codable, Identifiable {
@@ -2457,24 +2558,187 @@ private struct ExpenseSummary: Codable {
 }
 
 private struct SavedLinkImage: Codable { let url: String; let name: String? }
+private func savedLinkIsArticle(_ item: SavedLink) -> Bool {
+    item.category?.lowercased().hasPrefix("tutorial:") == true
+}
 private func savedLinkPlainText(_ value: String?) -> String {
     guard var text = value, !text.isEmpty else { return "" }
-    let patterns = [#"!\[[^\]]*\]\([^\)]*\)"#, #"\[[^\]]+\]\((/saved-links/[^\)]*)\)"#]
-    for pattern in patterns { text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression) }
+    text = text.replacingOccurrences(of: #"!\[[^\]]*\]\([^\)]*\)"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"\[([^\]]+)\]\([^\)]+\)"#, with: "$1", options: .regularExpression)
     text = text.replacingOccurrences(of: #":::\s*align-center\s*"#, with: "\n", options: .regularExpression)
     text = text.replacingOccurrences(of: #"(?m)^\s*:::\s*$"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?m)^\s{0,3}(?:#{1,6}\s+|>\s+|[-*]\s+\[[ xX]\]\s+|[-*]\s+|\d+\.\s+)"#, with: "", options: .regularExpression)
+    for marker in ["**", "~~", "`", "*"] { text = text.replacingOccurrences(of: marker, with: "") }
     text = text.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
     return text.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 private struct ExpenseCategoriesResponse: Codable { let categories: [String]; let isDefault: Bool?; let usage: [String: Int]?; enum CodingKeys: String, CodingKey { case categories, usage; case isDefault = "is_default" } }
 private func savedLinkMarkdown(_ value: String?) -> AttributedString {
-    let source = savedLinkPlainText(value)
+    let source = value ?? ""
     let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
     return (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
 }
+
+private enum SavedLinkArticleBlock {
+    case paragraph(String)
+    case heading(level: Int, text: String)
+    case quote(String)
+    case bullet(String)
+    case numbered(number: String, text: String)
+    case checklist(checked: Bool, text: String)
+    case centered(String)
+}
+
+private func savedLinkArticleBlocks(_ source: String) -> [SavedLinkArticleBlock] {
+    var blocks: [SavedLinkArticleBlock] = []
+    var paragraph: [String] = []
+    var centered: [String] = []
+    var isCentering = false
+
+    func flushParagraph() {
+        guard !paragraph.isEmpty else { return }
+        blocks.append(.paragraph(paragraph.joined(separator: "\n")))
+        paragraph.removeAll()
+    }
+
+    func flushCenter() {
+        guard !centered.isEmpty else { return }
+        blocks.append(.centered(centered.joined(separator: "\n")))
+        centered.removeAll()
+    }
+
+    for line in source.components(separatedBy: .newlines) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if isCentering {
+            if trimmed == ":::" {
+                flushCenter()
+                isCentering = false
+            } else {
+                centered.append(line)
+            }
+            continue
+        }
+        if trimmed == "::: align-center" {
+            flushParagraph()
+            isCentering = true
+        } else if trimmed.isEmpty {
+            flushParagraph()
+        } else if trimmed.hasPrefix("## ") {
+            flushParagraph()
+            blocks.append(.heading(level: 2, text: String(trimmed.dropFirst(3))))
+        } else if trimmed.hasPrefix("# ") {
+            flushParagraph()
+            blocks.append(.heading(level: 1, text: String(trimmed.dropFirst(2))))
+        } else if trimmed.hasPrefix("> ") {
+            flushParagraph()
+            blocks.append(.quote(String(trimmed.dropFirst(2))))
+        } else if trimmed.hasPrefix("- [ ] ") || trimmed.lowercased().hasPrefix("- [x] ") {
+            flushParagraph()
+            blocks.append(.checklist(checked: trimmed.lowercased().hasPrefix("- [x] "), text: String(trimmed.dropFirst(6))))
+        } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+            flushParagraph()
+            blocks.append(.bullet(String(trimmed.dropFirst(2))))
+        } else if let marker = trimmed.range(of: #"^\d+\.\s+"#, options: .regularExpression) {
+            flushParagraph()
+            let prefix = String(trimmed[..<marker.upperBound])
+            let number = prefix.split(separator: ".").first.map(String.init) ?? ""
+            blocks.append(.numbered(number: number, text: String(trimmed[marker.upperBound...])))
+        } else {
+            paragraph.append(line)
+        }
+    }
+    flushParagraph()
+    if isCentering { flushCenter() }
+    return blocks
+}
+
+private struct SavedLinkArticleBlockView: View {
+    let block: SavedLinkArticleBlock
+
+    @ViewBuilder var body: some View {
+        switch block {
+        case .paragraph(let text):
+            Text(savedLinkMarkdown(text))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        case .heading(let level, let text):
+            Text(savedLinkMarkdown(text))
+                .font(level == 1 ? .title2.bold() : .title3.bold())
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .quote(let text):
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 1.5).fill(Color.secondary.opacity(0.45)).frame(width: 3)
+                Text(savedLinkMarkdown(text)).foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .bullet(let text):
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text("•").fontWeight(.bold)
+                Text(savedLinkMarkdown(text)).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .numbered(let number, let text):
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text("\(number).").fontWeight(.semibold).monospacedDigit()
+                Text(savedLinkMarkdown(text)).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .checklist(let checked, let text):
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Image(systemName: checked ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(checked ? .green : .secondary)
+                Text(savedLinkMarkdown(text)).fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .centered(let text):
+            Text(savedLinkMarkdown(text))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+}
+
+private struct SavedLinkArticleContent: View {
+    let source: String?
+    var pendingImages: [PendingInlineImage] = []
+    var onImageTap: ((String) -> Void)?
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 14) {
+            ForEach(Array(savedLinkContentSegments(source).enumerated()), id: \.offset) { _, segment in
+                switch segment {
+                case .text(let value):
+                    ForEach(Array(savedLinkArticleBlocks(value).enumerated()), id: \.offset) { _, block in
+                        SavedLinkArticleBlockView(block: block)
+                    }
+                case .image(let url, _):
+                    if let pending = pendingImages.first(where: { url.contains($0.token) }), let image = UIImage(contentsOfFile: pending.url.path) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else if onImageTap != nil {
+                        Button { onImageTap?(url) } label: { SavedLinkDetailImage(url: url) }
+                            .buttonStyle(.plain)
+                    } else {
+                        SavedLinkDetailImage(url: url)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct SavedLinkDetail: View {
     let item: SavedLink
     @State private var previewURL: URL?
+    private var isArticle: Bool { savedLinkIsArticle(item) }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -2482,20 +2746,19 @@ private struct SavedLinkDetail: View {
                 Text(item.title).font(.title.bold())
                 if let category = item.category, !category.isEmpty { Label(category.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]), systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
                 if item.pushStatus != "idle" { SavedLinkPushStatusView(item: item) }
-                let segments = savedLinkContentSegments(item.description)
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case .text(let value):
-                        if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Text(savedLinkMarkdown(value)).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-                    case .image(let url, _):
-                        Button { previewURL = nativeImageURL(url) } label: { SavedLinkDetailImage(url: url) }.buttonStyle(.plain)
-                    }
+                if isArticle {
+                    SavedLinkArticleContent(source: item.description, onImageTap: { previewURL = nativeImageURL($0) })
+                } else if let value = item.description, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(value).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                 }
+                let segments = isArticle ? savedLinkContentSegments(item.description) : []
                 let inlineURLs = Set(segments.compactMap { segment -> String? in if case .image(let url, _) = segment { return nativeImageURL(url)?.absoluteString }; return nil })
-                ForEach(Array(item.images.filter { image in guard let value = nativeImageURL(image.url)?.absoluteString else { return true }; return !inlineURLs.contains(value) }.enumerated()), id: \.offset) { _, image in Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
+                if isArticle {
+                    ForEach(Array(item.images.filter { image in guard let value = nativeImageURL(image.url)?.absoluteString else { return true }; return !inlineURLs.contains(value) }.enumerated()), id: \.offset) { _, image in Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
+                }
                 if let value = item.url, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) { Link(destination: url) { Label("打开原链接", systemImage: "safari").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).padding(.top, 8) }
             }.padding(20)
-        }.background(Color(.systemBackground)).navigationTitle("预览").navigationBarTitleDisplayMode(.inline)
+        }.background(Color(.systemBackground)).navigationTitle(isArticle ? "文章" : "帖子").navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) { NavigationStack { ZStack { Color.black.ignoresSafeArea(); if let previewURL { CachedRemoteImage(url: previewURL, contentMode: .fit, placeholder: ProgressView().tint(.white)) } }.toolbar { Button("关闭") { previewURL = nil } } } }
     }
 }
@@ -2514,7 +2777,7 @@ private struct SavedLinkPushSheet: View {
     @State private var scheduledAt = Date().addingTimeInterval(600)
     @State private var saving = false
     @State private var error: String?
-    var body: some View { NavigationStack { Form { Section("帖子") { Text(item.title).fontWeight(.medium) }; Section("推送时间") { DatePicker("发送时间", selection: $scheduledAt, in: Date().addingTimeInterval(60)..., displayedComponents: [.date, .hourAndMinute]) }; if let error { Text(error).foregroundStyle(.red) } }.navigationTitle("定时推送").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("安排") { Task { await schedule() } }.disabled(saving) } } } }
+    var body: some View { NavigationStack { Form { Section(savedLinkIsArticle(item) ? "文章" : "帖子") { Text(item.title).fontWeight(.medium) }; Section("推送时间") { DatePicker("发送时间", selection: $scheduledAt, in: Date().addingTimeInterval(60)..., displayedComponents: [.date, .hourAndMinute]) }; if let error { Text(error).foregroundStyle(.red) } }.navigationTitle("定时推送").toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button("安排") { Task { await schedule() } }.disabled(saving) } } } }
     private func schedule() async { saving = true; defer { saving = false }; let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withTimeZone]; do { let updated: SavedLink = try await session.send("saved-links/\(item.id)/push", method: "POST", body: ["scheduled_at": formatter.string(from: scheduledAt)]); onSave(updated); dismiss() } catch { self.error = session.message(for: error) } }
 }
 
@@ -2576,7 +2839,13 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
     @Published var username = "管理员"
     @Published var currentUser: CurrentUserSession?
     private var captchaID: String?
-    private let origin = URL(string: "https://xiaoxu666.asia")!
+    private let origin: URL = {
+#if DEBUG
+        return URL(string: "http://127.0.0.1:4174")!
+#else
+        return URL(string: "https://xiaoxu666.asia")!
+#endif
+    }()
     private let decoder: JSONDecoder = { let value = JSONDecoder(); value.keyDecodingStrategy = .useDefaultKeys; return value }()
 
     func restoreSession() async {
@@ -2767,7 +3036,7 @@ private struct HomeDashboard {
 
 private struct HomeModuleItem: Identifiable { let id: String; let title: String; let icon: String; let color: Color; let destination: NativeDestination }
 private let homeModuleCatalog = [HomeModuleItem(id: "sycm", title: "生意参谋", icon: "chart.bar.fill", color: .teal, destination: .sycm), HomeModuleItem(id: "company-expenses", title: "公司记账", icon: "creditcard.fill", color: .blue, destination: .expenses), HomeModuleItem(id: "tasks", title: "任务记录", icon: "doc.text.fill", color: .indigo, destination: .tasks), HomeModuleItem(id: "profits", title: "钉钉利润", icon: "chart.line.uptrend.xyaxis", color: .orange, destination: .profits), HomeModuleItem(id: "shops", title: "店铺账号", icon: "storefront.fill", color: .mint, destination: .shops), HomeModuleItem(id: "warehouse", title: "仓储管理", icon: "shippingbox.fill", color: .orange, destination: .warehouse), HomeModuleItem(id: "links", title: "链接广场", icon: "link", color: .blue, destination: .links), HomeModuleItem(id: "ai-workspace", title: "AI 工作台", icon: "sparkles", color: .cyan, destination: .aiWorkspace), HomeModuleItem(id: "owners", title: "负责人", icon: "person.2.fill", color: .green, destination: .owners)]
-private let defaultHomeModuleKeys = ["sycm", "company-expenses", "tasks", "profits", "shops", "warehouse", "links"]
+private let defaultHomeModuleKeys = ["sycm", "company-expenses", "tasks", "profits", "shops", "warehouse", "links", "ai-workspace", "owners"]
 private struct HomeModulesSettingResponse: Codable { let key: String; let value: [String]? }
 private struct HomeModuleManager: View {
     @EnvironmentObject private var session: NativeSession
@@ -2779,17 +3048,63 @@ private struct HomeModuleManager: View {
     var body: some View { NavigationStack { List { if let error { Text(error).font(.caption).foregroundStyle(.red) }; Section("已显示 · 拖动排序") { ForEach(keys, id: \.self) { key in if let item = homeModuleCatalog.first(where: { $0.id == key }) { Label(item.title, systemImage: item.icon) } }.onMove { keys.move(fromOffsets: $0, toOffset: $1) }.onDelete { offsets in guard keys.count > offsets.count else { return }; keys.remove(atOffsets: offsets) } }; if !available.isEmpty { Section("更多功能") { ForEach(available) { item in Button { keys.append(item.id) } label: { Label(item.title, systemImage: "plus.circle") } } } } }.environment(\.editMode, .constant(.active)).navigationTitle("常用功能排序").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving) } } } }
     private func save() async { saving = true; defer { saving = false }; do { let response: HomeModulesSettingResponse = try await session.send("ui-settings/home-modules", method: "PUT", body: ["value": keys]); if let value = response.value { keys = value }; dismiss() } catch { self.error = session.message(for: error) } }
 }
-private struct HomeShortcutLabel: View { let title: String; let icon: String; let color: Color; init(_ title: String, _ icon: String, _ color: Color) { self.title = title; self.icon = icon; self.color = color }; var body: some View { VStack(spacing: 6) { Image(systemName: icon).font(.system(size: 22, weight: .semibold)).foregroundStyle(color).frame(width: 36, height: 29); Text(title).font(.caption2).lineLimit(2).minimumScaleFactor(0.8).multilineTextAlignment(.center).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 64) } }
+private struct NativeAppIconTile: View {
+    let symbol: String
+    let color: Color
+    let size: CGFloat
+    let iconSize: CGFloat
+    var selected = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                .fill(color)
+                .overlay {
+                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                        .fill(LinearGradient(colors: [.white.opacity(0.34), .clear, .black.opacity(0.13)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                        .stroke(.white.opacity(0.32), lineWidth: 1)
+                }
+                .shadow(color: color.opacity(0.3), radius: size * 0.11, y: size * 0.07)
+                .shadow(color: .black.opacity(0.1), radius: 1, y: 1)
+            Image(systemName: symbol)
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
+        }
+        .frame(width: size, height: size)
+        .overlay(alignment: .bottomTrailing) {
+            if selected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 7, weight: .black))
+                    .foregroundStyle(.white)
+                    .frame(width: 14, height: 14)
+                    .background(Color.blue, in: Circle())
+                    .overlay { Circle().stroke(.white, lineWidth: 2) }
+                    .offset(x: 3, y: 3)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+private struct HomeShortcutLabel: View { let title: String; let icon: String; let color: Color; init(_ title: String, _ icon: String, _ color: Color) { self.title = title; self.icon = icon; self.color = color }; var body: some View { VStack(spacing: 6) { NativeAppIconTile(symbol: icon, color: color, size: 36, iconSize: 18); Text(title).font(.caption2).lineLimit(2).minimumScaleFactor(0.8).multilineTextAlignment(.center).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 64) } }
 private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HomeShortcutLabel(title, icon, color) }.buttonStyle(.plain) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
-private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { Image(systemName: icon).font(.subheadline.weight(.semibold)).foregroundStyle(color).frame(width: 30, height: 30).background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7)); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
+private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { NativeAppIconTile(symbol: icon, color: color, size: 30, iconSize: 14); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
 private func nativeImageURL(_ value: String) -> URL? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
-    let base = URL(string: "https://xiaoxu666.asia/")!
+    let base: URL
+#if DEBUG
+    base = URL(string: "http://127.0.0.1:4174/")!
+#else
+    base = URL(string: "https://xiaoxu666.asia/")!
+#endif
     return URL(string: trimmed, relativeTo: base)?.absoluteURL
 }
 private func nativeThumbnailURL(_ value: String, maxPixelSize: CGFloat = 720) -> URL? {

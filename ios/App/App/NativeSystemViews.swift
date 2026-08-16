@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import UniformTypeIdentifiers
 import UserNotifications
 
@@ -103,14 +104,90 @@ struct NativeSystemSettingsView: View {
 
 struct NativeAppSettingsView: View {
     @AppStorage("native-dark-mode") private var dark = false
-    var body: some View { Form { Section("外观") { Toggle("深色模式", isOn: $dark) }; Section("应用") { LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.4"); LabeledContent("界面", value: "SwiftUI 原生") } }.navigationTitle("App 设置").preferredColorScheme(dark ? .dark : .light) }
+    var body: some View { Form { Section("外观") { Toggle("深色模式", isOn: $dark) }; Section("应用") { LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.4"); LabeledContent("界面", value: "SwiftUI 原生") } }.navigationTitle("App 设置") }
 }
 
 struct NativeProfileView: View {
-    @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss
-    @State private var displayName = ""; @State private var selectedFile: URL?; @State private var importing = false; @State private var saving = false; @State private var error: String?
-    var body: some View { Form { if let error { Text(error).foregroundStyle(.red) }; Section("个人资料") { TextField("显示姓名", text: $displayName); LabeledContent("登录账号", value: session.username); Button("选择头像") { importing = true }; if let selectedFile { Text(selectedFile.lastPathComponent).font(.caption).foregroundStyle(.secondary) } }; Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving || displayName.count > 50) }.navigationTitle("编辑个人资料").task { displayName = session.currentUser?.displayName ?? "" }.fileImporter(isPresented: $importing, allowedContentTypes: [.jpeg, .png, .webP]) { if case .success(let url) = $0 { selectedFile = url } } }
-    private func save() async { saving = true; defer { saving = false }; do { let body: [String: Any] = ["username": session.username, "display_name": displayName.isEmpty ? NSNull() : displayName]; let user: CurrentUserSession = try await session.send("auth/profile", method: "PATCH", body: body); session.apply(user); if let url = selectedFile { guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { url.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: url); let ext = url.pathExtension.lowercased(); let mime = ext == "png" ? "image/png" : ext == "webp" ? "image/webp" : "image/jpeg"; let uploaded: CurrentUserSession = try await session.upload(path: "auth/avatar", field: "image", filename: url.lastPathComponent, data: data, mime: mime); session.apply(uploaded) }; dismiss() } catch { self.error = session.message(for: error) } }
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    @State private var displayName = ""
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var avatarData: Data?
+    @State private var avatarImage: UIImage?
+    @State private var loadingPhoto = false
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        Form {
+            if let error { Text(error).foregroundStyle(.red) }
+            Section("个人资料") {
+                TextField("显示姓名", text: $displayName)
+                LabeledContent("登录账号", value: session.username)
+                PhotosPicker(selection: $selectedPhoto, matching: .images, photoLibrary: .shared()) {
+                    Label(avatarData == nil ? "从照片图库选择头像" : "重新选择头像", systemImage: "photo.on.rectangle")
+                }
+                if let avatarImage {
+                    HStack(spacing: 12) {
+                        Image(uiImage: avatarImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 56, height: 56)
+                            .clipShape(Circle())
+                        Label("已选择新头像", systemImage: "checkmark.circle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.green)
+                    }
+                } else if loadingPhoto {
+                    ProgressView("正在读取照片…")
+                }
+            }
+            Button(saving ? "保存中…" : "保存") { Task { await save() } }
+                .disabled(saving || loadingPhoto || displayName.count > 50)
+        }
+        .navigationTitle("编辑个人资料")
+        .task { displayName = session.currentUser?.displayName ?? "" }
+        .onChange(of: selectedPhoto) { item in Task { await receivePhoto(item) } }
+    }
+
+    @MainActor
+    private func receivePhoto(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
+        loadingPhoto = true
+        error = nil
+        defer { loadingPhoto = false }
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data),
+                  let jpeg = image.jpegData(compressionQuality: 0.88) else {
+                throw NativeAPIError.invalidResponse
+            }
+            avatarImage = image
+            avatarData = jpeg
+        } catch {
+            avatarImage = nil
+            avatarData = nil
+            self.error = "无法读取这张照片，请重新选择"
+        }
+    }
+
+    private func save() async {
+        saving = true
+        error = nil
+        defer { saving = false }
+        do {
+            let body: [String: Any] = ["username": session.username, "display_name": displayName.isEmpty ? NSNull() : displayName]
+            let user: CurrentUserSession = try await session.send("auth/profile", method: "PATCH", body: body)
+            session.apply(user)
+            if let avatarData {
+                let uploaded: CurrentUserSession = try await session.upload(path: "auth/avatar", field: "image", filename: "avatar.jpg", data: avatarData, mime: "image/jpeg")
+                session.apply(uploaded)
+            }
+            dismiss()
+        } catch {
+            self.error = session.message(for: error)
+        }
+    }
 }
 
 private struct ResourceRow: View { let title: String; let value: Double?; var body: some View { VStack(alignment: .leading) { HStack { Text(title); Spacer(); Text(value.map { String(format: "%.1f%%", $0) } ?? "--") }; ProgressView(value: min(max(value ?? 0, 0), 100), total: 100).tint((value ?? 0) >= 90 ? .red : (value ?? 0) >= 75 ? .orange : .blue) } } }

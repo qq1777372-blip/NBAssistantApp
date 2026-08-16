@@ -26,6 +26,11 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用于 AI 工作台的语音输入和转写功能</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

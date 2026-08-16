@@ -4,6 +4,8 @@
   "description": "小许后台管理系统 iOS app built with Capacitor",
   "main": "index.js",
   "scripts": {
+    "demo": "node demo-server.js",
+    "check:demo": "node demo-check.js",
     "sync": "cap sync ios",
     "open:ios": "cap open ios",
     "doctor": "cap doctor"
