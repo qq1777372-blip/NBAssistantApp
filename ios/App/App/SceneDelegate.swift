@@ -299,6 +299,59 @@ private struct NativeProfitView: View {
     }
 }
 
+private struct PendingChatImage: Identifiable {
+    let id = UUID()
+    let image: UIImage
+    let dataURL: String
+}
+
+private struct ComposerContextChip: View {
+    let title: String
+    let icon: String
+    let remove: () -> Void
+
+    var body: some View {
+        Button(action: remove) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                Text(title).lineLimit(1)
+                Image(systemName: "xmark").font(.caption2.bold())
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 10)
+            .frame(minHeight: 32)
+            .background(Color.blue.opacity(0.12), in: Capsule())
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("移除\(title)")
+    }
+}
+
+private struct NativeChatImage: View {
+    let source: String
+
+    var body: some View {
+        Group {
+            if let inlineImage {
+                Image(uiImage: inlineImage).resizable().scaledToFill()
+            } else if let url = URL(string: source) {
+                CachedRemoteImage(url: url, contentMode: .fill, maxPixelSize: 1000, placeholder: ProgressView())
+            } else {
+                Image(systemName: "photo").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.tertiarySystemFill))
+        .accessibilityLabel("对话图片")
+    }
+
+    private var inlineImage: UIImage? {
+        guard source.hasPrefix("data:image/"), let separator = source.firstIndex(of: ","), let data = Data(base64Encoded: String(source[source.index(after: separator)...])) else { return nil }
+        return UIImage(data: data)
+    }
+}
+
 private struct NativeAIWorkspaceView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var question = ""; @State private var chats: [AIChat] = []; @State private var activeChatID = ""
@@ -309,6 +362,9 @@ private struct NativeAIWorkspaceView: View {
     @State private var knowledge: [KnowledgeCollection] = []; @State private var skills: [CapabilityItem] = []; @State private var tools: [CapabilityItem] = []
     @State private var selectedKnowledge = ""; @State private var selectedSkills: Set<String> = []; @State private var selectedTools: Set<String> = []
     @State private var webSearch = false; @State private var imageMode = false; @State private var imageSize = "1024x1024"; @State private var showingTools = false
+    @State private var knowledgeEnabled = false; @State private var showingKnowledge = false
+    @State private var photoItems: [PhotosPickerItem] = []; @State private var pendingImages: [PendingChatImage] = []
+    @State private var importingFile = false; @State private var importingAttachment = false; @State private var importedFileNames: [String] = []
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
@@ -319,7 +375,7 @@ private struct NativeAIWorkspaceView: View {
                 ScrollView {
                     LazyVStack(spacing: 14) {
                         if activeChat?.messages.isEmpty != false { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用语音开始").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
-                        ForEach(activeChat?.messages ?? []) { item in HStack { if item.role == "user" { Spacer(minLength: 48) }; VStack(alignment: .leading, spacing: 8) { if let imageURL = generatedImageURL(item.content) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280) } else { Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled) }; if item.role == "assistant" && !item.content.isEmpty { HStack { Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }; Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") } }.font(.caption) } }.padding(13).foregroundStyle(item.role == "user" ? .white : .primary).background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15)); if item.role != "user" { Spacer(minLength: 48) } }.id(item.id) }
+                        ForEach(activeChat?.messages ?? []) { item in chatMessage(item).id(item.id) }
                         Color.clear.frame(height: 1).id("ai-chat-bottom")
                     }
                     .padding()
@@ -338,38 +394,143 @@ private struct NativeAIWorkspaceView: View {
         .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
         .sheet(isPresented: $showingHistory) { historySheet }
         .sheet(isPresented: $showingTools) { toolsSheet }
+        .sheet(isPresented: $showingKnowledge) { knowledgeSheet }
+        .fileImporter(isPresented: $importingFile, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importAttachment(result) } }
+        .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
         .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
         .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
     }
+    @ViewBuilder private func chatMessage(_ item: AIChatMessage) -> some View {
+        HStack {
+            if item.role == "user" { Spacer(minLength: 48) }
+            VStack(alignment: .leading, spacing: 8) {
+                if !item.imageURLs.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(item.imageURLs.enumerated()), id: \.offset) { _, source in
+                                NativeChatImage(source: source).frame(width: 132, height: 104).clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                }
+                if let imageURL = generatedImageURL(item.content) {
+                    CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280)
+                } else {
+                    Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled)
+                }
+                if item.role == "assistant" && !item.content.isEmpty {
+                    HStack {
+                        Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("复制回答")
+                        Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("重新生成")
+                    }
+                    .font(.caption)
+                }
+            }
+            .padding(13)
+            .foregroundStyle(item.role == "user" ? Color.white : Color.primary)
+            .background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15))
+            if item.role != "user" { Spacer(minLength: 48) }
+        }
+    }
     private var composer: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
+            if !pendingImages.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(pendingImages) { item in
+                            ZStack(alignment: .topTrailing) {
+                                Image(uiImage: item.image).resizable().scaledToFill().frame(width: 70, height: 70).clipShape(RoundedRectangle(cornerRadius: 10))
+                                Button { pendingImages.removeAll { $0.id == item.id } } label: { Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.68)).font(.system(size: 19)).frame(width: 44, height: 44) }.offset(x: 12, y: -12).accessibilityLabel("移除图片")
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.top, 10)
+                }
+            }
+            if knowledgeEnabled || webSearch || imageMode || !importedFileNames.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 7) {
+                        if knowledgeEnabled { ComposerContextChip(title: knowledgeLabel, icon: "books.vertical.fill") { knowledgeEnabled = false; selectedKnowledge = "" } }
+                        if webSearch { ComposerContextChip(title: "联网", icon: "globe") { webSearch = false } }
+                        if imageMode { ComposerContextChip(title: "生图", icon: "photo.badge.plus") { imageMode = false } }
+                        ForEach(importedFileNames, id: \.self) { name in ComposerContextChip(title: name, icon: "doc.fill") { importedFileNames.removeAll { $0 == name } } }
+                    }
+                    .padding(.horizontal, 12).padding(.top, 9)
+                }
+            }
             TextField(recorder.recording ? "正在录音…" : imageMode ? "描述要生成的图片…" : "给 AI 发消息…", text: $question, axis: .vertical)
                 .lineLimit(1...5)
                 .focused($composerFocused)
                 .submitLabel(.send)
-                .onSubmit { if !sending { send() } }
+                .onSubmit { if canSend { send() } }
                 .onChange(of: composerFocused) { focused in if focused { requestKeyboardScroll() } }
-            HStack(spacing: 12) {
-                Button { showingTools = true } label: { Image(systemName: activeTools ? "plus.circle.fill" : "plus.circle").font(.title2) }
+                .padding(.horizontal, 14).padding(.top, 11).padding(.bottom, 8)
+            HStack(spacing: 8) {
+                Menu {
+                    Button { showingKnowledge = true } label: { Label("选择知识库", systemImage: "books.vertical") }
+                    PhotosPicker(selection: $photoItems, maxSelectionCount: max(4 - pendingImages.count, 1), matching: .images) { Label("从照片图库选择", systemImage: "photo.on.rectangle") }.disabled(pendingImages.count >= 4)
+                    Button { importingFile = true } label: { Label("导入文件", systemImage: "doc.badge.plus") }
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 17, weight: .semibold)).frame(width: 36, height: 36).background(Color(.tertiarySystemFill), in: Circle()).frame(width: 44, height: 44)
+                }
+                .disabled(importingAttachment)
+                .accessibilityLabel("添加知识库、图片或文件")
+                Button { showingTools = true } label: {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 16, weight: .semibold)).foregroundStyle(activeTools ? .blue : .primary).frame(width: 36, height: 36).background(activeTools ? Color.blue.opacity(0.14) : Color(.tertiarySystemFill), in: Circle()).frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("对话能力设置")
                 Spacer(minLength: 4)
+                if importingAttachment { ProgressView().controlSize(.small).frame(width: 44, height: 44).accessibilityLabel("正在导入附件") }
                 if sending {
-                    Button { stop() } label: { Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(.primary, in: Circle()) }
-                } else if question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button { Task { await toggleRecording() } } label: { Image(systemName: recorder.recording ? "stop.fill" : "mic.fill").foregroundStyle(recorder.recording ? .red : .primary).frame(width: 32, height: 32).background(Color(.tertiarySystemFill), in: Circle()) }
+                    Button { stop() } label: { Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 38, height: 38).background(.primary, in: Circle()).frame(width: 44, height: 44) }.accessibilityLabel("停止生成")
+                } else if !canSend {
+                    Button { Task { await toggleRecording() } } label: { Image(systemName: recorder.recording ? "stop.fill" : "mic.fill").foregroundStyle(recorder.recording ? .red : .primary).frame(width: 38, height: 38).background(Color(.tertiarySystemFill), in: Circle()).frame(width: 44, height: 44) }.accessibilityLabel(recorder.recording ? "停止录音" : "开始录音")
                 } else {
-                    Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(.blue, in: Circle()) }
+                    Button { send() } label: { Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).foregroundStyle(.white).frame(width: 38, height: 38).background(.blue, in: Circle()).frame(width: 44, height: 44) }.accessibilityLabel("发送")
                 }
             }
+            .padding(.horizontal, 10).padding(.bottom, 9)
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
-        .overlay { RoundedRectangle(cornerRadius: 18).stroke(Color(.separator).opacity(0.45), lineWidth: 0.5) }
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 20))
+        .overlay { RoundedRectangle(cornerRadius: 20).stroke(Color(.separator).opacity(0.5), lineWidth: 0.5) }
         .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 8)
         .background(.ultraThinMaterial)
     }
-    private var activeTools: Bool { webSearch || imageMode || !selectedKnowledge.isEmpty || !selectedSkills.isEmpty || !selectedTools.isEmpty }
+    private var canSend: Bool { !sending && (!question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
+    private var activeTools: Bool { webSearch || imageMode || knowledgeEnabled || !selectedSkills.isEmpty || !selectedTools.isEmpty }
+    private var knowledgeLabel: String { knowledge.first(where: { $0.id == selectedKnowledge })?.name ?? "全部知识" }
     private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; selectedModel = chat.modelID ?? selectedModel; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { Button("完成") { showingHistory = false } } } }
-    private var toolsSheet: some View { NavigationStack { Form { Toggle("联网搜索", isOn: $webSearch); Toggle("生成图片", isOn: $imageMode); if imageMode { Picker("图片尺寸", selection: $imageSize) { Text("方图").tag("1024x1024"); Text("横图").tag("1536x1024"); Text("竖图").tag("1024x1536") } }; Picker("知识集合", selection: $selectedKnowledge) { Text("不使用知识库").tag(""); ForEach(knowledge) { Text($0.name).tag($0.id) } }; if !skills.isEmpty { Section("Skills") { ForEach(skills) { item in Toggle(item.displayName, isOn: setBinding($selectedSkills, item.id)) } } }; if !tools.isEmpty { Section("Tools") { ForEach(tools) { item in Toggle(item.displayName, isOn: setBinding($selectedTools, item.id)) } } } }.navigationTitle("对话能力").toolbar { Button("完成") { showingTools = false } } } }
+    private var toolsSheet: some View {
+        NavigationStack {
+            Form {
+                Section("模式") {
+                    Toggle("联网搜索", isOn: $webSearch)
+                    Toggle("生成图片", isOn: $imageMode)
+                    if imageMode { Picker("图片尺寸", selection: $imageSize) { Text("方图").tag("1024x1024"); Text("横图").tag("1536x1024"); Text("竖图").tag("1024x1536") } }
+                }
+                if !skills.isEmpty { Section("Skills") { ForEach(skills) { item in Toggle(item.displayName, isOn: setBinding($selectedSkills, item.id)) } } }
+                if !tools.isEmpty { Section("Tools") { ForEach(tools) { item in Toggle(item.displayName, isOn: setBinding($selectedTools, item.id)) } } }
+            }
+            .navigationTitle("对话能力")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("完成") { showingTools = false } }
+        }
+    }
+    private var knowledgeSheet: some View {
+        NavigationStack {
+            List {
+                Button { knowledgeEnabled = false; selectedKnowledge = ""; showingKnowledge = false } label: { HStack { Label("不使用知识库", systemImage: "books.vertical"); Spacer(); if !knowledgeEnabled { Image(systemName: "checkmark").foregroundStyle(.blue) } } }
+                Button { knowledgeEnabled = true; selectedKnowledge = ""; imageMode = false; showingKnowledge = false } label: { HStack { Label("全部知识", systemImage: "square.stack.3d.up.fill"); Spacer(); if knowledgeEnabled && selectedKnowledge.isEmpty { Image(systemName: "checkmark").foregroundStyle(.blue) } } }
+                ForEach(knowledge) { item in
+                    Button { knowledgeEnabled = true; selectedKnowledge = item.id; imageMode = false; showingKnowledge = false } label: { HStack { Label(item.name, systemImage: "folder.fill"); Spacer(); if knowledgeEnabled && selectedKnowledge == item.id { Image(systemName: "checkmark").foregroundStyle(.blue) } } }
+                }
+            }
+            .foregroundStyle(.primary)
+            .navigationTitle("选择知识库")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("取消") { showingKnowledge = false } }
+        }
+    }
     private func loadWorkspace() async {
         error = nil
         restoreLocalChats()
@@ -385,11 +546,57 @@ private struct NativeAIWorkspaceView: View {
         if let result: CapabilityResponse = try? await session.get("ai-api/tools") { tools = result.tools ?? [] }
     }
     private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats?user_id=\(session.currentUser?.id ?? 0)"); if !result.chats.isEmpty { chats = result.chats; activeChatID = chats.first(where: { !$0.archived })?.id ?? chats[0].id; selectedModel = activeChat?.modelID ?? selectedModel; persistChatsLocally() } } catch { } ; if chats.isEmpty { createChat() } }
-    private func send() { let value = question.trimmingCharacters(in: .whitespacesAndNewlines); guard !value.isEmpty else { return }; if activeIndex == nil { createChat() }; guard let index = activeIndex else { return }; question = ""; error = nil; chats[index].messages.append(AIChatMessage(role: "user", content: value)); let answerID = UUID().uuidString; chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: "")); if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }; chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true; streamTask = Task { do { if imageMode { let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt":value,"model_id":selectedModel,"size":imageSize]); if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = "image:\(response.url)" } } else { var documents: [SearchDocument] = []; if !selectedKnowledge.isEmpty { let result: SearchDocumentsResponse = try await session.send("ai-api/search", method: "POST", body: ["query":value,"limit":5,"knowledge_id":selectedKnowledge]); documents += result.documents }; if webSearch { let result: SearchDocumentsResponse = try await session.send("ai-api/web-search", method: "POST", body: ["query":value,"limit":5]); documents += result.documents }; try await session.streamChat(value, modelID: selectedModel, documents: documents, skillIDs: Array(selectedSkills), toolIDs: Array(selectedTools)) { chunk in guard let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }; chats[chatIndex].messages[messageIndex].content += chunk } } } catch is CancellationError { } catch { self.error = session.message(for: error) }; sending = false; await saveActiveChat() } }
+    private func send() {
+        let typedValue = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let images = pendingImages.map(\.dataURL)
+        let value = typedValue.isEmpty && !images.isEmpty ? "请分析这些图片" : typedValue
+        guard !value.isEmpty else { return }
+        if activeIndex == nil { createChat() }
+        guard let index = activeIndex else { return }
+        question = ""; pendingImages = []; importedFileNames = []; error = nil
+        chats[index].messages.append(AIChatMessage(role: "user", content: value, imageURLs: images))
+        let answerID = UUID().uuidString
+        chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: ""))
+        if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }
+        chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true
+        streamTask = Task {
+            do {
+                if imageMode {
+                    let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt": value, "model_id": selectedModel, "size": imageSize])
+                    if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = "image:\(response.url)" }
+                } else {
+                    var documents: [SearchDocument] = []
+                    if knowledgeEnabled {
+                        var body: [String: Any] = ["query": value, "limit": 5]
+                        if !selectedKnowledge.isEmpty { body["knowledge_id"] = selectedKnowledge }
+                        let result: SearchDocumentsResponse = try await session.send("ai-api/search", method: "POST", body: body)
+                        documents += result.documents
+                    }
+                    if webSearch { let result: SearchDocumentsResponse = try await session.send("ai-api/web-search", method: "POST", body: ["query": value, "limit": 5]); documents += result.documents }
+                    try await session.streamChat(value, modelID: selectedModel, imageURLs: images, documents: documents, skillIDs: Array(selectedSkills), toolIDs: Array(selectedTools)) { chunk in
+                        guard let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }
+                        chats[chatIndex].messages[messageIndex].content += chunk
+                    }
+                }
+            } catch is CancellationError { }
+            catch { self.error = session.message(for: error) }
+            sending = false
+            await saveActiveChat()
+        }
+    }
     private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
     private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id; persistChatsLocally(); scrollRequest += 1 }
     private func updateActiveModel() { guard let index = activeIndex else { return }; chats[index].modelID = selectedModel; Task { await saveActiveChat() } }
-    private func saveActiveChat() async { persistChatsLocally(); guard let chat = activeChat else { return }; let messages = chat.messages.map { ["id": $0.id, "role": $0.role, "content": $0.content] }; let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)], allowEmpty: true) }
+    private func saveActiveChat() async {
+        persistChatsLocally()
+        guard let chat = activeChat else { return }
+        let messages: [[String: Any]] = chat.messages.map { item in
+            var body: [String: Any] = ["id": item.id, "role": item.role, "content": item.content]
+            if !item.imageURLs.isEmpty { body["imageUrls"] = item.imageURLs }
+            return body
+        }
+        let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)], allowEmpty: true)
+    }
     private func update(_ chat: AIChat, favorite: Bool? = nil, archived: Bool? = nil) { guard let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; if let favorite { chats[index].favorite = favorite }; if let archived { chats[index].archived = archived }; activeChatID = chat.id; Task { await saveActiveChat() } }
     private func applyRename() { guard let chat = renaming, let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; chats[index].title = renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? chat.title : renameText; activeChatID = chat.id; renaming = nil; Task { await saveActiveChat() } }
     private func delete(_ chat: AIChat) async { let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0], allowEmpty: true); chats.removeAll { $0.id == chat.id }; if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } }; persistChatsLocally() }
@@ -402,6 +609,48 @@ private struct NativeAIWorkspaceView: View {
     private func requestKeyboardScroll() { scrollRequest += 1; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { scrollRequest += 1 } }
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) { DispatchQueue.main.async { if animated { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("ai-chat-bottom", anchor: .bottom) } } else { proxy.scrollTo("ai-chat-bottom", anchor: .bottom) } } }
     private func setBinding(_ selection: Binding<Set<String>>, _ id: String) -> Binding<Bool> { Binding(get: { selection.wrappedValue.contains(id) }, set: { enabled in if enabled { selection.wrappedValue.insert(id) } else { selection.wrappedValue.remove(id) } }) }
+    @MainActor private func receivePhotos(_ items: [PhotosPickerItem]) async {
+        let remaining = max(4 - pendingImages.count, 0)
+        guard remaining > 0, !items.isEmpty else { photoItems = []; return }
+        importingAttachment = true; error = nil
+        defer { importingAttachment = false; photoItems = [] }
+        for item in items.prefix(remaining) {
+            guard let source = try? await item.loadTransferable(type: Data.self), let prepared = preparedChatPhoto(source) else { continue }
+            pendingImages.append(PendingChatImage(image: prepared.image, dataURL: "data:image/jpeg;base64,\(prepared.data.base64EncodedString())"))
+        }
+        imageMode = false
+        if pendingImages.isEmpty { error = "没有读取到可用图片，请重新选择。" }
+    }
+    private func preparedChatPhoto(_ data: Data) -> (image: UIImage, data: Data)? {
+        guard let image = UIImage(data: data) else { return nil }
+        let maximum: CGFloat = 1280
+        let longest = max(image.size.width, image.size.height)
+        let scale = longest > maximum ? maximum / longest : 1
+        let size = CGSize(width: max(image.size.width * scale, 1), height: max(image.size.height * scale, 1))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in UIColor.white.setFill(); UIRectFill(CGRect(origin: .zero, size: size)); image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let jpeg = rendered.jpegData(compressionQuality: 0.74) else { return nil }
+        return (rendered, jpeg)
+    }
+    @MainActor private func importAttachment(_ result: Result<URL, Error>) async {
+        importingAttachment = true; error = nil
+        defer { importingAttachment = false }
+        do {
+            let url = try result.get()
+            guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }
+            defer { url.stopAccessingSecurityScopedResource() }
+            let data = try Data(contentsOf: url)
+            guard data.count <= 15_000_000 else { throw NativeAPIError.server(400, "单个文件不能超过 15MB") }
+            let response: ImportFileResponse = try await session.send("ai-api/documents/import-file", method: "POST", body: ["title": url.deletingPathExtension().lastPathComponent, "filename": url.lastPathComponent, "data": data.base64EncodedString()])
+            let target = selectedKnowledge.isEmpty ? knowledge.first?.id : selectedKnowledge
+            if let target {
+                let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": response.file.id, "knowledge_id": target], allowEmpty: true)
+                selectedKnowledge = target
+            }
+            if !importedFileNames.contains(url.lastPathComponent) { importedFileNames.append(url.lastPathComponent) }
+            knowledgeEnabled = true; imageMode = false
+        } catch { self.error = session.message(for: error) }
+    }
     private func toggleRecording() async { if recorder.recording { guard let data = recorder.stop() else { return }; recorder.transcribing = true; defer { recorder.transcribing = false }; do { let result: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": "recording.m4a", "data": data.base64EncodedString(), "model_id": audioModel]); question = [question, result.text].filter { !$0.isEmpty }.joined(separator: " ") } catch { self.error = session.message(for: error) } } else { do { try await recorder.start() } catch { self.error = "无法使用麦克风，请在系统设置中允许权限。" } } }
 }
 
@@ -2400,8 +2649,16 @@ private extension View {
 }
 
 private struct AIChatMessage: Codable, Identifiable {
-    let id: String; let role: String; var content: String
-    init(id: String = UUID().uuidString, role: String, content: String) { self.id = id; self.role = role; self.content = content }
+    let id: String; let role: String; var content: String; var imageURLs: [String]
+    enum CodingKeys: String, CodingKey { case id, role, content; case imageURLs = "imageUrls" }
+    init(id: String = UUID().uuidString, role: String, content: String, imageURLs: [String] = []) { self.id = id; self.role = role; self.content = content; self.imageURLs = imageURLs }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? values.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        role = (try? values.decode(String.self, forKey: .role)) ?? "assistant"
+        content = (try? values.decode(String.self, forKey: .content)) ?? ""
+        imageURLs = (try? values.decode([String].self, forKey: .imageURLs)) ?? []
+    }
 }
 private struct AIChat: Codable, Identifiable {
     let id: String; var title: String; var messages: [AIChatMessage]; var modelID: String?; var favorite: Bool; var archived: Bool; var folder: String; let createdAt: TimeInterval; var updatedAt: TimeInterval
@@ -2985,11 +3242,11 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         } catch { return message(for: error) }
     }
 
-    func streamChat(_ question: String, modelID: String, documents: [SearchDocument] = [], skillIDs: [String] = [], toolIDs: [String] = [], onChunk: @escaping @MainActor (String) -> Void) async throws {
+    func streamChat(_ question: String, modelID: String, imageURLs: [String] = [], documents: [SearchDocument] = [], skillIDs: [String] = [], toolIDs: [String] = [], onChunk: @escaping @MainActor (String) -> Void) async throws {
         guard let url = URL(string: "ai-api/chat/stream", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyWorkspaceHeaders(to: &request, path: "ai-api/chat/stream")
-        var body: [String: Any] = ["question": question, "documents": documents.map(\.body), "skill_ids": skillIDs, "tool_ids": toolIDs]
+        var body: [String: Any] = ["question": question, "image_urls": imageURLs, "documents": documents.map(\.body), "skill_ids": skillIDs, "tool_ids": toolIDs]
         if !modelID.isEmpty { body["model_id"] = modelID }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
