@@ -147,7 +147,8 @@ private struct NativeLaunchView: View {
 }
 
 private enum NativeDestination: String, Identifiable, Hashable {
-    case tasks, shops, warehouse, links, workbench, profits, expenses, owners
+    case tasks, shops, warehouseStocks, warehouseInbound, warehouseOutbound, warehouseProducts, warehouseLocations, warehouseMovements
+    case links, workbench, profits, expenses, owners
     case peers, licenses, accountUsage, devices, users, licenseKeys
     case aiWorkspace, aiModels, aiKnowledge, aiCapabilities, aiOperations
     case sycm, server, alerts, search, systemSettings, appSettings, profile
@@ -158,7 +159,12 @@ private enum NativeDestination: String, Identifiable, Hashable {
         Group { switch self {
         case .tasks: NativeTaskView(embedded: true)
         case .shops: NativeShopsView()
-        case .warehouse: NativeWarehouseView()
+        case .warehouseStocks: NativeWarehouseView(tab: .stocks)
+        case .warehouseInbound: NativeWarehouseView(tab: .inbound)
+        case .warehouseOutbound: NativeWarehouseView(tab: .outbound)
+        case .warehouseProducts: NativeWarehouseView(tab: .products)
+        case .warehouseLocations: NativeWarehouseView(tab: .warehouses)
+        case .warehouseMovements: NativeWarehouseView(tab: .movements)
         case .links: NativeLinksView(embedded: true)
         case .expenses: NativeQuickLedgerView(embedded: true)
         case .owners: NativeOwnersView()
@@ -219,7 +225,14 @@ private struct NativeWorkbenchView: View {
     private let groups: [(String, [(String, String, Color, NativeDestination)])] = [
         ("任务记账", [("任务记录", "doc.text", .indigo, .tasks), ("负责人管理", "person.badge.plus", .cyan, .owners), ("钉钉利润", "chart.bar", .orange, .profits), ("公司记账", "creditcard", .blue, .expenses)]),
         ("店铺管理", [("生意参谋", "chart.bar", .teal, .sycm), ("店铺账号", "storefront", .mint, .shops), ("同行店铺", "building.2", .green, .peers), ("执照档案", "doc.badge.gearshape", .pink, .licenses), ("账号使用", "person.text.rectangle", .teal, .accountUsage), ("手机设备", "iphone", .cyan, .devices)]),
-        ("仓储管理", [("仓储管理", "shippingbox", .orange, .warehouse)]),
+        ("仓储管理", [
+            ("库存管理", "shippingbox", .orange, .warehouseStocks),
+            ("入库管理", "arrow.down.to.line", .green, .warehouseInbound),
+            ("出库管理", "arrow.up.to.line", .blue, .warehouseOutbound),
+            ("商品管理", "tag", .purple, .warehouseProducts),
+            ("仓库管理", "building.2", .teal, .warehouseLocations),
+            ("库存流水", "arrow.left.arrow.right", .indigo, .warehouseMovements)
+        ]),
         ("AI 工具", [("AI 工作台", "sparkles", .blue, .aiWorkspace), ("模型管理", "cpu", .purple, .aiModels), ("知识库", "books.vertical", .brown, .aiKnowledge), ("AI 能力", "wand.and.stars", .indigo, .aiCapabilities), ("AI 运营", "chart.bar.xaxis", .green, .aiOperations)]),
         ("系统管理", [("服务器运行", "server.rack", .green, .server), ("通知中心", "bell", .red, .alerts), ("账号与权限", "person.badge.key", .gray, .users), ("卡密管理", "key", .purple, .licenseKeys), ("系统设置", "gearshape", .gray, .systemSettings), ("链接广场", "link", .blue, .links)])
     ]
@@ -231,7 +244,7 @@ private struct NativeWorkbenchView: View {
                         Text(entry.0).font(.headline)
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 20) {
                             ForEach(Array(entry.1.enumerated()), id: \.offset) { _, item in
-                                NavigationLink { item.3.view } label: { HomeShortcutLabel(item.0, item.1, item.2) }.buttonStyle(.plain)
+                                NavigationLink { item.3.view } label: { HomeShortcutLabel(item.0, item.1, item.2) }.buttonStyle(HomeShortcutButtonStyle())
                             }
                         }
                     }
@@ -388,6 +401,12 @@ private struct AIComposerButtonStyle: ButtonStyle {
     }
 }
 
+private enum AIComposerAttachmentAction {
+    case knowledge
+    case photos
+    case file
+}
+
 private struct NativeAIWorkspaceView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var question = ""; @State private var chats: [AIChat] = []; @State private var activeChatID = ""
@@ -400,6 +419,8 @@ private struct NativeAIWorkspaceView: View {
     @State private var webSearch = false; @State private var imageMode = false; @State private var imageSize = "1024x1024"; @State private var showingTools = false
     @State private var knowledgeEnabled = false; @State private var showingKnowledge = false
     @State private var photoItems: [PhotosPickerItem] = []; @State private var pendingImages: [PendingChatImage] = []
+    @State private var showingPhotoPicker = false; @State private var showingAttachmentActions = false
+    @State private var pendingAttachmentAction: AIComposerAttachmentAction?
     @State private var importingFile = false; @State private var importingAttachment = false; @State private var importedFileNames: [String] = []
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
@@ -431,7 +452,9 @@ private struct NativeAIWorkspaceView: View {
         .sheet(isPresented: $showingHistory) { historySheet }
         .sheet(isPresented: $showingTools) { toolsSheet }
         .sheet(isPresented: $showingKnowledge) { knowledgeSheet }
+        .sheet(isPresented: $showingAttachmentActions, onDismiss: performPendingAttachmentAction) { attachmentSheet }
         .fileImporter(isPresented: $importingFile, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importAttachment(result) } }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItems, maxSelectionCount: max(4 - pendingImages.count, 1), matching: .images)
         .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
         .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
         .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
@@ -495,10 +518,9 @@ private struct NativeAIWorkspaceView: View {
                 }
             }
             HStack(alignment: .bottom, spacing: 2) {
-                Menu {
-                    Button { showingKnowledge = true } label: { Label("选择知识库", systemImage: "books.vertical") }
-                    PhotosPicker(selection: $photoItems, maxSelectionCount: max(4 - pendingImages.count, 1), matching: .images) { Label("从照片图库选择", systemImage: "photo.on.rectangle") }.disabled(pendingImages.count >= 4)
-                    Button { importingFile = true } label: { Label("导入文件", systemImage: "doc.badge.plus") }
+                Button {
+                    composerFocused = false
+                    showingAttachmentActions = true
                 } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold))
                 }
@@ -519,8 +541,11 @@ private struct NativeAIWorkspaceView: View {
                 }
                 .buttonStyle(AIComposerButtonStyle(foreground: activeTools ? .blue : .primary, fill: activeTools ? Color.blue.opacity(0.13) : nil))
                 .accessibilityLabel("对话能力设置")
-                if importingAttachment { ProgressView().controlSize(.small).frame(width: 44, height: 44).accessibilityLabel("正在导入附件") }
-                if sending {
+                if importingAttachment {
+                    ProgressView().controlSize(.small).frame(width: 44, height: 44).accessibilityLabel("正在导入附件")
+                } else if recorder.transcribing {
+                    ProgressView().controlSize(.small).frame(width: 44, height: 44).accessibilityLabel("正在转写语音")
+                } else if sending {
                     Button { stop() } label: { Image(systemName: "stop.fill").font(.system(size: 13, weight: .bold)) }.buttonStyle(AIComposerButtonStyle(foreground: Color(.systemBackground), fill: .primary)).accessibilityLabel("停止生成")
                 } else if !canSend {
                     Button { Task { await toggleRecording() } } label: { Image(systemName: recorder.recording ? "stop.fill" : "mic.fill").font(.system(size: 17, weight: .semibold)) }.buttonStyle(AIComposerButtonStyle(foreground: recorder.recording ? .red : .primary)).accessibilityLabel(recorder.recording ? "停止录音" : "开始录音")
@@ -535,6 +560,37 @@ private struct NativeAIWorkspaceView: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 8)
+    }
+    private var attachmentSheet: some View {
+        NavigationStack {
+            List {
+                Button { queueAttachmentAction(.photos) } label: { Label("从照片图库选择", systemImage: "photo.on.rectangle") }
+                    .disabled(pendingImages.count >= 4)
+                Button { queueAttachmentAction(.file) } label: { Label("导入文件", systemImage: "doc.badge.plus") }
+                Button { queueAttachmentAction(.knowledge) } label: { Label("选择知识库", systemImage: "books.vertical") }
+            }
+            .foregroundStyle(.primary)
+            .navigationTitle("添加内容")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("取消") { showingAttachmentActions = false } }
+        }
+        .presentationDetents([.height(250)])
+        .presentationDragIndicator(.visible)
+    }
+    private func queueAttachmentAction(_ action: AIComposerAttachmentAction) {
+        pendingAttachmentAction = action
+        showingAttachmentActions = false
+    }
+    private func performPendingAttachmentAction() {
+        guard let action = pendingAttachmentAction else { return }
+        pendingAttachmentAction = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            switch action {
+            case .knowledge: showingKnowledge = true
+            case .photos: showingPhotoPicker = true
+            case .file: importingFile = true
+            }
+        }
     }
     private var canSend: Bool { !sending && (!question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
     private var activeTools: Bool { webSearch || imageMode || knowledgeEnabled || !selectedSkills.isEmpty || !selectedTools.isEmpty }
@@ -654,12 +710,21 @@ private struct NativeAIWorkspaceView: View {
         guard remaining > 0, !items.isEmpty else { photoItems = []; return }
         importingAttachment = true; error = nil
         defer { importingAttachment = false; photoItems = [] }
-        for item in items.prefix(remaining) {
-            guard let source = try? await item.loadTransferable(type: Data.self), let prepared = preparedChatPhoto(source) else { continue }
-            pendingImages.append(PendingChatImage(image: prepared.image, dataURL: "data:image/jpeg;base64,\(prepared.data.base64EncodedString())"))
+        let selectedItems = Array(items.prefix(remaining))
+        var importedCount = 0
+        for item in selectedItems {
+            do {
+                guard let source = try await item.loadTransferable(type: Data.self), let prepared = preparedChatPhoto(source) else { continue }
+                pendingImages.append(PendingChatImage(image: prepared.image, dataURL: "data:image/jpeg;base64,\(prepared.data.base64EncodedString())"))
+                importedCount += 1
+            } catch { }
         }
         imageMode = false
-        if pendingImages.isEmpty { error = "没有读取到可用图片，请重新选择。" }
+        if importedCount == 0 {
+            error = "没有读取到可用图片，请确认照片已下载到本机后重试。"
+        } else if importedCount < selectedItems.count {
+            error = "已导入 \(importedCount) 张图片，其余图片读取失败，请重试。"
+        }
     }
     private func preparedChatPhoto(_ data: Data) -> (image: UIImage, data: Data)? {
         guard let image = UIImage(data: data) else { return nil }
@@ -693,7 +758,7 @@ private struct NativeAIWorkspaceView: View {
     }
     private func toggleRecording() async {
         if recorder.recording {
-            guard let data = recorder.stop(), !data.isEmpty else {
+            guard let recording = recorder.stop(), !recording.data.isEmpty else {
                 error = "没有录到声音，请检查麦克风后重试。"
                 return
             }
@@ -704,16 +769,24 @@ private struct NativeAIWorkspaceView: View {
                     "ai-api/audio/transcriptions",
                     method: "POST",
                     body: [
-                        "filename": "recording.wav",
-                        "data": data.base64EncodedString(),
+                        "filename": recording.filename,
+                        "data": recording.data.base64EncodedString(),
                         "model_id": audioModel
                     ]
                 )
                 question = [question, result.text].filter { !$0.isEmpty }.joined(separator: " ")
             } catch {
-                self.error = session.message(for: error)
+                let message = session.message(for: error)
+                let normalized = message.lowercased()
+                self.error = normalized.contains("104") || normalized.contains("connection reset")
+                    ? "语音转写服务连接中断，请稍后重试。"
+                    : message
             }
         } else {
+            guard !audioModel.isEmpty else {
+                error = "未找到可用的语音识别模型，请先在 AI 设置中启用语音模型。"
+                return
+            }
             do {
                 error = nil
                 try await recorder.start()
@@ -753,22 +826,64 @@ private struct NativeHomeView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack { Text("常用功能").font(.headline); Spacer(); Button("排序") { showingHomeModules = true }.font(.subheadline).frame(minHeight: 44) }.padding(.horizontal, 16)
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 14) {
-                        ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
-                        HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { path.append(.workbench) }
-                    }.padding(.horizontal, 16)
-                    HStack { Text("经营数据").font(.headline); Spacer(); Text("实时同步").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue)
-                        HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green)
-                        HomeDashboardMetric("本月钉钉利润", dashboard.monthlyProfit.map(money) ?? "--", "calendar", .orange)
-                        HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal)
-                        HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo)
-                        HomeDashboardMetric("库存预警", dashboard.lowStock.map(String.init) ?? "--", "exclamationmark.triangle", .orange)
-                    }.padding(.horizontal, 16)
-                    HStack { Text("待办提醒").font(.headline); Spacer(); Text("查看全部").font(.caption).foregroundStyle(.secondary) }.padding(.horizontal, 16)
-                    VStack(spacing: 0) { HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: dashboard.pendingSigned.map(String.init) ?? "--"); Divider(); HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: dashboard.pendingSettlement.map(String.init) ?? "--"); Divider(); HomeTodo(color: .blue, title: "库存预警", detail: "可用库存已达到预警值", value: dashboard.lowStock.map(String.init) ?? "--") }.background(.background, in: RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 16)
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("常用功能").font(.headline)
+                            Spacer()
+                            Button("排序") { showingHomeModules = true }.font(.subheadline).frame(minHeight: 38)
+                        }
+                        .padding(.horizontal, 14)
+                        Divider()
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 10) {
+                            ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
+                            HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { path.append(.workbench) }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    }
+                    .background(.background, in: RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 16)
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("经营数据").font(.headline)
+                            Spacer()
+                            Text("实时同步").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .frame(minHeight: 38)
+                        .padding(.horizontal, 14)
+                        Divider()
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 1), GridItem(.flexible(), spacing: 1)], spacing: 1) {
+                            HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue) { path.append(.expenses) }
+                            HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green) { path.append(.profits) }
+                            HomeDashboardMetric("本月钉钉利润", dashboard.monthlyProfit.map(money) ?? "--", "calendar", .orange) { path.append(.profits) }
+                            HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal) { path.append(.warehouseStocks) }
+                            HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo) { path.append(.warehouseStocks) }
+                            HomeDashboardMetric("库存预警", dashboard.lowStock.map(String.init) ?? "--", "exclamationmark.triangle", .orange) { path.append(.warehouseStocks) }
+                        }
+                        .background(Color(.separator).opacity(0.24))
+                    }
+                    .background(.background, in: RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 16)
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("待办提醒").font(.headline)
+                            Spacer()
+                            Button("查看全部") { path.append(.alerts) }
+                                .font(.subheadline)
+                                .frame(minHeight: 38)
+                        }
+                        .padding(.horizontal, 14)
+                        Divider()
+                        HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: dashboard.pendingSigned.map(String.init) ?? "--")
+                        Divider()
+                        HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: dashboard.pendingSettlement.map(String.init) ?? "--")
+                        Divider()
+                        HomeTodo(color: .blue, title: "库存预警", detail: "可用库存已达到预警值", value: dashboard.lowStock.map(String.init) ?? "--")
+                    }
+                    .background(.background, in: RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 16)
                     if let dashboardError { Text(dashboardError).font(.caption).foregroundStyle(.red).padding(.horizontal, 16) }
                 }.padding(.vertical, 14)
             }
@@ -970,7 +1085,7 @@ private struct NativeHomeView: View {
             guard let recording = recorder.stop() else { return }
             recorder.transcribing = true; defer { recorder.transcribing = false }
             do {
-                let response: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": "recording.m4a", "data": recording.base64EncodedString(), "model_id": audioModel])
+                let response: TranscriptionResponse = try await session.send("ai-api/audio/transcriptions", method: "POST", body: ["filename": recording.filename, "data": recording.data.base64EncodedString(), "model_id": audioModel])
                 message = [message, response.text].filter { !$0.isEmpty }.joined(separator: " ")
             } catch { voiceError = session.message(for: error) }
         } else {
@@ -1903,46 +2018,71 @@ private struct NativeMineView: View {
     @State private var path: [NativeDestination] = []
     var body: some View {
         NavigationStack(path: $path) {
-            List {
-                Section {
+            ScrollView {
+                VStack(spacing: 14) {
+                    VStack(spacing: 0) {
                     Button { path.append(.profile) } label: {
                         HStack(spacing: 14) {
-                            NativeRemoteImage(url: session.currentUser?.avatarURL, size: 64)
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 7) { Text(session.currentUser?.displayName ?? session.username).font(.title3.bold()).foregroundStyle(.primary); Text(roleLabel(session.currentUser?.role ?? "viewer")).font(.caption2.weight(.medium)).foregroundStyle(.blue).padding(.horizontal, 7).padding(.vertical, 3).background(Color.blue.opacity(0.1), in: Capsule()) }
-                                Text("账号 \(session.username)").font(.subheadline).foregroundStyle(.secondary)
+                            NativeRemoteImage(url: session.currentUser?.avatarURL, size: 66)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(session.currentUser?.displayName ?? session.username)
+                                    .font(.title3.bold())
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                                HStack(spacing: 7) {
+                                    Text(roleLabel(session.currentUser?.role ?? "viewer"))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.blue)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.blue.opacity(0.1), in: Capsule())
+                                    Text("@\(session.username)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
                             }
                             Spacer()
                             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                         }
                         .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+                        .padding(16)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MinePressButtonStyle())
 
+                    Divider().padding(.leading, 16)
                     HStack(spacing: 0) {
                         MineAccountMetric(value: "\(authorizedModuleCount)", title: "授权模块")
-                        Divider().frame(height: 30)
-                        MineAccountMetric(value: session.currentUser?.role == "superadmin" ? "超级" : "普通", title: "账号身份")
-                        Divider().frame(height: 30)
-                        MineAccountMetric(value: "在线", title: "登录状态")
+                        Divider().frame(height: 32)
+                        MineAccountMetric(value: roleShortLabel, title: "账号身份")
+                        Divider().frame(height: 32)
+                        MineAccountMetric(value: "正常", title: "账号状态", valueColor: .green)
                     }
-                    .padding(.vertical, 2)
-                }
+                    .padding(.vertical, 13)
+                    }
+                    .background(.background, in: RoundedRectangle(cornerRadius: 14))
 
-                Section("账户与访问") {
+                    MineSectionCard(title: "账户与访问") {
                     MineEntry("账号与权限", subtitle: "成员、角色与模块权限", "person.badge.key", .blue) { path.append(.users) }
+                        MineEntryDivider()
                     MineEntry("卡密管理", subtitle: "授权码与绑定设备", "key", .purple) { path.append(.licenseKeys) }
-                }
+                    }
 
-                Section("系统") {
+                    MineSectionCard(title: "系统服务") {
                     MineEntry("服务器运行", subtitle: "服务状态与资源监控", "server.rack", .green) { path.append(.server) }
+                        MineEntryDivider()
                     MineEntry("通知中心", subtitle: "业务提醒与系统消息", "bell", .red) { path.append(.alerts) }
+                        MineEntryDivider()
                     MineEntry("系统设置", subtitle: "安全、会话与应用配置", "gearshape", .gray) { path.append(.systemSettings) }
+                    }
                 }
-
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .padding(.bottom, 12)
             }
-            .listStyle(.insetGrouped)
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1959,6 +2099,26 @@ private struct NativeMineView: View {
     }
 
     private var authorizedModuleCount: Int { session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0 }
+    private var roleShortLabel: String { session.currentUser?.role == "superadmin" ? "超级" : session.currentUser?.role == "editor" ? "编辑" : "只读" }
+}
+
+private struct MineSectionCard<Content: View>: View {
+    let title: String
+    let content: Content
+    init(title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.headline)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, 16)
+                .accessibilityAddTraits(.isHeader)
+            Divider()
+            content
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
 }
 
 private struct LinkLoadErrorView: View {
@@ -2252,18 +2412,53 @@ private struct MineEntry: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                NativeAppIconTile(symbol: icon, color: color, size: 34, iconSize: 16)
-                VStack(alignment: .leading, spacing: 3) { Text(title).font(.body).foregroundStyle(.primary); Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                Image(systemName: icon)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(color)
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 34, height: 34)
+                    .background(color.opacity(0.11), in: Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.body.weight(.medium)).foregroundStyle(.primary)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
             }
-            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MinePressButtonStyle())
+        .accessibilityLabel("\(title)，\(subtitle)")
+        .accessibilityHint("打开\(title)")
     }
 }
-private struct MineAccountMetric: View { let value: String; let title: String; var body: some View { VStack(spacing: 3) { Text(value).font(.subheadline.weight(.semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity) } }
+private struct MineEntryDivider: View {
+    var body: some View { Divider().padding(.leading, 62) }
+}
+private struct MinePressButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Color.primary.opacity(0.045) : .clear)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.992 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+private struct MineAccountMetric: View {
+    let value: String
+    let title: String
+    var valueColor: Color = .primary
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(value).font(.subheadline.weight(.semibold)).foregroundStyle(valueColor)
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
 
 private struct NativeShopsView: View {
     @EnvironmentObject private var session: NativeSession
@@ -2830,18 +3025,40 @@ private struct StatusBadge: View {
     var body: some View { Text(text).font(.caption).padding(.horizontal, 8).padding(.vertical, 4).foregroundStyle(done ? .green : .orange).background((done ? Color.green : Color.orange).opacity(0.12), in: Capsule()) }
 }
 
-private enum WarehouseTab: String, CaseIterable, Identifiable { case stocks = "库存", outbound = "出库", inbound = "入库", products = "商品", warehouses = "仓库", movements = "流水"; var id: String { rawValue } }
+private enum WarehouseTab: String, CaseIterable, Identifiable {
+    case stocks = "库存", outbound = "出库", inbound = "入库", products = "商品", warehouses = "仓库", movements = "流水"
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .stocks: "库存管理"
+        case .inbound: "入库管理"
+        case .outbound: "出库管理"
+        case .products: "商品管理"
+        case .warehouses: "仓库管理"
+        case .movements: "库存流水"
+        }
+    }
+    var searchPrompt: String {
+        switch self {
+        case .stocks: "搜索商品、SKU 或仓库"
+        case .inbound, .outbound: "搜索单号、商品或仓库"
+        case .products: "搜索商品、SKU 或条码"
+        case .warehouses: "搜索仓库、编码或地址"
+        case .movements: "搜索商品、单号或仓库"
+        }
+    }
+}
 private enum WarehouseSheet: Identifiable { case warehouse, product, inbound, outbound; var id: String { String(describing: self) } }
 
 private struct NativeWarehouseView: View {
     @EnvironmentObject private var session: NativeSession
-    @State private var tab: WarehouseTab = .stocks; @State private var summary: WarehouseSummary?; @State private var warehouses: [WarehouseRecord] = []; @State private var products: [WarehouseProduct] = []; @State private var stocks: [WarehouseStock] = []; @State private var inbound: [WarehouseInbound] = []; @State private var outbound: [WarehouseOutbound] = []; @State private var movements: [WarehouseMovement] = []
+    let tab: WarehouseTab
+    @State private var summary: WarehouseSummary?; @State private var warehouses: [WarehouseRecord] = []; @State private var products: [WarehouseProduct] = []; @State private var stocks: [WarehouseStock] = []; @State private var inbound: [WarehouseInbound] = []; @State private var outbound: [WarehouseOutbound] = []; @State private var movements: [WarehouseMovement] = []
     @State private var query = ""; @State private var loading = false; @State private var error: String?; @State private var sheet: WarehouseSheet?
     @State private var editingWarehouse: WarehouseRecord?; @State private var editingProduct: WarehouseProduct?
     var body: some View {
         List {
-            if let summary { Section { ScrollView(.horizontal, showsIndicators: false) { HStack { WarehouseMetric("总库存", "\(summary.totalQuantity)"); WarehouseMetric("库存成本", money(summary.totalCost)); WarehouseMetric("低库存", "\(summary.lowStockCount)"); WarehouseMetric("待出库", "\(summary.pendingOutboundCount)") }.padding(.vertical, 4) } } }
-            Section { Picker("分类", selection: $tab) { ForEach(WarehouseTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu) }
+            if let summary { Section { ScrollView(.horizontal, showsIndicators: false) { HStack { ForEach(summaryItems(summary), id: \.0) { item in WarehouseMetric(item.0, item.1) } }.padding(.vertical, 4) } } }
             if let error { Text(error).foregroundStyle(.red) }
             switch tab {
             case .stocks: ForEach(stocks.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName)") }) { row in HStack(spacing: 11) { NativeRemoteImage(url: row.imageURL, size: 48); VStack(alignment: .leading) { Text(row.productName).fontWeight(.medium); Text("\(row.sku) · \(row.warehouseName)").font(.caption).foregroundStyle(.secondary) }; Spacer(); VStack(alignment: .trailing) { Text("\(row.availableQuantity) \(row.unit)").foregroundStyle(row.isLowStock ? .red : .primary); if row.lockedQuantity > 0 { Text("锁定 \(row.lockedQuantity)").font(.caption2).foregroundStyle(.orange) } } } }
@@ -2851,12 +3068,51 @@ private struct NativeWarehouseView: View {
             case .outbound: ForEach(outbound.filter { matches("\($0.orderNo) \($0.warehouseName) \($0.trackingNo ?? "")") }) { row in NavigationLink { WarehouseOutboundDetail(row: row) } label: { WarehouseTextRow(title: row.orderNo, detail: "\(row.warehouseName) · \(lineSummary(row.items))", status: outboundStatus(row.status)) }.swipeActions { if let next = nextStatus(row.status) { Button("推进") { Task { await setStatus(row, next) } }.tint(.blue) }; if !["shipped","cancelled"].contains(row.status) { Button("取消", role: .destructive) { Task { await setStatus(row, "cancelled") } } } } }
             case .movements: ForEach(movements.filter { matches("\($0.sku) \($0.productName) \($0.warehouseName) \($0.referenceNo)") }) { row in HStack { VStack(alignment: .leading) { Text(row.productName); Text("\(row.warehouseName) · \(row.referenceNo)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Text(row.quantityChange > 0 ? "+\(row.quantityChange)" : "\(row.quantityChange)").foregroundStyle(row.quantityChange > 0 ? .green : .red) } }
             }
-        }.navigationTitle("仓储管理").searchable(text: $query, prompt: "搜索商品、单号或仓库").overlay { if loading && stocks.isEmpty { ProgressView() } }.task { await load() }.refreshable { await load() }
+        }.navigationTitle(tab.title).searchable(text: $query, prompt: tab.searchPrompt).overlay { if loading { ProgressView() } }.task { await load() }.refreshable { await load() }
         .toolbar { if [.warehouses,.products,.inbound,.outbound].contains(tab) { Button { editingWarehouse = nil; editingProduct = nil; sheet = tab == .warehouses ? .warehouse : tab == .products ? .product : tab == .inbound ? .inbound : .outbound } label: { Image(systemName: "plus") } } }
         .sheet(item: $sheet) { value in switch value { case .warehouse: WarehouseBasicEditor(kind: .warehouse, warehouse: editingWarehouse, product: nil) { await load() }; case .product: WarehouseBasicEditor(kind: .product, warehouse: nil, product: editingProduct) { await load() }; case .inbound: WarehouseOrderEditor(outbound: false, warehouses: warehouses, products: products) { await load() }; case .outbound: WarehouseOrderEditor(outbound: true, warehouses: warehouses, products: products) { await load() } } }
     }
+    private func summaryItems(_ value: WarehouseSummary) -> [(String, String)] {
+        switch tab {
+        case .stocks: [("总库存", "\(value.totalQuantity)"), ("库存成本", money(value.totalCost)), ("低库存", "\(value.lowStockCount)")]
+        case .inbound: [("今日入库", "\(value.todayInboundQuantity)"), ("入库单", "\(inbound.count)")]
+        case .outbound: [("待出库", "\(value.pendingOutboundCount)"), ("今日出库", "\(value.todayOutboundQuantity)")]
+        case .products: [("商品数量", "\(value.productCount)")]
+        case .warehouses: [("仓库数量", "\(value.warehouseCount)")]
+        case .movements: [("今日入库", "\(value.todayInboundQuantity)"), ("今日出库", "\(value.todayOutboundQuantity)")]
+        }
+    }
     private func matches(_ value: String) -> Bool { query.isEmpty || value.localizedCaseInsensitiveContains(query) }
-    private func load() async { loading = true; defer { loading = false }; do { async let a: WarehouseSummary = session.get("warehouse/summary"); async let b: [WarehouseRecord] = session.get("warehouse/warehouses"); async let c: [WarehouseProduct] = session.get("warehouse/products"); async let d: [WarehouseStock] = session.get("warehouse/stocks"); async let e: [WarehouseInbound] = session.get("warehouse/inbound-orders"); async let f: [WarehouseOutbound] = session.get("warehouse/outbound-orders"); async let g: [WarehouseMovement] = session.get("warehouse/movements"); (summary,warehouses,products,stocks,inbound,outbound,movements) = try await (a,b,c,d,e,f,g); prefetchProductImages() } catch { self.error = session.message(for: error) } }
+    private func load() async {
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            summary = try await session.get("warehouse/summary")
+            switch tab {
+            case .stocks:
+                stocks = try await session.get("warehouse/stocks")
+            case .products:
+                products = try await session.get("warehouse/products")
+                prefetchProductImages()
+            case .warehouses:
+                warehouses = try await session.get("warehouse/warehouses")
+            case .inbound:
+                async let orderData: [WarehouseInbound] = session.get("warehouse/inbound-orders")
+                async let warehouseData: [WarehouseRecord] = session.get("warehouse/warehouses")
+                async let productData: [WarehouseProduct] = session.get("warehouse/products")
+                (inbound, warehouses, products) = try await (orderData, warehouseData, productData)
+            case .outbound:
+                async let orderData: [WarehouseOutbound] = session.get("warehouse/outbound-orders")
+                async let warehouseData: [WarehouseRecord] = session.get("warehouse/warehouses")
+                async let productData: [WarehouseProduct] = session.get("warehouse/products")
+                (outbound, warehouses, products) = try await (orderData, warehouseData, productData)
+            case .movements:
+                movements = try await session.get("warehouse/movements")
+            }
+        } catch {
+            self.error = session.message(for: error)
+        }
+    }
     private func prefetchProductImages() { let requests = products.prefix(12).compactMap { product -> (URL, CGFloat)? in guard let value = product.imageURL, let url = nativeThumbnailURL(value, maxPixelSize: 144) else { return nil }; return (url, 144) }; Task(priority: .utility) { await NativeImagePipeline.shared.prefetch(requests) } }
     private func cancel(_ row: WarehouseInbound) async { do { let _: WarehouseInbound = try await session.send("warehouse/inbound-orders/\(row.id)", method: "DELETE"); await load() } catch { self.error = session.message(for: error) } }
     private func setStatus(_ row: WarehouseOutbound, _ status: String) async { do { let _: WarehouseOutbound = try await session.send("warehouse/outbound-orders/\(row.id)/status", method: "PATCH", body: ["status":status,"carrier":row.carrier ?? "","tracking_no":row.trackingNo ?? ""]); await load() } catch { self.error = session.message(for: error) } }
@@ -3049,11 +3305,15 @@ private enum NativeAudioRecorderError: LocalizedError {
     }
 }
 
+private struct NativeAudioRecording {
+    let data: Data
+    let filename: String
+}
+
 @MainActor private final class NativeAudioRecorder: NSObject, ObservableObject {
     @Published var recording = false
     @Published var transcribing = false
-    private var engine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
+    private var recorder: AVAudioRecorder?
     private var fileURL: URL?
     private var simulatingInput = false
 
@@ -3063,8 +3323,9 @@ private enum NativeAudioRecorderError: LocalizedError {
         }
         guard granted else { throw NativeAudioRecorderError.permissionDenied }
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement)
-        try session.setPreferredSampleRate(48_000)
+        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker])
+        try session.setPreferredSampleRate(16_000)
+        try session.setPreferredInputNumberOfChannels(1)
         try session.setActive(true)
         guard session.isInputAvailable, session.inputNumberOfChannels > 0 else {
             if beginSimulatorFallback(using: session) { return }
@@ -3072,24 +3333,21 @@ private enum NativeAudioRecorderError: LocalizedError {
             throw NativeAudioRecorderError.inputUnavailable
         }
 
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-voice-\(UUID().uuidString).wav")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-voice-\(UUID().uuidString).m4a")
 
         do {
-            let audioEngine = AVAudioEngine()
-            let inputNode = audioEngine.inputNode
-            let inputFormat = inputNode.outputFormat(forBus: 0)
-            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-                if beginSimulatorFallback(using: session) { return }
-                throw NativeAudioRecorderError.inputUnavailable
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 16_000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 32_000,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
+            let audioRecorder = try AVAudioRecorder(url: url, settings: settings)
+            guard audioRecorder.prepareToRecord(), audioRecorder.record() else {
+                throw NativeAudioRecorderError.startFailed
             }
-            let file = try AVAudioFile(forWriting: url, settings: inputFormat.settings)
-            inputNode.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { buffer, _ in
-                try? file.write(from: buffer)
-            }
-            audioEngine.prepare()
-            try audioEngine.start()
-            engine = audioEngine
-            audioFile = file
+            recorder = audioRecorder
             fileURL = url
             recording = true
         } catch {
@@ -3100,27 +3358,25 @@ private enum NativeAudioRecorderError: LocalizedError {
         }
     }
 
-    func stop() -> Data? {
+    func stop() -> NativeAudioRecording? {
         if simulatingInput {
             simulatingInput = false
             recording = false
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            return Self.simulatedWAV()
+            return NativeAudioRecording(data: Self.simulatedWAV(), filename: "recording.wav")
         }
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
+        recorder?.stop()
         recording = false
-        audioFile = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         guard let url = fileURL else { return nil }
         let data = try? Data(contentsOf: url); try? FileManager.default.removeItem(at: url)
-        engine = nil; fileURL = nil; return data
+        recorder = nil; fileURL = nil
+        return data.map { NativeAudioRecording(data: $0, filename: "recording.m4a") }
     }
 
     private func beginSimulatorFallback(using session: AVAudioSession) -> Bool {
 #if targetEnvironment(simulator)
-        engine = nil
-        audioFile = nil
+        recorder = nil
         fileURL = nil
         simulatingInput = true
         recording = true
@@ -3698,7 +3954,12 @@ private let homeModuleCatalog = [
     HomeModuleItem(id: "tasks", title: "任务记录", icon: "doc.text.fill", color: .indigo, destination: .tasks),
     HomeModuleItem(id: "profits", title: "钉钉利润", icon: "chart.line.uptrend.xyaxis", color: .orange, destination: .profits),
     HomeModuleItem(id: "shops", title: "店铺账号", icon: "storefront.fill", color: .mint, destination: .shops),
-    HomeModuleItem(id: "warehouse", title: "仓储管理", icon: "shippingbox.fill", color: .orange, destination: .warehouse),
+    HomeModuleItem(id: "warehouse-stocks", title: "库存管理", icon: "shippingbox.fill", color: .orange, destination: .warehouseStocks),
+    HomeModuleItem(id: "warehouse-inbound", title: "入库管理", icon: "arrow.down.to.line", color: .green, destination: .warehouseInbound),
+    HomeModuleItem(id: "warehouse-outbound", title: "出库管理", icon: "arrow.up.to.line", color: .blue, destination: .warehouseOutbound),
+    HomeModuleItem(id: "warehouse-products", title: "商品管理", icon: "tag.fill", color: .purple, destination: .warehouseProducts),
+    HomeModuleItem(id: "warehouse-locations", title: "仓库管理", icon: "building.2.fill", color: .teal, destination: .warehouseLocations),
+    HomeModuleItem(id: "warehouse-movements", title: "库存流水", icon: "arrow.left.arrow.right", color: .indigo, destination: .warehouseMovements),
     HomeModuleItem(id: "ai-workspace", title: "AI 工作台", icon: "sparkles", color: .cyan, destination: .aiWorkspace),
     HomeModuleItem(id: "owners", title: "负责人", icon: "person.2.fill", color: .green, destination: .owners),
     HomeModuleItem(id: "peers", title: "同行店铺", icon: "building.2.fill", color: .green, destination: .peers),
@@ -3715,11 +3976,15 @@ private let homeModuleCatalog = [
     HomeModuleItem(id: "license-keys", title: "卡密管理", icon: "key.fill", color: .purple, destination: .licenseKeys),
     HomeModuleItem(id: "system-settings", title: "系统设置", icon: "gearshape.fill", color: .gray, destination: .systemSettings)
 ]
-private let defaultHomeModuleKeys = ["sycm", "company-expenses", "tasks", "profits", "shops", "warehouse", "ai-workspace", "owners", "peers"]
+private let defaultHomeModuleKeys = ["sycm", "company-expenses", "tasks", "profits", "shops", "warehouse-stocks", "ai-workspace", "owners", "peers"]
 private let maximumHomeModuleCount = 9
 private func normalizedHomeModuleKeys(_ value: [String]) -> [String] {
     var seen: Set<String> = []
-    let migrated = value.map { $0 == "links" ? "peers" : $0 }
+    let migrated = value.map { key in
+        if key == "links" { return "peers" }
+        if key == "warehouse" { return "warehouse-stocks" }
+        return key
+    }
     let valid = migrated.compactMap { key -> String? in
         guard homeModuleCatalog.contains(where: { $0.id == key }), seen.insert(key).inserted else { return nil }
         return key
@@ -3804,18 +4069,11 @@ private struct NativeAppIconTile: View {
                 .fill(color)
                 .overlay {
                     RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-                        .fill(LinearGradient(colors: [.white.opacity(0.34), .clear, .black.opacity(0.13)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .strokeBorder(.white.opacity(0.16), lineWidth: 0.5)
                 }
-                .overlay {
-                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-                        .stroke(.white.opacity(0.32), lineWidth: 1)
-                }
-                .shadow(color: color.opacity(0.3), radius: size * 0.11, y: size * 0.07)
-                .shadow(color: .black.opacity(0.1), radius: 1, y: 1)
             Image(systemName: symbol)
                 .font(.system(size: iconSize, weight: .semibold))
                 .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
         }
         .frame(width: size, height: size)
         .overlay(alignment: .bottomTrailing) {
@@ -3832,10 +4090,114 @@ private struct NativeAppIconTile: View {
         .accessibilityHidden(true)
     }
 }
-private struct HomeShortcutLabel: View { let title: String; let icon: String; let color: Color; init(_ title: String, _ icon: String, _ color: Color) { self.title = title; self.icon = icon; self.color = color }; var body: some View { VStack(spacing: 6) { NativeAppIconTile(symbol: icon, color: color, size: 36, iconSize: 18); Text(title).font(.caption2).lineLimit(2).minimumScaleFactor(0.8).multilineTextAlignment(.center).foregroundStyle(.primary) }.frame(maxWidth: .infinity).frame(height: 64) } }
-private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HomeShortcutLabel(title, icon, color) }.buttonStyle(.plain) } }
+private struct NativeCommonShortcutIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let symbol: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 25, weight: .semibold))
+            .symbolRenderingMode(.monochrome)
+            .symbolVariant(.fill)
+            .foregroundStyle(color)
+            .saturation(colorScheme == .light ? 1.18 : 1)
+            .brightness(colorScheme == .light ? -0.15 : 0)
+            .frame(width: 40, height: 40)
+            .accessibilityHidden(true)
+    }
+}
+private struct HomeShortcutLabel: View {
+    let title: String
+    let icon: String
+    let color: Color
+    let mutedTitle: Bool
+    let usesCommonStyle: Bool
+    init(_ title: String, _ icon: String, _ color: Color, mutedTitle: Bool = false, usesCommonStyle: Bool = false) {
+        self.title = title
+        self.icon = icon
+        self.color = color
+        self.mutedTitle = mutedTitle
+        self.usesCommonStyle = usesCommonStyle
+    }
+    var body: some View {
+        VStack(spacing: 6) {
+            if usesCommonStyle {
+                NativeCommonShortcutIcon(symbol: icon, color: color)
+            } else {
+                NativeAppIconTile(symbol: icon, color: color, size: 36, iconSize: 18)
+            }
+            Text(title)
+                .font(.caption2)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(mutedTitle ? Color.primary.opacity(0.68) : Color.primary)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 64)
+    }
+}
+private struct HomeShortcutButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+private struct HomeShortcut: View { let title: String; let icon: String; let color: Color; let action: () -> Void; init(_ title: String, _ icon: String, _ color: Color, action: @escaping () -> Void) { self.title = title; self.icon = icon; self.color = color; self.action = action }; var body: some View { Button(action: action) { HomeShortcutLabel(title, icon, color, mutedTitle: true, usesCommonStyle: true) }.buttonStyle(HomeShortcutButtonStyle()) } }
 private struct HomeMetric: View { let title: String; let value: String; init(_ title: String, _ value: String) { self.title = title; self.value = value }; var body: some View { VStack(spacing: 5) { Text(value).font(.system(size: 16, weight: .semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity).padding(.vertical, 14).background(.background) } }
-private struct HomeDashboardMetric: View { let title: String; let value: String; let icon: String; let color: Color; init(_ title: String, _ value: String, _ icon: String, _ color: Color) { self.title = title; self.value = value; self.icon = icon; self.color = color }; var body: some View { VStack(alignment: .leading, spacing: 12) { NativeAppIconTile(symbol: icon, color: color, size: 30, iconSize: 14); Text(value).font(.system(size: 19, weight: .bold, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.72); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(.background, in: RoundedRectangle(cornerRadius: 10)) } }
+private struct HomeDashboardMetricButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+private struct HomeDashboardMetric: View {
+    let title: String
+    let value: String
+    let icon: String
+    let color: Color
+    let action: () -> Void
+    init(_ title: String, _ value: String, _ icon: String, _ color: Color, action: @escaping () -> Void) {
+        self.title = title
+        self.value = value
+        self.icon = icon
+        self.color = color
+        self.action = action
+    }
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    NativeAppIconTile(symbol: icon, color: color, size: 30, iconSize: 14)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                Text(value)
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Text(title).font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(.background)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomeDashboardMetricButtonStyle())
+        .accessibilityLabel("\(title)，\(value)")
+        .accessibilityHint("打开\(title)详情")
+    }
+}
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
