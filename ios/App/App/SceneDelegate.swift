@@ -103,21 +103,28 @@ private struct NativeLoginView: View {
 }
 
 private struct NativeTabView: View {
+    @EnvironmentObject private var session: NativeSession
     @State private var selected = 0
     var body: some View {
         TabView(selection: $selected) {
             NativeHomeView()
                 .tabItem { Label("首页", systemImage: "house") }
                 .tag(0)
-            NativeTaskView()
-                .tabItem { Label("任务", systemImage: "checklist") }
-                .tag(1)
-            NativeQuickLedgerView()
-                .tabItem { Label("记账", systemImage: "wallet.pass") }
-                .tag(2)
-            NativeLinksView()
-                .tabItem { Label("链接", systemImage: "link") }
-                .tag(3)
+            if NativeDestination.tasks.isAuthorized(for: session) {
+                NativeTaskView()
+                    .tabItem { Label("任务", systemImage: "checklist") }
+                    .tag(1)
+            }
+            if NativeDestination.expenses.isAuthorized(for: session) {
+                NativeQuickLedgerView()
+                    .tabItem { Label("记账", systemImage: "wallet.pass") }
+                    .tag(2)
+            }
+            if NativeDestination.links.isAuthorized(for: session) {
+                NativeLinksView()
+                    .tabItem { Label("链接", systemImage: "link") }
+                    .tag(3)
+            }
             NativeMineView(isActive: selected == 4)
                 .tabItem { Label("我的", systemImage: "person") }
                 .tag(4)
@@ -155,8 +162,40 @@ private enum NativeDestination: String, Identifiable, Hashable {
 
     var id: String { rawValue }
 
+    /// Mirrors the web client's role/permission gate so native entry points stay consistent.
+    fileprivate var permissionKey: String? {
+        switch self {
+        case .tasks, .owners, .expenses: return "task_bookkeeping"
+        case .profits: return "dingtalk_profits"
+        case .shops: return "shop_records"
+        case .peers: return "peer_shops"
+        case .licenses: return "licenses"
+        case .accountUsage: return "account_usage"
+        case .devices: return "mobile_devices"
+        case .warehouseStocks, .warehouseInbound, .warehouseOutbound, .warehouseProducts, .warehouseLocations, .warehouseMovements: return "warehouse"
+        case .links: return "links"
+        default: return nil
+        }
+    }
+
+    fileprivate var requiredRole: String? {
+        switch self {
+        case .server, .users, .licenseKeys, .systemSettings: return "superadmin"
+        default: return nil
+        }
+    }
+
+    @MainActor fileprivate func isAuthorized(for session: NativeSession) -> Bool {
+        if requiredRole != nil { return session.currentUser?.role == requiredRole }
+        if session.currentUser?.role == "superadmin" { return true }
+        guard let permissionKey else { return true }
+        let value = session.currentUser?.permissions[permissionKey]
+        return value == "read" || value == "write"
+    }
+
     @ViewBuilder var view: some View {
-        Group { switch self {
+        NativeDestinationGate(destination: self) {
+            Group { switch self {
         case .tasks: NativeTaskView(embedded: true)
         case .shops: NativeShopsView()
         case .warehouseStocks: NativeWarehouseView(tab: .stocks)
@@ -188,7 +227,9 @@ private enum NativeDestination: String, Identifiable, Hashable {
         case .systemSettings: NativeSystemSettingsView()
         case .appSettings: NativeAppSettingsView()
         case .profile: NativeProfileView()
-        } }
+            }
+        }
+        }
         .toolbar(.hidden, for: .tabBar)
         .listStyle(.plain)
         .scrollContentBackground(.visible)
@@ -201,6 +242,40 @@ private enum NativeDestination: String, Identifiable, Hashable {
         case .profits: "钉钉利润"
         default: "功能"
         }
+    }
+}
+
+private struct NativeDestinationGate<Content: View>: View {
+    @EnvironmentObject private var session: NativeSession
+    let destination: NativeDestination
+    let content: Content
+
+    init(destination: NativeDestination, @ViewBuilder content: () -> Content) {
+        self.destination = destination
+        self.content = content()
+    }
+
+    @ViewBuilder var body: some View {
+        if destination.isAuthorized(for: session) {
+            content
+        } else {
+            NativeAccessDeniedView()
+        }
+    }
+}
+
+private struct NativeAccessDeniedView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "lock.shield").font(.system(size: 34)).foregroundStyle(.secondary)
+            Text("暂无访问权限").font(.headline)
+            Text("当前账号没有查看此模块的权限，请联系管理员开通。")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .navigationTitle("无权访问")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -255,7 +330,13 @@ private struct NativeWorkbenchView: View {
         .searchable(text: $query, prompt: "搜索功能")
     }
     private var filteredGroups: [(String, [(String, String, Color, NativeDestination)])] {
-        groups.compactMap { group, items in let visible = items.filter { query.isEmpty || $0.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query) }; return visible.isEmpty ? nil : (group, visible) }
+        groups.compactMap { group, items in
+            let visible = items.filter { item in
+                item.3.isAuthorized(for: session)
+                    && (query.isEmpty || item.0.localizedCaseInsensitiveContains(query) || group.localizedCaseInsensitiveContains(query))
+            }
+            return visible.isEmpty ? nil : (group, visible)
+        }
     }
 }
 
@@ -411,7 +492,9 @@ private struct NativeAIWorkspaceView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var question = ""; @State private var chats: [AIChat] = []; @State private var activeChatID = ""
     @State private var models: [AIModel] = []; @State private var selectedModel = ""
+    @State private var modelConnections: [AIConnection] = []
     @State private var sending = false; @State private var error: String?; @State private var streamTask: Task<Void, Never>?
+    @State private var loadingWorkspace = false
     @State private var showingHistory = false; @State private var renaming: AIChat?; @State private var renameText = ""
     @StateObject private var recorder = NativeAudioRecorder(); @State private var audioModel = ""
     @State private var knowledge: [KnowledgeCollection] = []; @State private var skills: [CapabilityItem] = []; @State private var tools: [CapabilityItem] = []
@@ -426,6 +509,12 @@ private struct NativeAIWorkspaceView: View {
     @FocusState private var composerFocused: Bool
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
     private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
+    private var selectableModels: [AIModel] {
+        models.filter { model in
+            if imageMode { return model.modelType == "image" }
+            return model.modelType == nil || model.modelType == "chat"
+        }
+    }
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
@@ -447,8 +536,20 @@ private struct NativeAIWorkspaceView: View {
             if let error { HStack(spacing: 6) { Image(systemName: "exclamationmark.circle"); Text(error).lineLimit(2); Spacer(); Button { Task { await loadWorkspace() } } label: { Image(systemName: "arrow.clockwise") }; Button { self.error = nil } label: { Image(systemName: "xmark") } }.font(.caption).foregroundStyle(.orange).padding(.horizontal, 14).padding(.top, 6) }
             composer
         }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
+        .overlay(alignment: .top) {
+            if loadingWorkspace && chats.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在加载 AI 工作台…").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 36)
+                .background(.thinMaterial, in: Capsule())
+                .padding(.top, 8)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in requestKeyboardScroll() }
-        .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(models.filter { $0.modelType != "audio" }) { model in Button(model.name) { selectedModel = model.id; updateActiveModel() } } } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(selectableModels) { model in Button { selectedModel = model.id; updateActiveModel() } label: { HStack(spacing: 10) { AIModelIcon(model: model, connections: modelConnections, size: 28); VStack(alignment: .leading, spacing: 2) { Text(model.name); Text(model.baseModel).font(.caption2).foregroundStyle(.secondary); Text(aiModelAccountLabel(model, connections: modelConnections)).font(.caption2.weight(.medium)).foregroundStyle(.blue) }; if selectedModel == model.id { Spacer(); Image(systemName: "checkmark").foregroundStyle(.blue) } } } } } label: { HStack(spacing: 6) { AIModelIcon(model: models.first(where: { $0.id == selectedModel }), connections: modelConnections, size: 24); VStack(alignment: .leading, spacing: 1) { Text(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型").lineLimit(1); if let selected = models.first(where: { $0.id == selectedModel }) { Text(aiModelAccountLabel(selected, connections: modelConnections)).font(.caption2).foregroundStyle(.secondary).lineLimit(1) } } } } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
         .sheet(isPresented: $showingHistory) { historySheet }
         .sheet(isPresented: $showingTools) { toolsSheet }
         .sheet(isPresented: $showingKnowledge) { knowledgeSheet }
@@ -456,6 +557,7 @@ private struct NativeAIWorkspaceView: View {
         .fileImporter(isPresented: $importingFile, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importAttachment(result) } }
         .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItems, maxSelectionCount: max(4 - pendingImages.count, 1), matching: .images)
         .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
+        .onChange(of: imageMode) { _ in selectCompatibleModel() }
         .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
         .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
     }
@@ -628,14 +730,32 @@ private struct NativeAIWorkspaceView: View {
         }
     }
     private func loadWorkspace() async {
+        loadingWorkspace = true
         error = nil
+        defer { loadingWorkspace = false }
         restoreLocalChats()
         await loadModels()
         await loadCapabilities()
         await loadChats()
+        selectCompatibleModel()
         scrollRequest += 1
     }
-    private func loadModels() async { do { let result: AIModelsResponse = try await session.get("ai-api/models"); models = result.models.filter { $0.enabled != 0 && $0.hidden != 1 }; if selectedModel.isEmpty { selectedModel = models.first(where: { $0.modelType != "audio" })?.id ?? "" }; audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? "" } catch { if models.isEmpty { self.error = "AI 模型暂时无法加载，请稍后重试。" } } }
+    private func loadModels() async {
+        async let modelRequest: AIModelsResponse? = try? session.get("ai-api/models")
+        async let connectionRequest: AIConnectionsResponse? = try? session.get("ai-api/connections")
+        let (modelResult, connectionResult) = await (modelRequest, connectionRequest)
+        if let modelResult {
+            models = modelResult.models.filter { $0.enabled != 0 && $0.hidden != 1 }
+        } else if models.isEmpty {
+            error = "AI 模型加载失败，请检查服务连接后重试。"
+        }
+        modelConnections = connectionResult?.connections ?? []
+        if selectedModel.isEmpty || !models.contains(where: { $0.id == selectedModel }) {
+            selectedModel = ""
+        }
+        audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? ""
+        selectCompatibleModel()
+    }
     private func loadCapabilities() async {
         if let result: KnowledgeResponse = try? await session.get("ai-api/knowledge") { knowledge = result.knowledge }
         if let result: CapabilityResponse = try? await session.get("ai-api/skills") { skills = result.skills ?? [] }
@@ -643,6 +763,10 @@ private struct NativeAIWorkspaceView: View {
     }
     private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats?user_id=\(session.currentUser?.id ?? 0)"); if !result.chats.isEmpty { chats = result.chats; activeChatID = chats.first(where: { !$0.archived })?.id ?? chats[0].id; selectedModel = activeChat?.modelID ?? selectedModel; persistChatsLocally() } } catch { } ; if chats.isEmpty { createChat() } }
     private func send() {
+        guard !selectedModel.isEmpty else {
+            error = imageMode ? "没有可用的图片模型，请先在模型管理中绑定账号。" : "没有可用的对话模型，请先在模型管理中绑定账号。"
+            return
+        }
         let typedValue = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages.map(\.dataURL)
         let value = typedValue.isEmpty && !images.isEmpty ? "请分析这些图片" : typedValue
@@ -674,8 +798,18 @@ private struct NativeAIWorkspaceView: View {
                         chats[chatIndex].messages[messageIndex].content += chunk
                     }
                 }
-            } catch is CancellationError { }
-            catch { self.error = session.message(for: error) }
+            } catch is CancellationError {
+                if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }), chats[chatIndex].messages[messageIndex].content.isEmpty {
+                    chats[chatIndex].messages[messageIndex].content = "已停止生成"
+                }
+            }
+            catch {
+                let message = session.message(for: error)
+                self.error = message
+                if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }), chats[chatIndex].messages[messageIndex].content.isEmpty {
+                    chats[chatIndex].messages[messageIndex].content = "请求失败：\(message)"
+                }
+            }
             sending = false
             await saveActiveChat()
         }
@@ -683,6 +817,11 @@ private struct NativeAIWorkspaceView: View {
     private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
     private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id; persistChatsLocally(); scrollRequest += 1 }
     private func updateActiveModel() { guard let index = activeIndex else { return }; chats[index].modelID = selectedModel; Task { await saveActiveChat() } }
+    private func selectCompatibleModel() {
+        guard !selectableModels.contains(where: { $0.id == selectedModel }) else { return }
+        selectedModel = selectableModels.first?.id ?? ""
+        updateActiveModel()
+    }
     private func saveActiveChat() async {
         persistChatsLocally()
         guard let chat = activeChat else { return }
@@ -835,7 +974,7 @@ private struct NativeHomeView: View {
                         .padding(.horizontal, 14)
                         Divider()
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 10) {
-                            ForEach(homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
+                            ForEach(authorizedHomeModules) { item in HomeShortcut(item.title, item.icon, item.color) { path.append(item.destination) } }
                             HomeShortcut("全部", "circle.grid.2x2.fill", .gray) { path.append(.workbench) }
                         }
                         .padding(.horizontal, 10)
@@ -843,6 +982,7 @@ private struct NativeHomeView: View {
                     }
                     .background(.background, in: RoundedRectangle(cornerRadius: 14))
                     .padding(.horizontal, 16)
+                    if hasDashboardDataAccess {
                     VStack(spacing: 0) {
                         HStack {
                             Text("经营数据").font(.headline)
@@ -853,18 +993,26 @@ private struct NativeHomeView: View {
                         .padding(.horizontal, 14)
                         Divider()
                         LazyVGrid(columns: [GridItem(.flexible(), spacing: 1), GridItem(.flexible(), spacing: 1)], spacing: 1) {
-                            HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue) { path.append(.expenses) }
-                            HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green) { path.append(.profits) }
-                            HomeDashboardMetric("本月钉钉利润", dashboard.monthlyProfit.map(money) ?? "--", "calendar", .orange) { path.append(.profits) }
-                            HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal) { path.append(.warehouseStocks) }
-                            HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo) { path.append(.warehouseStocks) }
-                            HomeDashboardMetric("库存预警", dashboard.lowStock.map(String.init) ?? "--", "exclamationmark.triangle", .orange) { path.append(.warehouseStocks) }
+                            if NativeDestination.expenses.isAuthorized(for: session) {
+                                HomeDashboardMetric("公司消费", dashboard.expenseTotal.map(money) ?? "--", "creditcard", .blue) { path.append(.expenses) }
+                            }
+                            if NativeDestination.profits.isAuthorized(for: session) {
+                                HomeDashboardMetric("累计利润", dashboard.profitTotal.map(money) ?? "--", "chart.line.uptrend.xyaxis", .green) { path.append(.profits) }
+                                HomeDashboardMetric("本月钉钉利润", dashboard.monthlyProfit.map(money) ?? "--", "calendar", .orange) { path.append(.profits) }
+                            }
+                            if NativeDestination.warehouseStocks.isAuthorized(for: session) {
+                                HomeDashboardMetric("库存数量", dashboard.stockQuantity.map(String.init) ?? "--", "cube.box", .teal) { path.append(.warehouseStocks) }
+                                HomeDashboardMetric("库存成本", dashboard.stockCost.map(money) ?? "--", "banknote", .indigo) { path.append(.warehouseStocks) }
+                                HomeDashboardMetric("库存预警", dashboard.lowStock.map(String.init) ?? "--", "exclamationmark.triangle", .orange) { path.append(.warehouseStocks) }
+                            }
                         }
                         .background(Color(.separator).opacity(0.24))
                     }
                     .background(.background, in: RoundedRectangle(cornerRadius: 14))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .padding(.horizontal, 16)
+                    }
+                    if hasTodoAccess {
                     VStack(spacing: 0) {
                         HStack {
                             Text("待办提醒").font(.headline)
@@ -875,15 +1023,22 @@ private struct NativeHomeView: View {
                         }
                         .padding(.horizontal, 14)
                         Divider()
-                        HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: dashboard.pendingSigned.map(String.init) ?? "--")
-                        Divider()
-                        HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: dashboard.pendingSettlement.map(String.init) ?? "--")
-                        Divider()
-                        HomeTodo(color: .blue, title: "库存预警", detail: "可用库存已达到预警值", value: dashboard.lowStock.map(String.init) ?? "--")
+                        if NativeDestination.tasks.isAuthorized(for: session) {
+                            HomeTodo(color: .orange, title: "待签收任务", detail: "需要及时处理任务状态", value: dashboard.pendingSigned.map(String.init) ?? "--")
+                            Divider()
+                            HomeTodo(color: .red, title: "待结算任务", detail: "等待结算的任务", value: dashboard.pendingSettlement.map(String.init) ?? "--")
+                        }
+                        if NativeDestination.tasks.isAuthorized(for: session) && NativeDestination.warehouseStocks.isAuthorized(for: session) {
+                            Divider()
+                        }
+                        if NativeDestination.warehouseStocks.isAuthorized(for: session) {
+                            HomeTodo(color: .blue, title: "库存预警", detail: "可用库存已达到预警值", value: dashboard.lowStock.map(String.init) ?? "--")
+                        }
                     }
                     .background(.background, in: RoundedRectangle(cornerRadius: 14))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .padding(.horizontal, 16)
+                    }
                     if let dashboardError { Text(dashboardError).font(.caption).foregroundStyle(.red).padding(.horizontal, 16) }
                 }.padding(.vertical, 14)
             }
@@ -922,18 +1077,31 @@ private struct NativeHomeView: View {
         let results: [HomeDashboard.Partial] = await [.warehouse(warehouse), .tasks(tasks), .expenses(expenses), .profits(profits), .monthlyProfits(monthlyProfits)]
         var successes = 0
         for result in results { if dashboard.apply(result) { successes += 1 } }
-        if successes == 0 { dashboardError = "经营数据加载失败，请下拉重试" }
+        if successes == 0 && hasDashboardDataAccess { dashboardError = "经营数据加载失败，请下拉重试" }
     }
     private var homeModulesStorageKey: String { "native-home-modules-\(session.currentUser?.id ?? 0)" }
+    private var hasDashboardDataAccess: Bool {
+        NativeDestination.expenses.isAuthorized(for: session)
+            || NativeDestination.profits.isAuthorized(for: session)
+            || NativeDestination.warehouseStocks.isAuthorized(for: session)
+    }
+    private var hasTodoAccess: Bool {
+        NativeDestination.tasks.isAuthorized(for: session)
+            || NativeDestination.warehouseStocks.isAuthorized(for: session)
+    }
+    private var authorizedHomeModules: [HomeModuleItem] {
+        homeModuleKeys.compactMap { key in homeModuleCatalog.first { $0.id == key } }
+            .filter { $0.destination.isAuthorized(for: session) }
+    }
     private func loadHomeModules() async {
         if let local = UserDefaults.standard.stringArray(forKey: homeModulesStorageKey), !local.isEmpty {
-            let normalized = normalizedHomeModuleKeys(local)
+            let normalized = normalizedHomeModuleKeys(local).filter { key in homeModuleCatalog.first { $0.id == key }?.destination.isAuthorized(for: session) ?? false }
             homeModuleKeys = normalized
             if normalized != local { UserDefaults.standard.set(normalized, forKey: homeModulesStorageKey) }
             return
         }
         if let response: HomeModulesSettingResponse = try? await session.get("ui-settings/home-modules"), let value = response.value, !value.isEmpty {
-            homeModuleKeys = normalizedHomeModuleKeys(value)
+            homeModuleKeys = normalizedHomeModuleKeys(value).filter { key in homeModuleCatalog.first { $0.id == key }?.destination.isAuthorized(for: session) ?? false }
             UserDefaults.standard.set(homeModuleKeys, forKey: homeModulesStorageKey)
         }
     }
@@ -1222,17 +1390,19 @@ private struct LedgerKeyButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     let background: Color
     let foreground: Color
+    var pressedScale: CGFloat = 0.97
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(foreground)
-            .background(
-                background.opacity(configuration.isPressed ? 0.72 : 1),
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .background(background, in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(foreground.opacity(configuration.isPressed ? 0.055 : 0))
+            }
+            .scaleEffect(configuration.isPressed && !reduceMotion ? pressedScale : 1)
             .opacity(isEnabled ? 1 : 0.42)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(reduceMotion ? nil : .spring(response: 0.2, dampingFraction: 0.82), value: configuration.isPressed)
     }
 }
 
@@ -1303,20 +1473,43 @@ private struct NativeQuickLedgerView: View {
     @State private var successToken = UUID()
     @State private var categories: [String]
     @State private var showingCategories = false
+    @State private var keyFlash: String?
+    @State private var expenseDate = Date()
+    @State private var showingDatePicker = false
     @FocusState private var noteFocused: Bool
     var body: some View {
         NativeNavigationContainer(embedded: embedded) {
             GeometryReader { geometry in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        VStack(alignment: .leading, spacing: 8) { Text("公司消费").font(.caption).opacity(0.85); animatedAmount; Text("使用下方数字键输入金额").font(.caption2).opacity(0.72) }.padding(20).frame(maxWidth: .infinity, minHeight: 132, alignment: .leading).background(Color.blue, in: RoundedRectangle(cornerRadius: 14)).foregroundStyle(.white)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("公司消费").font(.caption).opacity(0.85)
+                                Spacer()
+                                Button { showingDatePicker = true } label: {
+                                    Label(shortExpenseDate(expenseDate), systemImage: "calendar")
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 10)
+                                        .frame(minHeight: 32)
+                                        .background(.white.opacity(0.16), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("消费日期，\(shortExpenseDate(expenseDate))")
+                            }
+                            animatedAmount
+                            Text("使用下方数字键输入金额").font(.caption2).opacity(0.72)
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
+                        .background(Color.blue, in: RoundedRectangle(cornerRadius: 14))
+                        .foregroundStyle(.white)
                         Text("消费分类").font(.headline)
                         ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 12) { ForEach(categories, id: \.self) { value in Button { category = value } label: { VStack(spacing: 7) { NativeAppIconTile(symbol: categoryIcon(value), color: categoryColor(value), size: 42, iconSize: 19, selected: category == value); Text(value).font(.caption2).foregroundStyle(.primary).lineLimit(1) }.frame(width: 68) }.buttonStyle(.plain) } }.padding(.vertical, 2) }
                         if let error { Text(error).font(.caption).foregroundStyle(.red) }
                         Spacer(minLength: 16)
                         VStack(spacing: 10) {
                             ledgerNoteField
-                            Grid(horizontalSpacing: 10, verticalSpacing: 10) { GridRow { ledgerKey("1"); ledgerKey("2"); ledgerKey("3"); ledgerKey("⌫", symbol: "delete.left") }; GridRow { ledgerKey("4"); ledgerKey("5"); ledgerKey("6"); ledgerKey("C") }; GridRow { ledgerKey("7"); ledgerKey("8"); ledgerKey("9"); ledgerKey("00") }; GridRow { ledgerKey("."); ledgerKey("0", columns: 2); Button { Task { await save() } } label: { Group { if saving { ProgressView().tint(.white) } else { Image(systemName: "checkmark") } }.font(.title2.bold()).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(LedgerKeyButtonStyle(background: .blue, foreground: .white)).disabled(saving || (Double(amount) ?? 0) <= 0).accessibilityLabel(saving ? "正在记账" : "确认记账") } }
+                            Grid(horizontalSpacing: 10, verticalSpacing: 10) { GridRow { ledgerKey("1"); ledgerKey("2"); ledgerKey("3"); ledgerKey("⌫", symbol: "delete.left") }; GridRow { ledgerKey("4"); ledgerKey("5"); ledgerKey("6"); ledgerKey("C") }; GridRow { ledgerKey("7"); ledgerKey("8"); ledgerKey("9"); ledgerKey("00") }; GridRow { ledgerKey("."); ledgerKey("0", columns: 2); Button { confirmHaptic(); Task { await save() } } label: { Group { if saving { ProgressView().tint(.white) } else { Image(systemName: "checkmark") } }.font(.title2.bold()).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(LedgerKeyButtonStyle(background: .blue, foreground: .white, pressedScale: 0.92)).disabled(saving || (Double(amount) ?? 0) <= 0).accessibilityLabel(saving ? "正在记账" : "确认记账") } }
                         }
                     }
                     .padding()
@@ -1344,8 +1537,17 @@ private struct NativeQuickLedgerView: View {
             .background(Color(.systemGroupedBackground))
             .navigationTitle("记一笔")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItemGroup { NavigationLink { NativeLedgerView() } label: { Label("流水", systemImage: "list.bullet.rectangle") }; Button { showingCategories = true } label: { Label("分类管理", systemImage: "square.grid.2x2") } } }
+            .toolbar { ToolbarItemGroup { NavigationLink { NativeLedgerView(embedded: true) } label: { Label("流水", systemImage: "list.bullet.rectangle") }; Button { showingCategories = true } label: { Label("分类管理", systemImage: "square.grid.2x2") } } }
             .sheet(isPresented: $showingCategories) { ExpenseCategoryManager(categories: $categories, selection: $category) }
+            .sheet(isPresented: $showingDatePicker) {
+                NavigationStack {
+                    Form { DatePicker("消费日期", selection: $expenseDate, displayedComponents: .date) }
+                        .navigationTitle("选择消费日期")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showingDatePicker = false } } }
+                }
+                .presentationDetents([.height(190)])
+            }
             .task { await syncCategories() }
         }
     }
@@ -1399,21 +1601,53 @@ private struct NativeQuickLedgerView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: noteFocused)
         .accessibilityElement(children: .contain)
     }
-    private func ledgerKey(_ key: String, symbol: String? = nil, columns: Int = 1) -> some View { Button { pressKey(key) } label: { Group { if let symbol { Image(systemName: symbol) } else { Text(key) } }.font(.title2.weight(.medium)).frame(maxWidth: .infinity).frame(height: 54) }.buttonStyle(LedgerKeyButtonStyle(background: Color(.secondarySystemGroupedBackground), foreground: .primary)).gridCellColumns(columns).accessibilityLabel(key == "⌫" ? "删除一位" : key == "C" ? "全部清除" : key) }
+    private func ledgerKey(_ key: String, symbol: String? = nil, columns: Int = 1) -> some View {
+        Button {
+            keyHaptic(key)
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.82)) { keyFlash = key }
+            pressKey(key)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                guard keyFlash == key else { return }
+                withAnimation(.easeOut(duration: 0.12)) { keyFlash = nil }
+            }
+        } label: {
+            Group { if let symbol { Image(systemName: symbol) } else { Text(key) } }
+                .font(.title2.weight(.medium))
+                .foregroundStyle(Color.primary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
+                .background(keyFlash == key ? Color.primary.opacity(0.055) : .clear, in: RoundedRectangle(cornerRadius: 10))
+                .scaleEffect(keyFlash == key ? 0.97 : 1)
+                .animation(.spring(response: 0.2, dampingFraction: 0.82), value: keyFlash)
+        }
+        .buttonStyle(LedgerKeyButtonStyle(background: Color(.secondarySystemGroupedBackground), foreground: .primary))
+        .gridCellColumns(columns)
+        .accessibilityLabel(key == "⌫" ? "删除一位" : key == "C" ? "全部清除" : key)
+    }
     private func categoryIcon(_ value: String) -> String { switch value { case "办公用品": "paperclip"; case "快递物流": "shippingbox"; case "餐饮招待": "fork.knife"; case "差旅交通": "car"; case "软件服务": "laptopcomputer"; case "广告推广": "megaphone"; case "采购货款": "cart"; default: "ellipsis.circle" } }
     private func categoryColor(_ value: String) -> Color { switch value { case "办公用品": .blue; case "快递物流": .orange; case "餐饮招待": .red; case "差旅交通": .teal; case "软件服务": .indigo; case "广告推广": .pink; case "采购货款": .green; default: .gray } }
     private func syncCategories() async { if let response: ExpenseCategoriesResponse = try? await session.get("expense-categories") { categories = response.categories; saveExpenseCategories(categories); if !categories.contains(category), let first = categories.first { category = first } } }
+    private func keyHaptic(_ key: String) {
+        let generator = UIImpactFeedbackGenerator(style: key == "C" || key == "⌫" ? .medium : .light)
+        generator.prepare()
+        generator.impactOccurred(intensity: key == "C" || key == "⌫" ? 0.72 : 0.5)
+    }
+    private func confirmHaptic() {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.prepare()
+        generator.impactOccurred(intensity: 0.9)
+    }
     private func save() async {
         saving = true; error = nil
         defer { saving = false }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-        let body: [String: Any] = ["expense_date": f.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]
+        let body: [String: Any] = ["expense_date": f.string(from: expenseDate), "amount": Double(amount) ?? 0, "category": category, "payment_type": "company", "payment_account": "公司卡", "expense_scope": "公共费用", "description": note.isEmpty ? category : note]
         do {
             let saved: CompanyExpense = try await session.send("company-expenses", method: "POST", body: body)
             let message = "记账成功 · \(money(saved.amount))"
             let token = UUID(); successToken = token
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
-                amount = ""; note = ""; successMessage = message
+                amount = ""; note = ""; expenseDate = Date(); successMessage = message
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             UIAccessibility.post(notification: .announcement, argument: message)
@@ -1431,6 +1665,8 @@ private struct NativeQuickLedgerView: View {
 }
 
 private struct NativeLedgerView: View {
+    let embedded: Bool
+    init(embedded: Bool = false) { self.embedded = embedded }
     @EnvironmentObject private var session: NativeSession
     @State private var records: [CompanyExpense] = []
     @State private var summary: ExpenseSummary?
@@ -1440,56 +1676,106 @@ private struct NativeLedgerView: View {
     @State private var deleting: CompanyExpense?
     @State private var editing: CompanyExpense?
     @State private var showingForm = false
+    @State private var filterDate = Date()
+    @State private var hasDateFilter = false
+    @State private var showingDateFilter = false
 
     private var filtered: [CompanyExpense] {
-        guard !query.isEmpty else { return records }
-        return records.filter { "\($0.expenseNo) \($0.category) \($0.paymentAccount) \($0.description) \($0.submitterName)".localizedCaseInsensitiveContains(query) }
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+        let dateKey = formatter.string(from: filterDate)
+        return records.filter { item in
+            let matchesDate = !hasDateFilter || item.expenseDate == dateKey
+            let matchesQuery = query.isEmpty || "\(item.expenseNo) \(item.category) \(item.paymentAccount) \(item.description) \(item.submitterName)".localizedCaseInsensitiveContains(query)
+            return matchesDate && matchesQuery
+        }
     }
     private var groupedByDay: [(String, [CompanyExpense])] { Dictionary(grouping: filtered, by: { $0.expenseDate }).map { ($0.key, $0.value.sorted { $0.id > $1.id }) }.sorted { $0.0 > $1.0 } }
 
     var body: some View {
-        List {
-                if let summary {
-                    Section {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("本月消费").font(.caption).foregroundStyle(.secondary)
-                            Text(money(summary.monthTotal)).font(.title.bold())
-                            HStack { Metric(title: "本月笔数", value: "\(summary.monthRecordCount)"); Metric(title: "待报销", value: money(summary.pendingReimbursementTotal)) }
-                        }.padding(.vertical, 5)
+        NativeNavigationContainer(embedded: embedded) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let summary { ExpenseSummaryCard(summary: summary) }
+                    if let error {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 4)
                     }
-                }
-                if let error { Text(error).foregroundStyle(.red) }
-                ForEach(groupedByDay, id: \.0) { day, items in
-                    Section(dayLabel(day)) {
-                    ForEach(items) { item in
-                        NavigationLink { ExpenseDetail(item: item) } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: item.paymentType == "company" ? "building.columns" : "person.crop.circle")
-                                    .frame(width: 34, height: 34).background(Color.blue.opacity(0.12), in: Circle())
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.category).fontWeight(.medium)
-                                    Text("\(item.paymentAccount) · \(item.submitterName)").font(.caption).foregroundStyle(.secondary)
+                    if loading && records.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 44)
+                    } else if groupedByDay.isEmpty {
+                        NativeEmptyState(icon: query.isEmpty ? "tray" : "magnifyingglass", title: query.isEmpty ? "暂无记账记录" : "没有匹配记录", message: query.isEmpty ? "完成第一笔公司消费后会显示在这里" : "尝试搜索其他分类、账户或说明")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 30)
+                    } else {
+                        ForEach(groupedByDay, id: \.0) { day, items in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(dayLabel(day)).font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text("\(items.count) 笔").font(.caption).foregroundStyle(.secondary)
                                 }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 4) { Text(money(item.amount)).fontWeight(.semibold); Text(item.expenseDate).font(.caption).foregroundStyle(.secondary) }
+                                VStack(spacing: 0) {
+                                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                        NavigationLink { ExpenseDetail(item: item) } label: {
+                                            ExpenseLedgerRow(item: item)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .swipeActions {
+                                            Button("删除", role: .destructive) { deleting = item }
+                                            Button("编辑") { editing = item; showingForm = true }.tint(.blue)
+                                        }
+                                        if index < items.count - 1 { Divider().padding(.leading, 72) }
+                                    }
+                                }
+                                .background(.background, in: RoundedRectangle(cornerRadius: 14))
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
                         }
-                        .swipeActions {
-                            Button("删除", role: .destructive) { deleting = item }
-                            Button("编辑") { editing = item; showingForm = true }.tint(.blue)
-                        }
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .padding(.bottom, 20)
             }
-            .listStyle(.plain)
-            .overlay { if loading && records.isEmpty { ProgressView() } }
+            .background(Color(.systemGroupedBackground))
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
-            .refreshable { await load() }.navigationTitle("公司记账")
+            .refreshable { await load() }
+            .navigationTitle("公司记账")
+            .navigationBarTitleDisplayMode(.inline)
             .task { if records.isEmpty { await load() } }
             .sheet(isPresented: $showingForm) { ExpenseForm(item: editing) { await load() } }
+            .sheet(isPresented: $showingDateFilter) {
+                NavigationStack {
+                    Form {
+                        Toggle("仅显示这一天", isOn: $hasDateFilter)
+                        DatePicker("日期", selection: $filterDate, displayedComponents: .date)
+                            .disabled(!hasDateFilter)
+                        if hasDateFilter {
+                            Button("清除日期筛选", role: .destructive) {
+                                hasDateFilter = false
+                                showingDateFilter = false
+                            }
+                        }
+                    }
+                    .navigationTitle("日期筛选")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showingDateFilter = false } } }
+                }
+                .presentationDetents([.height(hasDateFilter ? 230 : 180)])
+            }
             .confirmationDialog("确定删除这条记账记录吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
                 Button("取消", role: .cancel) { deleting = nil }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingDateFilter = true } label: {
+                        Image(systemName: hasDateFilter ? "calendar.badge.checkmark" : "calendar")
+                    }
+                    .accessibilityLabel(hasDateFilter ? "已按日期筛选" : "按日期筛选")
+                }
             }
             .toolbar(.hidden, for: .tabBar)
         }
@@ -1510,11 +1796,125 @@ private struct NativeLedgerView: View {
     }
 }
 
+private struct ExpenseSummaryCard: View {
+    let summary: ExpenseSummary
+    var body: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack {
+                Label("本月公司消费", systemImage: "chart.bar.fill")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("实时汇总").font(.caption).opacity(0.72)
+            }
+            Text(money(summary.monthTotal))
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            HStack(spacing: 0) {
+                ExpenseSummaryMetric(title: "记账笔数", value: "\(summary.monthRecordCount)")
+                Divider().frame(height: 34).overlay(.white.opacity(0.28))
+                ExpenseSummaryMetric(title: "待报销", value: money(summary.pendingReimbursementTotal))
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct ExpenseSummaryMetric: View {
+    let title: String
+    let value: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
+            Text(title).font(.caption2).opacity(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ExpenseLedgerRow: View {
+    let item: CompanyExpense
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: expenseCategoryIcon(item.category))
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(expenseCategoryColor(item.category))
+                .frame(width: 40, height: 40)
+                .background(expenseCategoryColor(item.category).opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.category).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(item.description.isEmpty ? "\(item.paymentAccount) · \(item.submitterName)" : item.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if item.attachmentURL != nil {
+                        Image(systemName: "paperclip")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.blue)
+                            .accessibilityLabel("有票据附件")
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(money(item.amount)).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
+                Text(item.paymentAccount).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
+    }
+}
+
+private func expenseCategoryIcon(_ value: String) -> String {
+    switch value {
+    case "办公用品": "paperclip"
+    case "快递物流": "shippingbox"
+    case "餐饮招待": "fork.knife"
+    case "差旅交通": "car"
+    case "软件服务": "laptopcomputer"
+    case "广告推广": "megaphone"
+    case "采购货款": "cart"
+    default: "ellipsis.circle"
+    }
+}
+
+private func expenseCategoryColor(_ value: String) -> Color {
+    switch value {
+    case "办公用品": .blue
+    case "快递物流": .orange
+    case "餐饮招待": .red
+    case "差旅交通": .teal
+    case "软件服务": .indigo
+    case "广告推广": .pink
+    case "采购货款": .green
+    default: .gray
+    }
+}
+
 private func dayLabel(_ value: String) -> String {
     let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
     if value == formatter.string(from: Date()) { return "今天  \(value)" }
     if let date = formatter.date(from: value), let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Date()), formatter.string(from: yesterday) == formatter.string(from: date) { return "昨天  \(value)" }
     return value
+}
+
+private func shortExpenseDate(_ value: Date) -> String {
+    let formatter = DateFormatter(); formatter.dateFormat = "M月d日"
+    return formatter.string(from: value)
+}
+
+private func parseExpenseDate(_ value: String?) -> Date? {
+    guard let value, !value.isEmpty else { return nil }
+    let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.date(from: String(value.prefix(10)))
 }
 
 private struct LinkComposerRoute: Identifiable {
@@ -1744,6 +2144,7 @@ private struct ExpenseForm: View {
     let item: CompanyExpense?; let onSave: () async -> Void
     @State private var amount: String; @State private var category: String; @State private var account: String
     @State private var scope: String; @State private var description: String; @State private var employeePaid: Bool
+    @State private var expenseDate: Date
     @State private var saving = false; @State private var error: String?
     @State private var importing = false; @State private var attachment: URL?
     private var categories: [String] { let saved = loadExpenseCategories(); return saved.contains(category) ? saved : [category] + saved }
@@ -1753,6 +2154,7 @@ private struct ExpenseForm: View {
         _category = State(initialValue: item?.category ?? "办公用品"); _account = State(initialValue: item?.paymentAccount ?? "公司卡")
         _scope = State(initialValue: item?.expenseScope ?? "公共费用"); _description = State(initialValue: item?.description ?? "")
         _employeePaid = State(initialValue: item?.paymentType == "employee")
+        _expenseDate = State(initialValue: parseExpenseDate(item?.expenseDate) ?? Date())
     }
 
     var body: some View {
@@ -1761,8 +2163,8 @@ private struct ExpenseForm: View {
                 if let error { Text(error).foregroundStyle(.red) }
                 Section("金额") { TextField("0.00", text: $amount).keyboardType(.decimalPad).font(.title2.bold()) }
                 Section("消费信息") { Picker("分类", selection: $category) { ForEach(categories, id: \.self) { Text($0) } }; TextField("消费说明", text: $description); Toggle("员工垫付", isOn: $employeePaid) }
-                Section("补充信息") { TextField("付款账户", text: $account); TextField("费用归属", text: $scope) }
-                Section("票据") { Button(attachment?.lastPathComponent ?? "选择图片或 PDF") { importing = true } }
+                Section("补充信息") { DatePicker("消费日期", selection: $expenseDate, displayedComponents: .date); TextField("付款账户", text: $account); TextField("费用归属", text: $scope) }
+                Section("票据") { Button(attachment?.lastPathComponent ?? item?.attachmentName ?? "选择图片或 PDF") { importing = true } }
             }
             .navigationTitle(item == nil ? "记一笔" : "编辑记账").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || (Double(amount) ?? 0) <= 0) } }
@@ -1773,7 +2175,7 @@ private struct ExpenseForm: View {
     private func save() async {
         saving = true; error = nil; defer { saving = false }
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
-        let body: [String: Any] = ["expense_date": item?.expenseDate ?? formatter.string(from: Date()), "amount": Double(amount) ?? 0, "category": category, "payment_type": employeePaid ? "employee" : "company", "payment_account": account.isEmpty ? "公司卡" : account, "expense_scope": scope.isEmpty ? "公共费用" : scope, "description": description.isEmpty ? category : description]
+        let body: [String: Any] = ["expense_date": formatter.string(from: expenseDate), "amount": Double(amount) ?? 0, "category": category, "payment_type": employeePaid ? "employee" : "company", "payment_account": account.isEmpty ? "公司卡" : account, "expense_scope": scope.isEmpty ? "公共费用" : scope, "description": description.isEmpty ? category : description]
         do { let saved: CompanyExpense = try await session.send(item.map { "company-expenses/\($0.id)" } ?? "company-expenses", method: item == nil ? "POST" : "PUT", body: body); if let attachment { guard attachment.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }; defer { attachment.stopAccessingSecurityScopedResource() }; let data = try Data(contentsOf: attachment); let _: CompanyExpense = try await session.upload(path: "company-expenses/\(saved.id)/attachment", field: "attachment", filename: attachment.lastPathComponent, data: data, mime: attachment.pathExtension.lowercased() == "pdf" ? "application/pdf" : "image/jpeg") }; await onSave(); dismiss() }
         catch { self.error = session.message(for: error) }
     }
@@ -2064,18 +2466,32 @@ private struct NativeMineView: View {
                     }
                     .background(.background, in: RoundedRectangle(cornerRadius: 14))
 
-                    MineSectionCard(title: "账户与访问") {
-                    MineEntry("账号与权限", subtitle: "成员、角色与模块权限", "person.badge.key", .blue) { path.append(.users) }
-                        MineEntryDivider()
-                    MineEntry("卡密管理", subtitle: "授权码与绑定设备", "key", .purple) { path.append(.licenseKeys) }
+                    if NativeDestination.users.isAuthorized(for: session) || NativeDestination.licenseKeys.isAuthorized(for: session) {
+                        MineSectionCard(title: "账户与访问") {
+                            if NativeDestination.users.isAuthorized(for: session) {
+                                MineEntry("账号与权限", subtitle: "成员、角色与模块权限", "person.badge.key", .blue) { path.append(.users) }
+                            }
+                            if NativeDestination.users.isAuthorized(for: session) && NativeDestination.licenseKeys.isAuthorized(for: session) {
+                                MineEntryDivider()
+                            }
+                            if NativeDestination.licenseKeys.isAuthorized(for: session) {
+                                MineEntry("卡密管理", subtitle: "授权码与绑定设备", "key", .purple) { path.append(.licenseKeys) }
+                            }
+                        }
                     }
 
                     MineSectionCard(title: "系统服务") {
-                    MineEntry("服务器运行", subtitle: "服务状态与资源监控", "server.rack", .green) { path.append(.server) }
-                        MineEntryDivider()
-                    MineEntry("通知中心", subtitle: "业务提醒与系统消息", "bell", .red) { path.append(.alerts) }
-                        MineEntryDivider()
-                    MineEntry("系统设置", subtitle: "安全、会话与应用配置", "gearshape", .gray) { path.append(.systemSettings) }
+                        if NativeDestination.server.isAuthorized(for: session) {
+                            MineEntry("服务器运行", subtitle: "服务状态与资源监控", "server.rack", .green) { path.append(.server) }
+                        }
+                        if NativeDestination.server.isAuthorized(for: session) {
+                            MineEntryDivider()
+                        }
+                        MineEntry("通知中心", subtitle: "业务提醒与系统消息", "bell", .red) { path.append(.alerts) }
+                        if NativeDestination.systemSettings.isAuthorized(for: session) {
+                            MineEntryDivider()
+                            MineEntry("系统设置", subtitle: "安全、会话与应用配置", "gearshape", .gray) { path.append(.systemSettings) }
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -2098,7 +2514,7 @@ private struct NativeMineView: View {
         }
     }
 
-    private var authorizedModuleCount: Int { session.currentUser?.permissions.values.filter { $0 != "none" }.count ?? 0 }
+    private var authorizedModuleCount: Int { homeModuleCatalog.filter { $0.destination.isAuthorized(for: session) }.count }
     private var roleShortLabel: String { session.currentUser?.role == "superadmin" ? "超级" : session.currentUser?.role == "editor" ? "编辑" : "只读" }
 }
 
@@ -2713,15 +3129,19 @@ private struct NativeModelsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("类型", selection: $segment) { Text("模型").tag(0); Text("连接").tag(1) }.pickerStyle(.segmented).padding()
+            Picker("类型", selection: $segment) { Text("模型").tag(0); Text("账号连接").tag(1) }.pickerStyle(.segmented).padding()
             List {
             if let error { Text(error).foregroundStyle(.red) }
             if let notice { Text(notice).foregroundStyle(.green) }
             if segment == 0 { ForEach(models) { model in
                 HStack(spacing: 12) {
-                    Image(systemName: model.modelType == "audio" ? "waveform" : model.modelType == "image" ? "photo" : "cpu")
-                        .frame(width: 34, height: 34).background(Color.blue.opacity(0.12), in: Circle())
-                    VStack(alignment: .leading, spacing: 4) { Text(model.name).fontWeight(.medium); Text(model.baseModel).font(.caption).foregroundStyle(.secondary) }
+                    AIModelIcon(model: model, connections: connections, size: 42)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.name).fontWeight(.medium)
+                        Text(model.baseModel).font(.caption).foregroundStyle(.secondary)
+                        Label(aiModelAccountLabel(model, connections: connections), systemImage: "person.crop.circle")
+                            .font(.caption2.weight(.medium)).foregroundStyle(.blue).lineLimit(1)
+                    }
                     Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary)
                     Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
                 }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingModel = model; showingModel = true }
@@ -2849,7 +3269,7 @@ private struct ConnectionForm: View {
     init(item: AIConnection?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? "OpenAI"); _baseURL = State(initialValue: item?.baseURL ?? "https://api.openai.com/v1"); _provider = State(initialValue: item?.providerType ?? "openai"); _purpose = State(initialValue: item?.purpose ?? "general") }
     var body: some View { NavigationStack { Form {
         if let message { Text(message).foregroundStyle(.secondary) }
-        Section("连接") { TextField("名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never) }
+        Section("账号连接") { TextField("账号名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never) }
         Section("类型") { Picker("协议", selection: $provider) { Text("OpenAI 兼容").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }; Picker("用途", selection: $purpose) { Text("通用").tag("general"); Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio") } }
         if item != nil { Button(testing ? "测试中..." : "测试连接") { Task { await test() } }.disabled(testing) }
     }.navigationTitle(item == nil ? "新增连接" : "编辑连接").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseURL.isEmpty || (item == nil && apiKey.isEmpty && provider != "ollama")) } } } }
@@ -2872,7 +3292,7 @@ private struct ModelForm: View {
     }
     var body: some View { NavigationStack { Form {
         if let error { Text(error).foregroundStyle(.red) }
-        Section("模型") { TextField("显示名称", text: $name); TextField("基础模型，例如 gpt-4.1", text: $baseModel).textInputAutocapitalization(.never); Picker("模型类型", selection: $type) { Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio"); Text("嵌入").tag("embedding") }; Picker("供应商连接", selection: $connectionID) { Text("未绑定").tag(""); ForEach(connections) { Text($0.name).tag($0.id) } }; Toggle("启用", isOn: $enabled) }
+        Section("模型") { TextField("显示名称", text: $name); TextField("基础模型，例如 gpt-4.1", text: $baseModel).textInputAutocapitalization(.never); Picker("模型类型", selection: $type) { Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio"); Text("嵌入").tag("embedding") }; Picker("所属账号连接", selection: $connectionID) { Text("未绑定账号").tag(""); ForEach(connections) { Text("\($0.name) · \($0.providerType ?? "通用")").tag($0.id) } }; Toggle("启用", isOn: $enabled) }
         Section("说明") { TextField("模型用途", text: $description, axis: .vertical).lineLimit(2...5); TextField("系统提示词", text: $systemPrompt, axis: .vertical).lineLimit(4...10) }
         if type == "chat" { Section("生成参数") { LabeledContent("Temperature", value: String(format: "%.1f", temperature)); Slider(value: $temperature, in: 0...2, step: 0.1); LabeledContent("Top P", value: String(format: "%.1f", topP)); Slider(value: $topP, in: 0...1, step: 0.1); Stepper("最大 Token：\(maxTokens)", value: $maxTokens, in: 128...128000, step: 128) } }
     }.navigationTitle(item == nil ? "新增模型" : "编辑模型").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseModel.isEmpty) } } } }
@@ -3004,14 +3424,179 @@ private struct WorkflowForm: View {
 }
 
 private struct ExpenseDetail: View {
-    let item: CompanyExpense; @State private var copiedField: String?
+    @EnvironmentObject private var session: NativeSession
+    let item: CompanyExpense
+    @State private var copiedField: String?
+    @State private var attachmentURL: String?
+    @State private var attachmentName: String?
+    @State private var attachmentError: String?
+    @State private var deletingAttachment = false
+    @State private var showingDeleteAttachment = false
+    init(item: CompanyExpense) {
+        self.item = item
+        _attachmentURL = State(initialValue: item.attachmentURL)
+        _attachmentName = State(initialValue: item.attachmentName)
+    }
     private var fields: [NativeCopyField] { [.init(label: "流水号", value: item.expenseNo), .init(label: "金额", value: money(item.amount)), .init(label: "分类", value: item.category), .init(label: "付款账户", value: item.paymentAccount), .init(label: "消费日期", value: item.expenseDate), .init(label: "提交人", value: item.submitterName), .init(label: "消费范围", value: item.expenseScope), .init(label: "说明", value: item.description.isEmpty ? "无" : item.description)] }
     var body: some View {
-        List { Section("流水资料") { ForEach(fields) { field in NativeCopyRow(label: field.label, value: field.value, copiedField: $copiedField) } } }
-            .navigationTitle(item.expenseNo)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Image(systemName: expenseCategoryIcon(item.category))
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .background(.white.opacity(0.16), in: Circle())
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.category).font(.headline)
+                            Text(item.paymentType == "company" ? "公司支出" : "个人支出").font(.caption).opacity(0.72)
+                        }
+                        Spacer()
+                    }
+                    Text(money(item.amount))
+                        .font(.system(size: 36, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    HStack(spacing: 14) {
+                        Label(item.expenseDate, systemImage: "calendar")
+                        Label(item.paymentAccount, systemImage: "creditcard")
+                    }
+                    .font(.caption)
+                    .opacity(0.78)
+                    .lineLimit(1)
+                }
+                .foregroundStyle(.white)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.blue, in: RoundedRectangle(cornerRadius: 16))
+
+                ExpenseDetailSection(title: "流水资料", fields: fields, copiedField: $copiedField)
+                if let attachmentURL, let url = nativeImageURL(attachmentURL) {
+                    ExpenseAttachmentSection(
+                        url: url,
+                        name: attachmentName ?? url.lastPathComponent,
+                        deleting: deletingAttachment,
+                        onOpen: { UIApplication.shared.open(url) },
+                        onDelete: { showingDeleteAttachment = true }
+                    )
+                }
+                if let attachmentError {
+                    Label(attachmentError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red).padding(.horizontal, 4)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .padding(.bottom, 20)
+        }
+        .background(Color(.systemGroupedBackground))
+            .navigationTitle("记账详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { NativeCopyAllButton(fields: fields, copiedField: $copiedField) }
             .toolbar(.hidden, for: .tabBar)
+            .confirmationDialog("确定删除这张票据吗？", isPresented: $showingDeleteAttachment, titleVisibility: .visible) {
+                Button("删除票据", role: .destructive) { Task { await removeAttachment() } }
+                Button("取消", role: .cancel) { showingDeleteAttachment = false }
+            }
+    }
+
+    private func removeAttachment() async {
+        deletingAttachment = true; attachmentError = nil
+        defer { deletingAttachment = false }
+        do {
+            let _: CompanyExpense = try await session.send("company-expenses/\(item.id)/attachment", method: "DELETE")
+            attachmentURL = nil
+            attachmentName = nil
+        } catch {
+            attachmentError = session.message(for: error)
+        }
+    }
+}
+
+private struct ExpenseAttachmentSection: View {
+    let url: URL
+    let name: String
+    let deleting: Bool
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Label("票据附件", systemImage: "paperclip")
+                    .font(.headline)
+                Spacer()
+                Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 48, alignment: .leading)
+            Divider()
+            HStack(spacing: 10) {
+                Button(action: onOpen) {
+                    Label("打开", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                ShareLink(item: url) {
+                    Label("保存", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Spacer(minLength: 0)
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: deleting ? "hourglass" : "trash")
+                }
+                .disabled(deleting)
+                .accessibilityLabel("删除票据")
+            }
+            .padding(16)
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct ExpenseDetailSection: View {
+    let title: String
+    let fields: [NativeCopyField]
+    @Binding var copiedField: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title).font(.headline).padding(.horizontal, 16).frame(minHeight: 48, alignment: .leading)
+            Divider()
+            ForEach(Array(fields.enumerated()), id: \.element.id) { index, field in
+                ExpenseDetailCopyRow(field: field, copiedField: $copiedField)
+                if index < fields.count - 1 { Divider().padding(.leading, 16) }
+            }
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+private struct ExpenseDetailCopyRow: View {
+    let field: NativeCopyField
+    @Binding var copiedField: String?
+    var body: some View {
+        Button {
+            UIPasteboard.general.string = field.value
+            copiedField = field.label
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(field.label).font(.caption).foregroundStyle(.secondary)
+                    Text(field.value).font(.body).foregroundStyle(.primary).lineLimit(3).multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: copiedField == field.label ? "checkmark.circle.fill" : "doc.on.doc")
+                    .foregroundStyle(copiedField == field.label ? .green : .secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(field.label)：\(field.value)")
+        .accessibilityHint("点击复制")
     }
 }
 
@@ -3191,6 +3776,67 @@ private struct AIModel: Codable, Identifiable {
     enum CodingKeys: String, CodingKey { case id, name, enabled, hidden, temperature, description; case baseModel = "base_model"; case modelType = "model_type"; case topP = "top_p"; case maxTokens = "max_tokens"; case systemPrompt = "system_prompt"; case connectionID = "connection_id" }
 }
 private struct AIModelsResponse: Codable { let models: [AIModel] }
+
+private struct AIModelIcon: View {
+    let model: AIModel?
+    let connections: [AIConnection]
+    let size: CGFloat
+
+    init(model: AIModel?, connections: [AIConnection] = [], size: CGFloat = 40) {
+        self.model = model
+        self.connections = connections
+        self.size = size
+    }
+
+    var body: some View {
+        Group {
+            if let model, let provider = aiProviderKey(for: model, connections: connections), let image = UIImage(named: "AIProvider\(provider)") {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(size * 0.17)
+            } else {
+                Image(systemName: fallbackSymbol)
+                    .font(.system(size: size * 0.38, weight: .semibold))
+                    .foregroundStyle(fallbackColor)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private var fallbackSymbol: String { model?.modelType == "audio" ? "waveform" : model?.modelType == "image" ? "photo" : "cpu" }
+    private var fallbackColor: Color { model?.modelType == "audio" ? .orange : model?.modelType == "image" ? .purple : .blue }
+}
+
+private func aiProviderKey(for model: AIModel, connections: [AIConnection]) -> String? {
+    let connectionProvider = connections.first(where: { $0.id == model.connectionID })?.providerType ?? ""
+    let value = "\(connectionProvider) \(model.name) \(model.baseModel)".lowercased()
+    let mappings: [(String, String)] = [
+        ("anthropic", "Anthropic"), ("claude", "Anthropic"), ("deepseek", "Deepseek"),
+        ("google", "Google"), ("gemini", "Google"), ("qwen", "Qwen"), ("通义", "Qwen"),
+        ("doubao", "Doubao"), ("豆包", "Doubao"), ("moonshot", "Moonshot"), ("kimi", "Moonshot"),
+        ("minimax", "Minimax"), ("zhipu", "Zhipu"), ("智谱", "Zhipu"), ("glm", "Zhipu"),
+        ("yi-", "Yi"), ("零一", "Yi"), ("cohere", "Cohere"), ("mistral", "Mistral"),
+        ("groq", "Groq"), ("xai", "Xai"), ("grok", "Xai"), ("meta", "Meta"),
+        ("baichuan", "Baichuan"), ("百川", "Baichuan"), ("stepfun", "Stepfun"),
+        ("siliconflow", "Siliconflow"), ("硅基", "Siliconflow"), ("openrouter", "Openrouter"),
+        ("azure", "Azure"), ("openai", "Openai"), ("gpt-", "Openai"), ("chatgpt", "Openai")
+    ]
+    return mappings.first(where: { value.contains($0.0) })?.1
+}
+
+private func aiModelAccountLabel(_ model: AIModel, connections: [AIConnection]) -> String {
+    guard let connectionID = model.connectionID,
+          let connection = connections.first(where: { $0.id == connectionID }) else {
+        return "未分配账号"
+    }
+    let name = connection.name.isEmpty ? "未命名账号" : connection.name
+    let status = connection.enabled == 0 ? "已停用" : (connection.hasKey == false && connection.providerType != "ollama" ? "未配置 Key" : "可用")
+    return "账号：\(name) · \(status)"
+}
+
 private struct AIConnection: Codable, Identifiable {
     let id: String; let name: String; let baseURL: String; let providerType: String?; let purpose: String?; let enabled: Int; let hasKey: Bool?
     enum CodingKeys: String, CodingKey { case id, name, purpose, enabled; case baseURL = "base_url"; case providerType = "provider_type"; case hasKey = "has_key" }
@@ -3430,7 +4076,8 @@ private struct TaskSummary: Codable {
 private struct CompanyExpense: Codable, Identifiable {
     let id: Int; let expenseNo: String; let expenseDate: String; let amount: Double; let category: String
     let paymentType: String; let paymentAccount: String; let expenseScope: String; let description: String; let submitterName: String
-    enum CodingKeys: String, CodingKey { case id, amount, category, description; case expenseNo = "expense_no"; case expenseDate = "expense_date"; case paymentType = "payment_type"; case paymentAccount = "payment_account"; case expenseScope = "expense_scope"; case submitterName = "submitter_name" }
+    let attachmentURL: String?; let attachmentName: String?
+    enum CodingKeys: String, CodingKey { case id, amount, category, description; case expenseNo = "expense_no"; case expenseDate = "expense_date"; case paymentType = "payment_type"; case paymentAccount = "payment_account"; case expenseScope = "expense_scope"; case submitterName = "submitter_name"; case attachmentURL = "attachment_url"; case attachmentName = "attachment_name" }
 }
 
 private struct ExpenseSummary: Codable {
@@ -3816,7 +4463,7 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
 
     func send<T: Decodable>(_ path: String, method: String, body: [String: Any]? = nil, allowEmpty: Bool = false) async throws -> T {
         guard let url = URL(string: path, relativeTo: origin) else { throw NativeAPIError.invalidResponse }
-        var request = URLRequest(url: url); request.httpMethod = method; request.setValue("application/json", forHTTPHeaderField: "Accept")
+        var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 20; request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyWorkspaceHeaders(to: &request, path: path)
         if let body { request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -3871,18 +4518,28 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
 
     func streamChat(_ question: String, modelID: String, imageURLs: [String] = [], documents: [SearchDocument] = [], skillIDs: [String] = [], toolIDs: [String] = [], onChunk: @escaping @MainActor (String) -> Void) async throws {
         guard let url = URL(string: "ai-api/chat/stream", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
-        var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 45; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyWorkspaceHeaders(to: &request, path: "ai-api/chat/stream")
         var body: [String: Any] = ["question": question, "image_urls": imageURLs, "documents": documents.map(\.body), "skill_ids": skillIDs, "tool_ids": toolIDs]
         if !modelID.isEmpty { body["model_id"] = modelID }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NativeAPIError.invalidResponse }
+        guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            var raw = Data()
+            for try await byte in bytes { raw.append(byte) }
+            let payload = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any]
+            let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "AI 服务返回错误（(http.statusCode)）"
+            throw NativeAPIError.server(http.statusCode, detail)
+        }
+        var receivedChunk = false
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard let data = line.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let content = object["content"] as? String else { continue }
+            receivedChunk = true
             onChunk(content)
         }
+        if !receivedChunk { throw NativeAPIError.server(502, "AI 模型没有返回内容，请检查模型账号是否可用。") }
     }
 
     func logout() async {
@@ -4002,7 +4659,7 @@ private struct HomeModuleManager: View {
     @State private var saving = false
     @State private var error: String?
     @State private var originalKeys: [String] = []
-    private var available: [HomeModuleItem] { homeModuleCatalog.filter { !keys.contains($0.id) } }
+    private var available: [HomeModuleItem] { homeModuleCatalog.filter { !keys.contains($0.id) && $0.destination.isAuthorized(for: session) } }
     private var reachedLimit: Bool { keys.count >= maximumHomeModuleCount }
     var body: some View {
         NavigationStack {
@@ -4028,7 +4685,11 @@ private struct HomeModuleManager: View {
             .environment(\.editMode, .constant(.active))
             .navigationTitle("常用功能排序")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { if originalKeys.isEmpty { originalKeys = keys } }
+            .onAppear {
+                let authorized = keys.filter { key in homeModuleCatalog.first { $0.id == key }?.destination.isAuthorized(for: session) ?? false }
+                if authorized != keys { keys = authorized }
+                if originalKeys.isEmpty { originalKeys = keys }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { keys = originalKeys; dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中…" : "保存") { Task { await save() } }.disabled(saving) }

@@ -530,7 +530,7 @@ async function handleApi(req, res, url) {
         category: body.category || data.expenseCategories[0], payment_type: body.payment_type || 'company',
         payment_account: body.payment_account || '公司账户', expense_scope: body.expense_scope || '公共费用',
         description: body.description || '', submitter_name: body.submitter_name || demoUser.display_name,
-        reimbursement_status: body.reimbursement_status || 'not_required', attachment_url: null,
+        reimbursement_status: body.reimbursement_status || 'not_required', attachment_url: null, attachment_name: null,
         created_at: new Date().toISOString(),
       }
       data.expenses.unshift(item)
@@ -545,6 +545,14 @@ async function handleApi(req, res, url) {
     if (!item) return json(res, 404, { detail: '记账记录不存在' }), true
     await readRaw(req)
     item.attachment_url = '/favicon.svg'
+    item.attachment_name = '票据附件.svg'
+    return json(res, 200, item), true
+  }
+  if (expenseAttachmentMatch && method === 'DELETE') {
+    const item = data.expenses.find((row) => row.id === Number(expenseAttachmentMatch[1]))
+    if (!item) return json(res, 404, { detail: '记账记录不存在' }), true
+    item.attachment_url = null
+    item.attachment_name = null
     return json(res, 200, item), true
   }
   const expenseMatch = pathname.match(/^\/company-expenses\/(\d+)$/)

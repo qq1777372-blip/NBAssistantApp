@@ -54,6 +54,12 @@ async function main() {
       '/api/sycm/latest?period=today', '/api/sycm/collector-devices',
     ]
     for (const path of arrayPaths) await expectArray(path)
+    const expenses = await expectArray('/company-expenses')
+    const expenseWithAttachment = expenses.find((item) => item.attachment_url)
+    assert.ok(expenseWithAttachment, 'demo expense should include an attachment')
+    const removedAttachment = await request(`/company-expenses/${expenseWithAttachment.id}/attachment`, { method: 'DELETE' })
+    assert.equal(removedAttachment.status, 200)
+    assert.equal(removedAttachment.payload.attachment_url, null)
 
     const objectPaths = [
       '/task-bookkeeping/summary', '/company-expenses/summary', '/warehouse/summary',
