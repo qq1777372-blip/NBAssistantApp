@@ -47,13 +47,8 @@ private struct NativeRootView: View {
 
 private struct NativeLoginView: View {
     @EnvironmentObject private var session: NativeSession
-#if DEBUG
-    @State private var account = "demo"
-    @State private var password = "Demo@123456"
-#else
     @State private var account = ""
     @State private var password = ""
-#endif
     @State private var showsPassword = false
     @State private var totpCode = ""
     @State private var captchaCode = ""
@@ -400,6 +395,93 @@ private struct PendingChatImage: Identifiable {
     let dataURL: String
 }
 
+fileprivate struct AIWebPage: Codable, Hashable, Identifiable {
+    let url: String
+    let title: String
+    let summary: String
+    let content: String
+
+    var id: String { url }
+    var document: SearchDocument { SearchDocument(title: title, content: content, url: url) }
+}
+
+private enum AIContentBlock {
+    case markdown(String)
+    case code(language: String, value: String)
+}
+
+private struct AIMessageContent: View {
+    let content: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(aiContentBlocks(content).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .markdown(let text):
+                    Text(aiMarkdown(text))
+                        .textSelection(.enabled)
+                        .tint(.blue)
+                case .code(let language, let value):
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 8) {
+                            Text(language.isEmpty ? "代码" : language.uppercased())
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button { UIPasteboard.general.string = value } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("复制代码")
+                        }
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(value)
+                                .font(.system(.footnote, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                }
+            }
+        }
+    }
+}
+
+private func aiMarkdown(_ value: String) -> AttributedString {
+    let options = AttributedString.MarkdownParsingOptions(
+        interpretedSyntax: .full,
+        failurePolicy: .returnPartiallyParsedIfPossible
+    )
+    return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+}
+
+private func aiContentBlocks(_ source: String) -> [AIContentBlock] {
+    guard let regex = try? NSRegularExpression(pattern: "(?s)```([^\\n]*)\\n(.*?)```") else {
+        return [.markdown(source)]
+    }
+    let ns = source as NSString
+    let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
+    guard !matches.isEmpty else { return [.markdown(source)] }
+    var result: [AIContentBlock] = []
+    var cursor = 0
+    for match in matches {
+        let fullRange = match.range(at: 0)
+        if fullRange.location > cursor {
+            result.append(.markdown(ns.substring(with: NSRange(location: cursor, length: fullRange.location - cursor))))
+        }
+        let language = match.range(at: 1).location == NSNotFound ? "" : ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = match.range(at: 2).location == NSNotFound ? "" : ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .newlines)
+        result.append(.code(language: language, value: value))
+        cursor = fullRange.location + fullRange.length
+    }
+    if cursor < ns.length {
+        result.append(.markdown(ns.substring(with: NSRange(location: cursor, length: ns.length - cursor))))
+    }
+    return result
+}
+
 private struct ComposerContextChip: View {
     let title: String
     let icon: String
@@ -486,6 +568,7 @@ private enum AIComposerAttachmentAction {
     case knowledge
     case photos
     case file
+    case webPage
 }
 
 private struct NativeAIWorkspaceView: View {
@@ -494,6 +577,7 @@ private struct NativeAIWorkspaceView: View {
     @State private var models: [AIModel] = []; @State private var selectedModel = ""
     @State private var modelConnections: [AIConnection] = []
     @State private var sending = false; @State private var error: String?; @State private var streamTask: Task<Void, Never>?
+    @State private var streamFlushTask: Task<Void, Never>?; @State private var streamBuffer = ""
     @State private var loadingWorkspace = false
     @State private var showingHistory = false; @State private var renaming: AIChat?; @State private var renameText = ""
     @StateObject private var recorder = NativeAudioRecorder(); @State private var audioModel = ""
@@ -505,6 +589,8 @@ private struct NativeAIWorkspaceView: View {
     @State private var showingPhotoPicker = false; @State private var showingAttachmentActions = false
     @State private var pendingAttachmentAction: AIComposerAttachmentAction?
     @State private var importingFile = false; @State private var importingAttachment = false; @State private var importedFileNames: [String] = []
+    @State private var pendingAttachmentIDs: [String] = []; @State private var pendingWebPages: [AIWebPage] = []
+    @State private var showingWebURLInput = false; @State private var webURLText = ""; @State private var readingWebPage = false
     @State private var showingModelPicker = false
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
@@ -540,25 +626,11 @@ private struct NativeAIWorkspaceView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 14) {
-                        if activeChat?.messages.isEmpty != false { VStack(spacing: 10) { Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue); Text("开始新对话").font(.headline); Text("输入问题或使用语音开始").font(.subheadline).foregroundStyle(.secondary) }.padding(.top, 80) }
-                        ForEach(activeChat?.messages ?? []) { item in chatMessage(item).id(item.id) }
-                        Color.clear.frame(height: 1).id("ai-chat-bottom")
-                    }
-                    .padding()
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .onAppear { scrollToBottom(proxy, animated: false) }
-                .onChange(of: activeChatID) { _ in scrollToBottom(proxy, animated: false) }
-                .onChange(of: activeChat?.messages.count ?? 0) { _ in scrollToBottom(proxy) }
-                .onChange(of: activeChat?.messages.last?.content.count ?? 0) { _ in scrollToBottom(proxy, animated: false) }
-                .onChange(of: scrollRequest) { _ in scrollToBottom(proxy, animated: false) }
-            }
-            if let error { HStack(spacing: 6) { Image(systemName: "exclamationmark.circle"); Text(error).lineLimit(2); Spacer(); Button { Task { await loadWorkspace() } } label: { Image(systemName: "arrow.clockwise") }; Button { self.error = nil } label: { Image(systemName: "xmark") } }.font(.caption).foregroundStyle(.orange).padding(.horizontal, 14).padding(.top, 6) }
+            chatScrollContent
+            errorBanner
             composer
-        }.navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
+        }
+        .navigationTitle("AI 工作台").navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .top) {
             if loadingWorkspace && chats.isEmpty {
                 HStack(spacing: 8) {
@@ -618,8 +690,63 @@ private struct NativeAIWorkspaceView: View {
         .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItems, maxSelectionCount: max(4 - pendingImages.count, 1), matching: .images)
         .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
         .onChange(of: imageMode) { _ in selectCompatibleModel() }
+        .alert("读取网页", isPresented: $showingWebURLInput) {
+            TextField("https://example.com/article", text: $webURLText)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("读取") { Task { await readWebPageInput() } }
+            Button("取消", role: .cancel) { webURLText = "" }
+        } message: {
+            Text("读取公开网页正文后，可让 AI 总结、提取或对比内容。")
+        }
         .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
-        .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
+        .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); streamFlushTask?.cancel(); Task { await saveActiveChat() } }
+    }
+    private var chatScrollContent: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 14) {
+                    chatEmptyState
+                    ForEach(activeChat?.messages ?? []) { item in
+                        chatMessage(item).id(item.id)
+                    }
+                    Color.clear.frame(height: 1).id("ai-chat-bottom")
+                }
+                .padding()
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .onAppear { scrollToBottom(proxy, animated: false) }
+            .onChange(of: activeChatID) { _ in scrollToBottom(proxy, animated: false) }
+            .onChange(of: activeChat?.messages.count ?? 0) { _ in scrollToBottom(proxy) }
+            .onChange(of: activeChat?.messages.last?.content.count ?? 0) { _ in scrollToBottom(proxy, animated: false) }
+            .onChange(of: scrollRequest) { _ in scrollToBottom(proxy, animated: false) }
+        }
+    }
+    @ViewBuilder private var chatEmptyState: some View {
+        if activeChat?.messages.isEmpty != false {
+            VStack(spacing: 10) {
+                Image(systemName: "sparkles").font(.largeTitle).foregroundStyle(.blue)
+                Text("开始新对话").font(.headline)
+                Text("输入问题或使用语音开始").font(.subheadline).foregroundStyle(.secondary)
+            }
+            .padding(.top, 80)
+        }
+    }
+    @ViewBuilder private var errorBanner: some View {
+        if let error {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle")
+                Text(error).lineLimit(2)
+                Spacer()
+                Button { Task { await loadWorkspace() } } label: { Image(systemName: "arrow.clockwise") }
+                Button { self.error = nil } label: { Image(systemName: "xmark") }
+            }
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+        }
     }
     private var modelPickerSheet: some View {
         NavigationStack {
@@ -734,13 +861,19 @@ private struct NativeAIWorkspaceView: View {
                             Text("模型未返回内容").foregroundStyle(.secondary)
                         }
                     } else {
-                        Text(item.content).textSelection(.enabled)
+                        AIMessageContent(content: item.content)
+                    }
+                }
+                if !item.webPages.isEmpty {
+                    ForEach(item.webPages) { page in
+                        webPageSource(page)
                     }
                 }
                 if item.role == "assistant" && !item.content.isEmpty {
                     HStack {
                         Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("复制回答")
                         Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("重新生成")
+                        if item.status == "failed" { Button { regenerate(item.id) } label: { Image(systemName: "arrow.triangle.2.circlepath") }.accessibilityLabel("重试") }
                     }
                     .font(.caption)
                 }
@@ -784,13 +917,15 @@ private struct NativeAIWorkspaceView: View {
                     .padding(.horizontal, 2).padding(.top, 4)
                 }
             }
-            if knowledgeEnabled || webSearch || imageMode || !importedFileNames.isEmpty {
+            if knowledgeEnabled || webSearch || imageMode || !importedFileNames.isEmpty || !pendingWebPages.isEmpty || !pendingAttachmentIDs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
                         if knowledgeEnabled { ComposerContextChip(title: knowledgeLabel, icon: "books.vertical.fill") { knowledgeEnabled = false; selectedKnowledge = "" } }
                         if webSearch { ComposerContextChip(title: "联网", icon: "globe") { webSearch = false } }
                         if imageMode { ComposerContextChip(title: "生图", icon: "photo.badge.plus") { imageMode = false } }
                         ForEach(importedFileNames, id: \.self) { name in ComposerContextChip(title: name, icon: "doc.fill") { importedFileNames.removeAll { $0 == name } } }
+                        ForEach(pendingWebPages) { page in ComposerContextChip(title: page.title, icon: "safari") { pendingWebPages.removeAll { $0.id == page.id } } }
+                        if !pendingAttachmentIDs.isEmpty { ComposerContextChip(title: "\(pendingAttachmentIDs.count) 个对话文件", icon: "paperclip") { pendingAttachmentIDs.removeAll() } }
                     }
                     .padding(.horizontal, 2)
                 }
@@ -803,7 +938,7 @@ private struct NativeAIWorkspaceView: View {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold))
                 }
                 .buttonStyle(AIComposerButtonStyle())
-                .disabled(importingAttachment)
+                .disabled(importingAttachment || readingWebPage)
                 .accessibilityLabel("添加知识库、图片或文件")
                 TextField(recorder.recording ? "正在录音…" : imageMode ? "描述要生成的图片…" : "给 AI 发消息…", text: $question, axis: .vertical)
                     .lineLimit(1...4)
@@ -819,7 +954,7 @@ private struct NativeAIWorkspaceView: View {
                 }
                 .buttonStyle(AIComposerButtonStyle(foreground: activeTools ? .blue : .primary, fill: activeTools ? Color.blue.opacity(0.13) : nil))
                 .accessibilityLabel("对话能力设置")
-                if importingAttachment {
+                if importingAttachment || readingWebPage {
                     ProgressView().controlSize(.small).frame(width: 44, height: 44).accessibilityLabel("正在导入附件")
                 } else if recorder.transcribing {
                     ProgressView().controlSize(.small).frame(width: 44, height: 44).accessibilityLabel("正在转写语音")
@@ -844,7 +979,8 @@ private struct NativeAIWorkspaceView: View {
             List {
                 Button { queueAttachmentAction(.photos) } label: { Label("从照片图库选择", systemImage: "photo.on.rectangle") }
                     .disabled(pendingImages.count >= 4)
-                Button { queueAttachmentAction(.file) } label: { Label("导入文件", systemImage: "doc.badge.plus") }
+                Button { queueAttachmentAction(.file) } label: { Label("作为本次对话文件", systemImage: "paperclip") }
+                Button { queueAttachmentAction(.webPage) } label: { Label("读取网页内容", systemImage: "safari") }
                 Button { queueAttachmentAction(.knowledge) } label: { Label("选择知识库", systemImage: "books.vertical") }
             }
             .foregroundStyle(.primary)
@@ -852,7 +988,7 @@ private struct NativeAIWorkspaceView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("取消") { showingAttachmentActions = false } }
         }
-        .presentationDetents([.height(250)])
+        .presentationDetents([.height(320)])
         .presentationDragIndicator(.visible)
     }
     private func queueAttachmentAction(_ action: AIComposerAttachmentAction) {
@@ -867,11 +1003,31 @@ private struct NativeAIWorkspaceView: View {
             case .knowledge: showingKnowledge = true
             case .photos: showingPhotoPicker = true
             case .file: importingFile = true
+            case .webPage: showingWebURLInput = true
             }
         }
     }
-    private var canSend: Bool { !sending && (!question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
-    private var activeTools: Bool { webSearch || imageMode || knowledgeEnabled || !selectedSkills.isEmpty || !selectedTools.isEmpty }
+
+    @ViewBuilder private func webPageSource(_ page: AIWebPage) -> some View {
+        let content = HStack(spacing: 8) {
+            Image(systemName: "safari").foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(page.title).font(.caption.weight(.semibold)).lineLimit(1)
+                Text(page.url).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Spacer()
+            Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(9)
+        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        if let url = URL(string: page.url) {
+            Link(destination: url) { content }
+        } else {
+            content
+        }
+    }
+    private var canSend: Bool { !sending && (!question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty || !pendingAttachmentIDs.isEmpty || !pendingWebPages.isEmpty) }
+    private var activeTools: Bool { webSearch || imageMode || knowledgeEnabled || !selectedSkills.isEmpty || !selectedTools.isEmpty || !pendingAttachmentIDs.isEmpty || !pendingWebPages.isEmpty }
     private var knowledgeLabel: String { knowledge.first(where: { $0.id == selectedKnowledge })?.name ?? "全部知识" }
     private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; if let chatModel = chat.modelID, !chatModel.isEmpty { selectedModel = chatModel; persistSelectedModel(); applySelectedModelConfiguration() }; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button("完成") { showingHistory = false } } } }
     private var toolsSheet: some View {
@@ -947,14 +1103,42 @@ private struct NativeAIWorkspaceView: View {
     private func send() {
         let typedValue = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages.map(\.dataURL)
-        let value = typedValue.isEmpty && !images.isEmpty ? "请分析这些图片" : typedValue
+        let value: String
+        if !typedValue.isEmpty {
+            value = typedValue
+        } else if !images.isEmpty {
+            value = "请分析这些图片"
+        } else if !pendingWebPages.isEmpty || !pendingAttachmentIDs.isEmpty {
+            value = "请阅读并总结已添加内容"
+        } else {
+            value = ""
+        }
         guard !value.isEmpty else { return }
+        if pendingWebPages.isEmpty, let url = firstWebURL(in: value), !readingWebPage {
+            readingWebPage = true
+            streamTask = Task { @MainActor in
+                defer { readingWebPage = false }
+                do {
+                    guard let pageURL = URL(string: url) else { throw NativeAPIError.invalidResponse }
+                    let page = try await session.readWebPage(pageURL)
+                    pendingWebPages = [page]
+                    send()
+                } catch {
+                    self.error = "网页读取失败：\(session.message(for: error))"
+                }
+            }
+            return
+        }
         if activeIndex == nil { createChat() }
         guard let index = activeIndex else { return }
         question = ""; pendingImages = []; importedFileNames = []; error = nil
-        chats[index].messages.append(AIChatMessage(role: "user", content: value, imageURLs: images))
+        streamFlushTask?.cancel(); streamFlushTask = nil; streamBuffer.removeAll(keepingCapacity: true)
+        let fileIDs = pendingAttachmentIDs
+        let webPages = pendingWebPages
+        pendingAttachmentIDs = []; pendingWebPages = []
+        chats[index].messages.append(AIChatMessage(role: "user", content: value, imageURLs: images, fileIDs: fileIDs, webPages: webPages, status: "sent"))
         let answerID = UUID().uuidString
-        chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: ""))
+        chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: "", status: "streaming"))
         if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }
         chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true
         streamTask = Task {
@@ -971,17 +1155,20 @@ private struct NativeAIWorkspaceView: View {
                         documents += result.documents
                     }
                     if webSearch { let result: SearchDocumentsResponse = try await session.send("ai-api/web-search", method: "POST", body: ["query": value, "limit": 5]); documents += result.documents }
-                    try await session.streamChat(value, modelID: selectedModel, imageURLs: images, documents: documents, skillIDs: Array(selectedSkills), toolIDs: Array(selectedTools)) { chunk in
-                        guard let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }
-                        chats[chatIndex].messages[messageIndex].content += chunk
+                    documents += webPages.map(\.document)
+                    try await session.streamChat(value, modelID: selectedModel, chatID: activeChatID, history: Array(chats[index].messages.dropLast()), modelSystemPrompt: currentModel?.systemPrompt, imageURLs: images, fileIDs: fileIDs, documents: documents, skillIDs: Array(selectedSkills), toolIDs: Array(selectedTools)) { chunk in
+                        queueStreamChunk(chunk, answerID: answerID)
                     }
                 }
             } catch is CancellationError {
+                flushStreamBuffer(answerID: answerID)
                 if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }), chats[chatIndex].messages[messageIndex].content.isEmpty {
                     chats[chatIndex].messages[messageIndex].content = "已停止生成"
+                    chats[chatIndex].messages[messageIndex].status = "cancelled"
                 }
             }
             catch {
+                flushStreamBuffer(answerID: answerID)
                 let message = session.message(for: error)
                 if imageMode, let model = models.first(where: { $0.id == selectedModel }) {
                     self.error = "图片模型 \(aiModelDisplayName(model))（\(aiModelAccountName(model, connections: modelConnections))）：\(message)"
@@ -991,13 +1178,45 @@ private struct NativeAIWorkspaceView: View {
                 if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }), chats[chatIndex].messages[messageIndex].content.isEmpty {
                     let failurePrefix = imageMode ? "图片生成失败" : "请求失败"
                     chats[chatIndex].messages[messageIndex].content = "\(failurePrefix)：\(message)"
+                    chats[chatIndex].messages[messageIndex].status = "failed"
                 }
+            }
+            flushStreamBuffer(answerID: answerID)
+            if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) {
+                chats[chatIndex].messages[messageIndex].status = chats[chatIndex].messages[messageIndex].content.isEmpty ? "empty" : "completed"
             }
             sending = false
             await saveActiveChat()
         }
     }
-    private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
+    private func stop() {
+        streamTask?.cancel(); streamTask = nil
+        flushStreamBuffer(answerID: activeChat?.messages.last?.id)
+        sending = false
+        Task { await saveActiveChat() }
+    }
+    private func queueStreamChunk(_ chunk: String, answerID: String) {
+        streamBuffer += chunk
+        guard streamFlushTask == nil else { return }
+        streamFlushTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            flushStreamBuffer(answerID: answerID)
+        }
+    }
+    private func flushStreamBuffer(answerID: String?) {
+        streamFlushTask?.cancel(); streamFlushTask = nil
+        guard let answerID, !streamBuffer.isEmpty,
+              let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }),
+              let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) else { return }
+        chats[chatIndex].messages[messageIndex].content += streamBuffer
+        streamBuffer.removeAll(keepingCapacity: true)
+    }
+    private func firstWebURL(in value: String) -> String? {
+        let pattern = "https?://[^\\s<>]+"
+        guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: value, range: NSRange(location: 0, length: (value as NSString).length)) else { return nil }
+        return (value as NSString).substring(with: match.range).trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:)]}"))
+    }
     private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id; persistChatsLocally(); scrollRequest += 1 }
     private func updateActiveModel() {
         applySelectedModelConfiguration()
@@ -1034,6 +1253,9 @@ private struct NativeAIWorkspaceView: View {
         let messages: [[String: Any]] = chat.messages.map { item in
             var body: [String: Any] = ["id": item.id, "role": item.role, "content": item.content]
             if !item.imageURLs.isEmpty { body["imageUrls"] = item.imageURLs }
+            if !item.fileIDs.isEmpty { body["file_ids"] = item.fileIDs }
+            if !item.webPages.isEmpty { body["web_pages"] = item.webPages.map { ["url": $0.url, "title": $0.title, "summary": $0.summary, "content": $0.content] } }
+            if let status = item.status { body["status"] = status }
             return body
         }
         let _: EmptyResponse? = try? await session.send("ai-api/chats/save", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0, "title": chat.title, "messages": messages, "model_id": chat.modelID ?? "", "favorite": chat.favorite, "archived": chat.archived, "folder": chat.folder, "created_at": Int(chat.createdAt)], allowEmpty: true)
@@ -1052,6 +1274,8 @@ private struct NativeAIWorkspaceView: View {
         chats[index].messages.removeSubrange(messageIndex..<chats[index].messages.count)
         question = item.content
         pendingImages = restoredImages
+        pendingAttachmentIDs = item.fileIDs
+        pendingWebPages = item.webPages
         error = nil
         send()
     }
@@ -1128,14 +1352,28 @@ private struct NativeAIWorkspaceView: View {
             let data = try Data(contentsOf: url)
             guard data.count <= 15_000_000 else { throw NativeAPIError.server(400, "单个文件不能超过 15MB") }
             let response: ImportFileResponse = try await session.send("ai-api/documents/import-file", method: "POST", body: ["title": url.deletingPathExtension().lastPathComponent, "filename": url.lastPathComponent, "data": data.base64EncodedString()])
-            let target = selectedKnowledge.isEmpty ? knowledge.first?.id : selectedKnowledge
-            if let target {
-                let _: EmptyResponse = try await session.send("ai-api/files/assign", method: "POST", body: ["file_id": response.file.id, "knowledge_id": target], allowEmpty: true)
-                selectedKnowledge = target
-            }
+            pendingAttachmentIDs.append(response.file.id)
             if !importedFileNames.contains(url.lastPathComponent) { importedFileNames.append(url.lastPathComponent) }
-            knowledgeEnabled = true; imageMode = false
+            imageMode = false
         } catch { self.error = session.message(for: error) }
+    }
+    @MainActor private func readWebPageInput() async {
+        let value = webURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        webURLText = ""
+        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) else {
+            error = "请输入有效的 http 或 https 网页地址。"
+            return
+        }
+        readingWebPage = true; error = nil
+        defer { readingWebPage = false }
+        do {
+            let page = try await session.readWebPage(url)
+            pendingWebPages.removeAll { $0.id == page.id }
+            pendingWebPages.append(page)
+            imageMode = false
+        } catch {
+            self.error = "网页读取失败：\(session.message(for: error))"
+        }
     }
     private func toggleRecording() async {
         if recorder.recording {
@@ -1657,6 +1895,7 @@ private struct LedgerKeyButtonStyle: ButtonStyle {
 private struct ExpenseCategoryManager: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.editMode) private var editMode
     @Binding var categories: [String]
     @Binding var selection: String
     @State private var name = ""
@@ -1674,16 +1913,35 @@ private struct ExpenseCategoryManager: View {
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 Section("消费分类") {
-                    ForEach(categories, id: \.self) { value in
-                        HStack { Image(systemName: value == selection ? "checkmark.circle.fill" : "circle").foregroundStyle(value == selection ? .blue : .secondary); Text(value); Spacer() }
-                            .contentShape(Rectangle()).onTapGesture { selection = value }
+                    ForEach(Array(categories.enumerated()), id: \.element) { index, value in
+                        HStack(spacing: 10) {
+                            Button { selection = value } label: {
+                                Image(systemName: value == selection ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(value == selection ? .blue : .secondary)
+                                    .frame(width: 28, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(value == selection ? "已选择 \(value)" : "选择 \(value)")
+                            Text(value).lineLimit(1)
+                            Spacer(minLength: 8)
+                            if editMode?.wrappedValue == .active {
+                                Image(systemName: "line.3.horizontal")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 44, height: 44)
+                                    .accessibilityLabel("拖动调整 \(value) 的顺序")
+                            }
+                        }
                     }
                     .onDelete(perform: remove)
+                    .onMove(perform: moveCategories)
                 }
             }
             .navigationTitle("分类管理")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { EditButton() }
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+            }
         }
     }
 
@@ -1698,6 +1956,11 @@ private struct ExpenseCategoryManager: View {
         let removedSelection = offsets.contains { categories[$0] == selection }
         categories.remove(atOffsets: offsets)
         if removedSelection { selection = categories[0] }
+        persist()
+    }
+
+    private func moveCategories(from source: IndexSet, to destination: Int) {
+        categories.move(fromOffsets: source, toOffset: destination)
         persist()
     }
 
@@ -3627,21 +3890,97 @@ private struct ConnectionForm: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
     let item: AIConnection?; let onSave: () async -> Void
-    @State private var name: String; @State private var baseURL: String; @State private var apiKey = ""; @State private var provider: String; @State private var providerID: String; @State private var purpose: String; @State private var enabled: Bool
+    @State private var name: String; @State private var baseURL: String; @State private var apiKey = ""; @State private var provider: String; @State private var providerID: String; @State private var purpose: String; @State private var enabled: Bool; @State private var modelIDsText: String
     @State private var saving = false; @State private var testing = false; @State private var message: String?
     private let providerOptions = [("openai", "OpenAI"), ("anthropic", "Anthropic Claude"), ("google", "Google Gemini"), ("azure", "Azure OpenAI"), ("mistral", "Mistral AI"), ("groq", "Groq"), ("xai", "xAI Grok"), ("openrouter", "OpenRouter"), ("cohere", "Cohere"), ("meta", "Meta Llama"), ("deepseek", "DeepSeek"), ("qwen", "阿里云通义千问"), ("zhipu", "智谱 GLM"), ("moonshot", "月之暗面 Kimi"), ("baichuan", "百川智能"), ("yi", "零一万物 Yi"), ("doubao", "火山方舟 / 豆包"), ("siliconflow", "硅基流动"), ("minimax", "MiniMax"), ("stepfun", "阶跃星辰"), ("ollama", "Ollama"), ("custom", "其他 OpenAI 兼容平台")]
-    init(item: AIConnection?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? "OpenAI"); _baseURL = State(initialValue: item?.baseURL ?? "https://api.openai.com/v1"); _provider = State(initialValue: item?.providerType ?? "openai"); _providerID = State(initialValue: item?.providerID ?? item?.providerType ?? "openai"); _purpose = State(initialValue: item?.purpose ?? "general"); _enabled = State(initialValue: item?.enabled != 0) }
+    private let providerBaseURLs: [String: String] = [
+        "openai": "https://api.openai.com/v1",
+        "google": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "mistral": "https://api.mistral.ai/v1",
+        "groq": "https://api.groq.com/openai/v1",
+        "xai": "https://api.x.ai/v1",
+        "openrouter": "https://openrouter.ai/api/v1",
+        "cohere": "https://api.cohere.ai/compatibility/v1",
+        "deepseek": "https://api.deepseek.com/v1",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "zhipu": "https://open.bigmodel.cn/api/paas/v4",
+        "moonshot": "https://api.moonshot.cn/v1",
+        "baichuan": "https://api.baichuan-ai.com/v1",
+        "yi": "https://api.lingyiwanwu.com/v1",
+        "doubao": "https://ark.cn-beijing.volces.com/api/v3",
+        "siliconflow": "https://api.siliconflow.cn/v1",
+        "minimax": "https://api.minimax.chat/v1",
+        "stepfun": "https://api.stepfun.com/v1"
+    ]
+    init(item: AIConnection?, onSave: @escaping () async -> Void) {
+        self.item = item; self.onSave = onSave
+        let savedProviderID = item?.providerID ?? item?.providerType ?? "openai"
+        let savedBaseURL = item?.baseURL ?? "https://api.openai.com/v1"
+        let initialBaseURL = savedProviderID == "google" && savedBaseURL.lowercased().contains("aistudio.google.com/app/apikey")
+            ? "https://generativelanguage.googleapis.com/v1beta/openai"
+            : savedBaseURL
+        _name = State(initialValue: item?.name ?? "OpenAI")
+        _baseURL = State(initialValue: initialBaseURL)
+        _provider = State(initialValue: item?.providerType ?? "openai")
+        _providerID = State(initialValue: savedProviderID)
+        _purpose = State(initialValue: item?.purpose ?? "general")
+        _enabled = State(initialValue: item?.enabled != 0)
+        _modelIDsText = State(initialValue: item?.modelIDs?.joined(separator: "\n") ?? "")
+    }
     var body: some View { NavigationStack { Form {
         if let message { Text(message).foregroundStyle(.secondary) }
-        Section("账号连接") { TextField("账号名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never); Toggle("启用连接", isOn: $enabled) }
+        Section {
+            TextField("账号名称", text: $name)
+            TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL)
+            SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never)
+            Toggle("启用连接", isOn: $enabled)
+            TextField("手动模型 ID（每行一个）", text: $modelIDsText, axis: .vertical).lineLimit(2...6).textInputAutocapitalization(.never)
+        } header: {
+            Text("账号连接")
+        } footer: {
+            if providerID == "google" {
+                Text("API Key 必须填写 Google AI Studio 创建的 Gemini 密钥。编辑时留空会继续使用原密钥。")
+            }
+        }
         Section("平台与协议") {
             Picker("平台", selection: $providerID) { ForEach(providerOptions, id: \.0) { Text($0.1).tag($0.0) } }
             Picker("协议", selection: $provider) { Text("OpenAI 兼容").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }
             Picker("用途", selection: $purpose) { Text("通用").tag("general"); Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio") }
         }
         if item != nil { Button(testing ? "测试中..." : "测试连接") { Task { await test() } }.disabled(testing) }
+    }.onChange(of: providerID) { newValue in
+        if let presetURL = providerBaseURLs[newValue], baseURL.isEmpty || baseURL == "https://api.openai.com/v1" || baseURL.lowercased().contains("aistudio.google.com/app/apikey") {
+            baseURL = presetURL
+        }
     }.navigationTitle(item == nil ? "新增连接" : "编辑连接").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseURL.isEmpty || (item == nil && apiKey.isEmpty && provider != "ollama")) } } } }
-    private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_url": baseURL, "provider_type": provider, "provider_id": providerID, "purpose": purpose, "enabled": enabled ? 1 : 0]; if !apiKey.isEmpty { body["api_key"] = apiKey }; do { let _: EmptyResponse = try await session.send("ai-api/connections/save", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { message = session.message(for: error) } }
+    private func save() async {
+        let trimmedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedURL = trimmedURL.lowercased()
+        if providerID == "google" && (normalizedURL.contains("aistudio.google.com/app/apikey") || normalizedURL.contains("console.cloud.google.com")) {
+            message = "这里填的是 API Key 网页地址，不是接口地址。请点选 Google Gemini，让系统填入 https://generativelanguage.googleapis.com/v1beta/openai，或填写其他 Gemini 兼容网关地址。"
+            return
+        }
+        guard let url = URL(string: trimmedURL),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              url.host != nil else {
+            message = "请输入有效的 HTTP/HTTPS 接口地址。"
+            return
+        }
+        saving = true; defer { saving = false }
+        let modelIDs = modelIDsText.split(whereSeparator: { $0 == "\n" || $0 == "," }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        var body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_url": trimmedURL, "provider_type": provider, "provider_id": providerID, "purpose": purpose, "enabled": enabled ? 1 : 0, "model_ids": Array(modelIDs), "sync_models": true]
+        if !apiKey.isEmpty { body["api_key"] = apiKey }
+        do {
+            let result: ConnectionSaveResponse = try await session.send("ai-api/connections/save", method: "POST", body: body)
+            await onSave()
+            if let syncError = result.syncError, !syncError.isEmpty {
+                message = "连接已保存，但模型同步失败：\(syncError)"
+            } else {
+                dismiss()
+            }
+        } catch { message = session.message(for: error) }
+    }
     private func test() async { guard let item else { return }; testing = true; defer { testing = false }; do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); message = result.message ?? "连接成功" } catch { message = session.message(for: error) } }
 }
 
@@ -4420,15 +4759,18 @@ private extension View {
 }
 
 private struct AIChatMessage: Codable, Identifiable {
-    let id: String; let role: String; var content: String; var imageURLs: [String]
-    enum CodingKeys: String, CodingKey { case id, role, content; case imageURLs = "imageUrls" }
-    init(id: String = UUID().uuidString, role: String, content: String, imageURLs: [String] = []) { self.id = id; self.role = role; self.content = content; self.imageURLs = imageURLs }
+    let id: String; let role: String; var content: String; var imageURLs: [String]; var fileIDs: [String]; var webPages: [AIWebPage]; var status: String?
+    enum CodingKeys: String, CodingKey { case id, role, content, fileIDs = "file_ids", webPages = "web_pages", status; case imageURLs = "imageUrls" }
+    init(id: String = UUID().uuidString, role: String, content: String, imageURLs: [String] = [], fileIDs: [String] = [], webPages: [AIWebPage] = [], status: String? = nil) { self.id = id; self.role = role; self.content = content; self.imageURLs = imageURLs; self.fileIDs = fileIDs; self.webPages = webPages; self.status = status }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? values.decode(String.self, forKey: .id)) ?? UUID().uuidString
         role = (try? values.decode(String.self, forKey: .role)) ?? "assistant"
         content = (try? values.decode(String.self, forKey: .content)) ?? ""
         imageURLs = (try? values.decode([String].self, forKey: .imageURLs)) ?? []
+        fileIDs = (try? values.decode([String].self, forKey: .fileIDs)) ?? []
+        webPages = (try? values.decode([AIWebPage].self, forKey: .webPages)) ?? []
+        status = try? values.decode(String.self, forKey: .status)
     }
 }
 private struct AIChat: Codable, Identifiable {
@@ -4786,8 +5128,8 @@ private func aiModelAccountName(_ model: AIModel, connections: [AIConnection]) -
 }
 
 private struct AIConnection: Codable, Identifiable {
-    let id: String; let name: String; let baseURL: String; let providerType: String?; let providerID: String?; let purpose: String?; let enabled: Int; let hasKey: Bool?
-    enum CodingKeys: String, CodingKey { case id, name, purpose, enabled; case baseURL = "base_url"; case providerType = "provider_type"; case providerID = "provider_id"; case hasKey = "has_key" }
+    let id: String; let name: String; let baseURL: String; let providerType: String?; let providerID: String?; let purpose: String?; let modelIDs: [String]?; let enabled: Int; let hasKey: Bool?
+    enum CodingKeys: String, CodingKey { case id, name, purpose, modelIDs = "model_ids", enabled; case baseURL = "base_url"; case providerType = "provider_type"; case providerID = "provider_id"; case hasKey = "has_key" }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -4797,6 +5139,7 @@ private struct AIConnection: Codable, Identifiable {
         providerType = try? values.decode(String.self, forKey: .providerType)
         providerID = try? values.decode(String.self, forKey: .providerID)
         purpose = try? values.decode(String.self, forKey: .purpose)
+        modelIDs = try? values.decode([String].self, forKey: .modelIDs)
         if let value = try? values.decode(Int.self, forKey: .enabled) {
             enabled = value
         } else {
@@ -4814,6 +5157,12 @@ private struct AIConnection: Codable, Identifiable {
 private struct AIConnectionsResponse: Codable { let connections: [AIConnection] }
 private struct AISyncResponse: Codable { let total: Int? }
 private struct ConnectionTestResponse: Codable { let message: String? }
+private struct ConnectionSaveResponse: Codable {
+    let ok: Bool?
+    let id: String?
+    let syncError: String?
+    enum CodingKeys: String, CodingKey { case ok, id; case syncError = "sync_error" }
+}
 private struct TranscriptionResponse: Codable { let text: String }
 private struct KnowledgeCollection: Codable, Identifiable { let id: String; let name: String; let description: String? }
 private struct KnowledgeFile: Codable, Identifiable {
@@ -5493,13 +5842,7 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
     @Published var username = "管理员"
     @Published var currentUser: CurrentUserSession?
     private var captchaID: String?
-    private let origin: URL = {
-#if DEBUG
-        return URL(string: "http://127.0.0.1:4174")!
-#else
-        return URL(string: "https://xiaoxu666.asia")!
-#endif
-    }()
+    private let origin = URL(string: "https://xiaoxu666.asia")!
     private let decoder: JSONDecoder = { let value = JSONDecoder(); value.keyDecodingStrategy = .useDefaultKeys; return value }()
 
     func restoreSession() async {
@@ -5620,12 +5963,73 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         } catch { return message(for: error) }
     }
 
-    func streamChat(_ question: String, modelID: String, imageURLs: [String] = [], documents: [SearchDocument] = [], skillIDs: [String] = [], toolIDs: [String] = [], onChunk: @escaping @MainActor (String) -> Void) async throws {
+    fileprivate func readWebPage(_ url: URL) async throws -> AIWebPage {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            throw NativeAPIError.invalidResponse
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 20
+        request.setValue("text/html,application/xhtml+xml,text/plain;q=0.8", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw NativeAPIError.server(http.statusCode, "网页返回 HTTP \(http.statusCode)")
+        }
+        let source = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        let title = nativeWebTitle(from: source).isEmpty ? (url.host ?? url.absoluteString) : nativeWebTitle(from: source)
+        let content = nativeWebText(from: source)
+        guard !content.isEmpty else { throw NativeAPIError.server(422, "网页没有可读取的正文内容") }
+        return AIWebPage(url: url.absoluteString, title: title, summary: String(content.prefix(180)), content: String(content.prefix(12000)))
+    }
+
+    fileprivate func streamChat(_ question: String, modelID: String, chatID: String? = nil, history: [AIChatMessage] = [], modelSystemPrompt: String? = nil, imageURLs: [String] = [], fileIDs: [String] = [], documents: [SearchDocument] = [], skillIDs: [String] = [], toolIDs: [String] = [], onChunk: @escaping @MainActor (String) -> Void) async throws {
         guard let url = URL(string: "ai-api/chat/stream", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 45; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyWorkspaceHeaders(to: &request, path: "ai-api/chat/stream")
-        var body: [String: Any] = ["question": question, "image_urls": imageURLs, "documents": documents.map(\.body), "skill_ids": skillIDs, "tool_ids": toolIDs]
+        let contextMessages = history.filter { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.suffix(20)
+        let contextualQuestion: String
+        if contextMessages.isEmpty {
+            contextualQuestion = question
+        } else {
+            let transcript = contextMessages.map { item in
+                let role = item.role == "user" ? "用户" : "助手"
+                return "\(role)：\(item.content)"
+            }.joined(separator: "\n")
+            contextualQuestion = """
+            请结合下面的历史对话理解当前问题。不要复述这段说明，也不要把历史问题当成当前问题；直接回答当前问题。
+            历史对话：
+            \(transcript)
+
+            当前问题：\(question)
+            """
+        }
+        var body: [String: Any] = [
+            "question": contextualQuestion,
+            "image_urls": imageURLs,
+            "file_ids": fileIDs,
+            "documents": documents.map(\.body),
+            "skill_ids": skillIDs,
+            "tool_ids": toolIDs,
+            "history": history.map { item in
+                var value: [String: Any] = ["role": item.role, "content": item.content]
+                if !item.imageURLs.isEmpty { value["image_urls"] = item.imageURLs }
+                if !item.fileIDs.isEmpty { value["file_ids"] = item.fileIDs }
+                if !item.webPages.isEmpty {
+                    value["web_pages"] = item.webPages.map { ["url": $0.url, "title": $0.title, "summary": $0.summary, "content": $0.content] }
+                }
+                return value
+            }
+        ]
+        body["messages"] = contextMessages.map { item in
+            var value: [String: Any] = ["role": item.role, "content": item.content]
+            if !item.imageURLs.isEmpty { value["image_urls"] = item.imageURLs }
+            if !item.fileIDs.isEmpty { value["file_ids"] = item.fileIDs }
+            return value
+        } + [["role": "user", "content": question]]
         if !modelID.isEmpty { body["model_id"] = modelID }
+        if let chatID, !chatID.isEmpty { body["chat_id"] = chatID }
+        if let modelSystemPrompt, !modelSystemPrompt.isEmpty { body["system_prompt"] = modelSystemPrompt }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
@@ -5640,9 +6044,10 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         for try await line in bytes.lines {
             try Task.checkCancellation()
             let normalizedLine = line.hasPrefix("data:") ? String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces) : line
+            if normalizedLine == "[DONE]" { break }
             guard let data = normalizedLine.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             if let streamError = object["error"] as? String, !streamError.isEmpty { throw NativeAPIError.server(502, streamError) }
-            let content = (object["content"] as? String) ?? (object["delta"] as? String) ?? (object["text"] as? String) ?? (object["answer"] as? String)
+            let content = aiStreamText(from: object)
             guard let content, !content.isEmpty else { continue }
             receivedChunk = true
             onChunk(content)
@@ -5717,7 +6122,52 @@ private struct ImageGenerationResponse: Decodable {
         throw NativeAPIError.server(502, "上级图片接口未返回图片地址")
     }
 }
-struct SearchDocument: Decodable { let title: String?; let content: String?; let url: String?; var body: [String: Any] { ["title":title ?? "","content":content ?? "","url":url ?? ""] } }
+private func aiStreamText(from value: Any) -> String? {
+    if let string = value as? String { return string }
+    if let object = value as? [String: Any] {
+        for key in ["content", "text", "answer", "output_text"] {
+            if let string = object[key] as? String, !string.isEmpty { return string }
+        }
+        for key in ["delta", "message", "response", "output", "content"] {
+            if let nested = object[key], let text = aiStreamText(from: nested), !text.isEmpty { return text }
+        }
+        for key in ["choices", "candidates", "parts"] {
+            if let values = object[key] as? [Any], let text = values.lazy.compactMap({ aiStreamText(from: $0) }).first, !text.isEmpty { return text }
+        }
+    }
+    if let values = value as? [Any] {
+        return values.lazy.compactMap { aiStreamText(from: $0) }.first(where: { !$0.isEmpty })
+    }
+    return nil
+}
+
+private func nativeWebTitle(from html: String) -> String {
+    guard let regex = try? NSRegularExpression(pattern: "(?is)<title[^>]*>(.*?)</title>") else { return "" }
+    guard let match = regex.firstMatch(in: html, range: NSRange(location: 0, length: (html as NSString).length)), match.numberOfRanges > 1 else { return "" }
+    let title = (html as NSString).substring(with: match.range(at: 1))
+    return nativeWebText(from: title)
+}
+
+private func nativeWebText(from html: String) -> String {
+    var text = html
+    for tag in ["script", "style", "noscript", "template", "svg"] {
+        text = text.replacingOccurrences(of: "(?is)<\(tag)[^>]*>.*?</\(tag)>", with: " ", options: .regularExpression)
+    }
+    text = text.replacingOccurrences(of: "(?is)<[^>]+>", with: " ", options: .regularExpression)
+    let entities: [(String, String)] = [("&nbsp;", " "), ("&amp;", "&"), ("&quot;", "\""), ("&#39;", "'"), ("&lt;", "<"), ("&gt;", ">")]
+    for (entity, replacement) in entities { text = text.replacingOccurrences(of: entity, with: replacement) }
+    return text
+        .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+struct SearchDocument: Decodable {
+    let title: String?
+    let content: String?
+    let url: String?
+    init(title: String?, content: String?, url: String?) { self.title = title; self.content = content; self.url = url }
+    var body: [String: Any] { ["title": title ?? "", "content": content ?? "", "url": url ?? ""] }
+}
 private struct SearchDocumentsResponse: Decodable { let documents: [SearchDocument]; enum CodingKeys: CodingKey { case documents }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); documents = try c.decodeIfPresent([SearchDocument].self, forKey: .documents) ?? [] } }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
 struct CurrentUserSession: Decodable {
@@ -6015,12 +6465,7 @@ func shortDate(_ value: String?) -> String { guard let value else { return "-" }
 private func nativeImageURL(_ value: String) -> URL? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
-    let base: URL
-#if DEBUG
-    base = URL(string: "http://127.0.0.1:4174/")!
-#else
-    base = URL(string: "https://xiaoxu666.asia/")!
-#endif
+    let base = URL(string: "https://xiaoxu666.asia/")!
     return URL(string: trimmed, relativeTo: base)?.absoluteURL
 }
 private func nativeThumbnailURL(_ value: String, maxPixelSize: CGFloat = 720) -> URL? {

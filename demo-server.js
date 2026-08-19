@@ -810,6 +810,14 @@ async function handleApi(req, res, url) {
     if (pathname === '/ai-api/chats/delete' && method === 'POST') { const body = await readJson(req); data.aiChats = data.aiChats.filter((item) => item.id !== body.id); return empty(res), true }
     if (pathname === '/ai-api/chat' && method === 'POST') { const body = await readJson(req); return json(res, 200, { content: demoAnswer(body.question) }), true }
     if (pathname === '/ai-api/chat/stream' && method === 'POST') { const body = await readJson(req); const answer = demoAnswer(body.question); res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' }); for (const part of answer.match(/.{1,18}/gu) || [answer]) res.write(`${JSON.stringify({ content: part })}\n`); res.end(); return true }
+    if (pathname === '/ai-api/web-pages/read' && method === 'POST') {
+      const body = await readJson(req)
+      let target
+      try { target = new URL(String(body.url || '')) } catch { return json(res, 400, { detail: '请输入有效网页地址' }), true }
+      const title = target.hostname === 'example.com' ? '本地演示网页' : target.hostname
+      const content = `这是对 ${target.hostname} 的本地网页阅读演示。页面正文已提取，可让 AI 总结重点、提取数据或比较多个网页。\n\n来源地址：${target.href}`
+      return json(res, 200, { url: target.href, title, summary: content.slice(0, 70), content }), true
+    }
 
     if (pathname === '/ai-api/knowledge' && method === 'GET') return json(res, 200, { knowledge: data.aiKnowledge }), true
     if (pathname === '/ai-api/knowledge' && method === 'POST') { const body = await readJson(req); let item = data.aiKnowledge.find((row) => row.id === body.id); if (!item) { item = { id: body.id || `knowledge-${Date.now()}`, description: body.description || null }; data.aiKnowledge.push(item) }; item.name = body.name || item.name || '新知识库'; return empty(res), true }
