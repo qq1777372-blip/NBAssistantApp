@@ -87,6 +87,16 @@ async function main() {
     assert.equal((await request(`/peer-shops/${peer.payload.id}`, { method: 'PUT', body: { shop_name: 'UI 同行已修改' } })).payload.shop_name, 'UI 同行已修改')
     assert.equal((await request(`/peer-shops/${peer.payload.id}`, { method: 'DELETE' })).status, 204)
 
+    const product = await request('/warehouse/products', { method: 'POST', body: { sku: 'UI-PHOTO-01', name: '图片测试商品', unit: '件' } })
+    assert.equal(product.status, 201)
+    const imageForm = new FormData()
+    imageForm.append('image', new Blob([Buffer.from('demo-product-image')], { type: 'image/jpeg' }), 'product.jpg')
+    const imageResponse = await fetch(`${origin}/warehouse/products/${product.payload.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body: imageForm })
+    const imagePayload = await imageResponse.json()
+    assert.equal(imageResponse.status, 200)
+    assert.ok(imagePayload.image_url.startsWith('data:image/jpeg;base64,'), 'product image should be stored in local demo data')
+    assert.equal((await request(`/warehouse/products/${product.payload.id}`, { method: 'DELETE' })).status, 204)
+
     const chat = await request('/ai-api/chat', { method: 'POST', body: { question: '总结今天经营情况' } })
     assert.ok(chat.payload.content.includes('经营'))
     const stream = await request('/ai-api/chat/stream', { method: 'POST', body: { question: '查看库存' } })

@@ -205,7 +205,7 @@ private enum NativeDestination: String, Identifiable, Hashable {
         case .warehouseLocations: NativeWarehouseView(tab: .warehouses)
         case .warehouseMovements: NativeWarehouseView(tab: .movements)
         case .links: NativeLinksView(embedded: true)
-        case .expenses: NativeQuickLedgerView(embedded: true)
+        case .expenses: NativeLedgerView(embedded: true)
         case .owners: NativeOwnersView()
         case .peers: NativePeerShopsView()
         case .licenses: NativeLicenseRecordsView()
@@ -505,15 +505,38 @@ private struct NativeAIWorkspaceView: View {
     @State private var showingPhotoPicker = false; @State private var showingAttachmentActions = false
     @State private var pendingAttachmentAction: AIComposerAttachmentAction?
     @State private var importingFile = false; @State private var importingAttachment = false; @State private var importedFileNames: [String] = []
+    @State private var showingModelPicker = false
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
     private var activeChat: AIChat? { activeIndex.map { chats[$0] } }
+    private var currentModel: AIModel? {
+        models.first(where: { $0.id == selectedModel })
+            ?? activeChat?.modelID.flatMap { id in models.first(where: { $0.id == id }) }
+            ?? selectableModels.first
+    }
     private var selectableModels: [AIModel] {
         models.filter { model in
-            if imageMode { return model.modelType == "image" }
-            return model.modelType == nil || model.modelType == "chat"
+            let type = model.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if imageMode { return type == "image" }
+            return type != "image" && type != "audio"
         }
+    }
+    private var pickerModels: [AIModel] {
+        models.filter { $0.enabled != 0 && $0.hidden != 1 }
+    }
+    private var selectableModelGroups: [(String, [AIModel])] {
+        let grouped = Dictionary(grouping: pickerModels) { model in
+            let provider = aiModelProviderLabel(model, connections: modelConnections)
+            let account = aiModelAccountName(model, connections: modelConnections)
+            return "\(provider) · \(account)"
+        }
+        return grouped.keys.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            .compactMap { key in
+                grouped[key].map { models in
+                    (key, models.sorted { aiModelDisplayName($0).localizedCaseInsensitiveCompare(aiModelDisplayName($1)) == .orderedAscending })
+                }
+            }
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -549,8 +572,45 @@ private struct NativeAIWorkspaceView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in requestKeyboardScroll() }
-        .toolbar { ToolbarItem(placement: .topBarLeading) { Menu { ForEach(selectableModels) { model in Button { selectedModel = model.id; updateActiveModel() } label: { HStack(spacing: 10) { AIModelIcon(model: model, connections: modelConnections, size: 28); VStack(alignment: .leading, spacing: 2) { Text(model.name); Text(model.baseModel).font(.caption2).foregroundStyle(.secondary); Text(aiModelAccountLabel(model, connections: modelConnections)).font(.caption2.weight(.medium)).foregroundStyle(.blue) }; if selectedModel == model.id { Spacer(); Image(systemName: "checkmark").foregroundStyle(.blue) } } } } } label: { HStack(spacing: 6) { AIModelIcon(model: models.first(where: { $0.id == selectedModel }), connections: modelConnections, size: 24); VStack(alignment: .leading, spacing: 1) { Text(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型").lineLimit(1); if let selected = models.first(where: { $0.id == selectedModel }) { Text(aiModelAccountLabel(selected, connections: modelConnections)).font(.caption2).foregroundStyle(.secondary).lineLimit(1) } } } } }; ToolbarItemGroup(placement: .topBarTrailing) { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }; Button { createChat() } label: { Image(systemName: "square.and.pencil") } } }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Button { showingModelPicker = true } label: {
+                    HStack(spacing: 6) {
+                        AIModelIcon(model: currentModel, connections: modelConnections, size: 48)
+                        if let selected = currentModel {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(aiModelDisplayName(selected))
+                                    .font(.subheadline.weight(.medium))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(aiModelAccountLabel(selected, connections: modelConnections))
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: 168, alignment: .leading)
+                        } else {
+                            Text(models.isEmpty ? "加载模型…" : "选择模型")
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: 190)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("选择 AI 模型")
+            }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showingHistory = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                Button { createChat() } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+            }
+        }
         .sheet(isPresented: $showingHistory) { historySheet }
+        .sheet(isPresented: $showingModelPicker) { modelPickerSheet }
         .sheet(isPresented: $showingTools) { toolsSheet }
         .sheet(isPresented: $showingKnowledge) { knowledgeSheet }
         .sheet(isPresented: $showingAttachmentActions, onDismiss: performPendingAttachmentAction) { attachmentSheet }
@@ -560,6 +620,93 @@ private struct NativeAIWorkspaceView: View {
         .onChange(of: imageMode) { _ in selectCompatibleModel() }
         .alert("重命名会话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) { TextField("会话名称", text: $renameText); Button("保存") { applyRename() }; Button("取消", role: .cancel) { renaming = nil } }
         .task { await loadWorkspace() }.onDisappear { streamTask?.cancel(); Task { await saveActiveChat() } }
+    }
+    private var modelPickerSheet: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        Label("已加载模型", systemImage: "square.stack.3d.up")
+                        Spacer()
+                        Text("\(pickerModels.count) 个模型 · \(Set(pickerModels.map { aiModelAccountName($0, connections: modelConnections) }).count) 个账号")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(Array(selectableModelGroups.enumerated()), id: \.offset) { _, group in
+                    Section {
+                        ForEach(group.1, id: \.pickerIdentity) { model in
+                            Button {
+                                selectedModel = model.id
+                                if model.modelType?.lowercased() == "image" {
+                                    imageMode = true
+                                } else if model.modelType?.lowercased() != "audio" {
+                                    imageMode = false
+                                }
+                                updateActiveModel()
+                                showingModelPicker = false
+                            } label: {
+                                HStack(spacing: 12) {
+                                    AIModelIcon(model: model, connections: modelConnections, size: 64)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(aiModelDisplayName(model))
+                                            .font(.body.weight(.medium))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(2)
+                                        Text(aiModelSourceLabel(model, connections: modelConnections))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                        Text(aiModelAccountLabel(model, connections: modelConnections))
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.blue)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Text(aiModelTypeLabel(model))
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                    if selectedModel == model.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.blue)
+                                            .font(.title3)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 4)
+                        }
+                    } header: {
+                        Text(group.0)
+                    }
+                }
+                if pickerModels.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: imageMode ? "photo" : "cpu")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.secondary)
+                        Text(imageMode ? "没有可用的图片模型" : "没有可用的对话模型")
+                            .font(.headline)
+                        Text("请在模型管理中启用对应模型")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 56)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("选择模型")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { showingModelPicker = false }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
     @ViewBuilder private func chatMessage(_ item: AIChatMessage) -> some View {
         HStack {
@@ -577,7 +724,18 @@ private struct NativeAIWorkspaceView: View {
                 if let imageURL = generatedImageURL(item.content) {
                     CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280)
                 } else {
-                    Text(item.content.isEmpty ? "…" : item.content).textSelection(.enabled)
+                    if item.content.isEmpty {
+                        if isGenerating(item) {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("正在等待模型回复…").foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("模型未返回内容").foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(item.content).textSelection(.enabled)
+                    }
                 }
                 if item.role == "assistant" && !item.content.isEmpty {
                     HStack {
@@ -587,11 +745,29 @@ private struct NativeAIWorkspaceView: View {
                     .font(.caption)
                 }
             }
+            .padding(.trailing, item.role == "user" && (!item.content.isEmpty || !item.imageURLs.isEmpty) ? 20 : 0)
             .padding(13)
             .foregroundStyle(item.role == "user" ? Color.white : Color.primary)
             .background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15))
+            .overlay(alignment: .bottomTrailing) {
+                if item.role == "user" && (!item.content.isEmpty || !item.imageURLs.isEmpty) {
+                    Button { resendUserMessage(item) } label: {
+                        Image(systemName: "arrow.up.circle")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .foregroundStyle(.white.opacity(0.9))
+                    .accessibilityLabel("重新发送消息")
+                    .disabled(sending)
+                    .padding(.trailing, 5)
+                    .padding(.bottom, 4)
+                }
+            }
             if item.role != "user" { Spacer(minLength: 48) }
         }
+    }
+    private func isGenerating(_ item: AIChatMessage) -> Bool {
+        sending && item.role == "assistant" && activeChat?.messages.last?.id == item.id
     }
     private var composer: some View {
         VStack(spacing: 8) {
@@ -697,7 +873,7 @@ private struct NativeAIWorkspaceView: View {
     private var canSend: Bool { !sending && (!question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
     private var activeTools: Bool { webSearch || imageMode || knowledgeEnabled || !selectedSkills.isEmpty || !selectedTools.isEmpty }
     private var knowledgeLabel: String { knowledge.first(where: { $0.id == selectedKnowledge })?.name ?? "全部知识" }
-    private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; selectedModel = chat.modelID ?? selectedModel; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { Button("完成") { showingHistory = false } } } }
+    private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; if let chatModel = chat.modelID, !chatModel.isEmpty { selectedModel = chatModel; persistSelectedModel(); applySelectedModelConfiguration() }; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button("完成") { showingHistory = false } } } }
     private var toolsSheet: some View {
         NavigationStack {
             Form {
@@ -734,18 +910,23 @@ private struct NativeAIWorkspaceView: View {
         error = nil
         defer { loadingWorkspace = false }
         restoreLocalChats()
+        restoreSelectedModel()
         await loadModels()
         await loadCapabilities()
         await loadChats()
         selectCompatibleModel()
+        applySelectedModelConfiguration()
+        persistSelectedModel()
         scrollRequest += 1
     }
     private func loadModels() async {
+        restoreCachedModels()
         async let modelRequest: AIModelsResponse? = try? session.get("ai-api/models")
         async let connectionRequest: AIConnectionsResponse? = try? session.get("ai-api/connections")
         let (modelResult, connectionResult) = await (modelRequest, connectionRequest)
         if let modelResult {
             models = modelResult.models.filter { $0.enabled != 0 && $0.hidden != 1 }
+            persistModelsCache()
         } else if models.isEmpty {
             error = "AI 模型加载失败，请检查服务连接后重试。"
         }
@@ -755,18 +936,15 @@ private struct NativeAIWorkspaceView: View {
         }
         audioModel = models.first(where: { $0.modelType == "audio" })?.id ?? ""
         selectCompatibleModel()
+        applySelectedModelConfiguration()
     }
     private func loadCapabilities() async {
         if let result: KnowledgeResponse = try? await session.get("ai-api/knowledge") { knowledge = result.knowledge }
         if let result: CapabilityResponse = try? await session.get("ai-api/skills") { skills = result.skills ?? [] }
         if let result: CapabilityResponse = try? await session.get("ai-api/tools") { tools = result.tools ?? [] }
     }
-    private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats?user_id=\(session.currentUser?.id ?? 0)"); if !result.chats.isEmpty { chats = result.chats; activeChatID = chats.first(where: { !$0.archived })?.id ?? chats[0].id; selectedModel = activeChat?.modelID ?? selectedModel; persistChatsLocally() } } catch { } ; if chats.isEmpty { createChat() } }
+    private func loadChats() async { do { let result: AIChatsResponse = try await session.get("ai-api/chats?user_id=\(session.currentUser?.id ?? 0)"); if !result.chats.isEmpty { chats = result.chats; activeChatID = chats.first(where: { !$0.archived })?.id ?? chats[0].id; if selectedModel.isEmpty, let chatModel = activeChat?.modelID, !chatModel.isEmpty { selectedModel = chatModel }; persistChatsLocally() } } catch { } ; if chats.isEmpty { createChat() } }
     private func send() {
-        guard !selectedModel.isEmpty else {
-            error = imageMode ? "没有可用的图片模型，请先在模型管理中绑定账号。" : "没有可用的对话模型，请先在模型管理中绑定账号。"
-            return
-        }
         let typedValue = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages.map(\.dataURL)
         let value = typedValue.isEmpty && !images.isEmpty ? "请分析这些图片" : typedValue
@@ -782,7 +960,7 @@ private struct NativeAIWorkspaceView: View {
         streamTask = Task {
             do {
                 if imageMode {
-                    let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt": value, "model_id": selectedModel, "size": imageSize])
+                    let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt": value, "model_id": selectedModel, "size": imageSize], timeout: .infinity)
                     if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = "image:\(response.url)" }
                 } else {
                     var documents: [SearchDocument] = []
@@ -805,9 +983,14 @@ private struct NativeAIWorkspaceView: View {
             }
             catch {
                 let message = session.message(for: error)
-                self.error = message
+                if imageMode, let model = models.first(where: { $0.id == selectedModel }) {
+                    self.error = "图片模型 \(aiModelDisplayName(model))（\(aiModelAccountName(model, connections: modelConnections))）：\(message)"
+                } else {
+                    self.error = message
+                }
                 if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }), chats[chatIndex].messages[messageIndex].content.isEmpty {
-                    chats[chatIndex].messages[messageIndex].content = "请求失败：\(message)"
+                    let failurePrefix = imageMode ? "图片生成失败" : "请求失败"
+                    chats[chatIndex].messages[messageIndex].content = "\(failurePrefix)：\(message)"
                 }
             }
             sending = false
@@ -816,10 +999,33 @@ private struct NativeAIWorkspaceView: View {
     }
     private func stop() { streamTask?.cancel(); streamTask = nil; sending = false; Task { await saveActiveChat() } }
     private func createChat() { let now = Date().timeIntervalSince1970; let chat = AIChat(id: "chat-\(UUID().uuidString)", title: "新对话", messages: [], modelID: selectedModel, favorite: false, archived: false, folder: "", createdAt: now, updatedAt: now); chats.insert(chat, at: 0); activeChatID = chat.id; persistChatsLocally(); scrollRequest += 1 }
-    private func updateActiveModel() { guard let index = activeIndex else { return }; chats[index].modelID = selectedModel; Task { await saveActiveChat() } }
+    private func updateActiveModel() {
+        applySelectedModelConfiguration()
+        persistSelectedModel()
+        guard let index = activeIndex else { return }
+        chats[index].modelID = selectedModel
+        Task { await saveActiveChat() }
+    }
+    private func applySelectedModelConfiguration() {
+        guard let model = models.first(where: { $0.id == selectedModel }) else { return }
+        imageMode = model.modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "image"
+        selectedKnowledge = model.knowledgeID ?? ""
+        knowledgeEnabled = !selectedKnowledge.isEmpty
+        selectedSkills = Set(parseModelIDs(model.skillIDs))
+        selectedTools = Set(parseModelIDs(model.toolIDs))
+        if model.modelType == "image" { imageMode = true }
+    }
+    private func parseModelIDs(_ value: String?) -> [String] {
+        guard let value, let data = value.data(using: .utf8), let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return ids
+    }
     private func selectCompatibleModel() {
+        guard !selectableModels.isEmpty else {
+            selectedModel = ""
+            return
+        }
         guard !selectableModels.contains(where: { $0.id == selectedModel }) else { return }
-        selectedModel = selectableModels.first?.id ?? ""
+        selectedModel = selectableModels[0].id
         updateActiveModel()
     }
     private func saveActiveChat() async {
@@ -836,9 +1042,45 @@ private struct NativeAIWorkspaceView: View {
     private func applyRename() { guard let chat = renaming, let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; chats[index].title = renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? chat.title : renameText; activeChatID = chat.id; renaming = nil; Task { await saveActiveChat() } }
     private func delete(_ chat: AIChat) async { let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0], allowEmpty: true); chats.removeAll { $0.id == chat.id }; if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } }; persistChatsLocally() }
     private func regenerate(_ messageID: String) { guard let index = activeIndex, let answerIndex = chats[index].messages.firstIndex(where: { $0.id == messageID }), answerIndex > 0 else { return }; let value = chats[index].messages[..<answerIndex].last(where: { $0.role == "user" })?.content ?? ""; chats[index].messages.removeSubrange((answerIndex - 1)...answerIndex); question = value; send() }
+    private func resendUserMessage(_ item: AIChatMessage) {
+        guard !sending,
+              let index = activeIndex,
+              let messageIndex = chats[index].messages.firstIndex(where: { $0.id == item.id }) else { return }
+        let restoredImages = item.imageURLs.map { source in
+            PendingChatImage(image: nativeInlineImage(source) ?? UIImage(systemName: "photo")!, dataURL: source)
+        }
+        chats[index].messages.removeSubrange(messageIndex..<chats[index].messages.count)
+        question = item.content
+        pendingImages = restoredImages
+        error = nil
+        send()
+    }
     private func exportText(_ chat: AIChat) -> String { chat.messages.map { "\($0.role == "user" ? "我" : "AI")：\($0.content)" }.joined(separator: "\n\n") }
     private func generatedImageURL(_ content: String) -> URL? { guard content.hasPrefix("image:") else { return nil }; return URL(string: String(content.dropFirst(6))) }
     private var localChatsKey: String { "native-ai-chats-\(session.currentUser?.id ?? 0)" }
+    private var modelCacheKey: String { "native-ai-models-\(session.currentUser?.id ?? 0)" }
+    private func restoreCachedModels() {
+        guard models.isEmpty,
+              let data = UserDefaults.standard.data(forKey: modelCacheKey),
+              let cached = try? JSONDecoder().decode([AIModel].self, from: data),
+              !cached.isEmpty else { return }
+        models = cached
+        if selectedModel.isEmpty { selectedModel = selectableModels.first?.id ?? "" }
+    }
+    private func persistModelsCache() {
+        guard let data = try? JSONEncoder().encode(models) else { return }
+        UserDefaults.standard.set(data, forKey: modelCacheKey)
+    }
+    private var selectedModelKey: String { "native-ai-selected-model-\(session.currentUser?.id ?? 0)" }
+    private func restoreSelectedModel() {
+        guard let saved = UserDefaults.standard.string(forKey: selectedModelKey),
+              !saved.isEmpty else { return }
+        selectedModel = saved
+    }
+    private func persistSelectedModel() {
+        guard !selectedModel.isEmpty else { return }
+        UserDefaults.standard.set(selectedModel, forKey: selectedModelKey)
+    }
     private func restoreLocalChats() { guard chats.isEmpty, let data = UserDefaults.standard.data(forKey: localChatsKey), let saved = try? JSONDecoder().decode([AIChat].self, from: data), !saved.isEmpty else { return }; chats = saved; activeChatID = saved.first(where: { !$0.archived })?.id ?? saved[0].id; selectedModel = activeChat?.modelID ?? selectedModel }
     private func persistChatsLocally() { if let data = try? JSONEncoder().encode(Array(chats.prefix(60))) { UserDefaults.standard.set(data, forKey: localChatsKey) } }
     private func requestKeyboardScroll() { scrollRequest += 1; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { scrollRequest += 1 } }
@@ -1152,9 +1394,15 @@ private struct NativeHomeView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
                         ForEach(models.filter { $0.modelType != "audio" }) { model in
-                            Button { selectedModel = model.id } label: { if selectedModel == model.id { Label(model.name, systemImage: "checkmark") } else { Text(model.name) } }
+                    Button { selectedModel = model.id } label: {
+                        if selectedModel == model.id {
+                            Label(aiModelDisplayName(model), systemImage: "checkmark")
+                        } else {
+                            Text(aiModelDisplayName(model))
                         }
-                    } label: { Label(models.first(where: { $0.id == selectedModel })?.name ?? "选择模型", systemImage: "cpu") }
+                    }
+                        }
+                } label: { Label(models.first(where: { $0.id == selectedModel }).map(aiModelDisplayName) ?? "选择模型", systemImage: "cpu") }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingHistory = true } label: { Image(systemName: "sidebar.left") }
@@ -1937,6 +2185,7 @@ private struct NativeLinksView: View {
     @State private var pushing: SavedLink?
     @State private var scheduling: SavedLink?
     @State private var viewing: SavedLink?
+    @State private var galleryRoute: SavedLinkGalleryRoute?
     @State private var composer: LinkComposerRoute?
     private let pageSize = 24
 
@@ -1953,6 +2202,8 @@ private struct NativeLinksView: View {
                 ForEach(filtered) { item in
                     SavedLinkFeedRow(item: item) {
                         viewing = item
+                    } onOpenImage: { source in
+                        galleryRoute = SavedLinkGalleryRoute(item: item, source: source)
                     } onEdit: {
                         composer = LinkComposerRoute(item: item, article: savedLinkIsArticle(item))
                     } onTogglePin: {
@@ -1982,6 +2233,9 @@ private struct NativeLinksView: View {
             .task { if records.isEmpty { await load() } }
             .navigationDestination(isPresented: Binding(get: { viewing != nil }, set: { if !$0 { viewing = nil } })) {
                 if let viewing { SavedLinkDetail(item: viewing) }
+            }
+            .fullScreenCover(item: $galleryRoute) { route in
+                SavedLinkImageGallery(images: savedLinkGalleryImages(route.item), initialSelection: route.source)
             }
             .toolbar {
                 Menu {
@@ -2628,6 +2882,7 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
 private struct SavedLinkFeedRow: View {
     let item: SavedLink
     let onOpen: () -> Void
+    let onOpenImage: (String) -> Void
     let onEdit: () -> Void
     let onTogglePin: () -> Void
     let onDelete: () -> Void
@@ -2698,49 +2953,28 @@ private struct SavedLinkFeedRow: View {
 
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(item.title)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(2)
-
-                    if !bodyText.isEmpty {
-                        Text(bodyText)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                            .lineLimit(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if isArticle && !item.images.isEmpty {
-                        SavedLinkImageGrid(images: item.images)
-                    }
-
-                    HStack(spacing: 8) {
-                        if let category {
-                            Text(category)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        if let pushLabel {
-                            Label(pushLabel, systemImage: "paperplane.fill")
-                                .font(.caption)
-                                .foregroundStyle(pushColor)
-                        }
-                        Spacer(minLength: 8)
-                        Text("查看详情")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.blue)
-                            .fixedSize()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.blue)
-                    }
+                    Text(item.title).font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary).multilineTextAlignment(.leading).lineLimit(2)
+                    if !bodyText.isEmpty { Text(bodyText).font(.body).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(3).fixedSize(horizontal: false, vertical: true) }
                 }
                 .contentShape(Rectangle())
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            if isArticle && !item.images.isEmpty {
+                SavedLinkImageGrid(images: item.images, onTap: onOpenImage)
+            }
+
+            Button(action: onOpen) {
+                HStack(spacing: 8) {
+                    if let category { Text(category).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                    if let pushLabel { Label(pushLabel, systemImage: "paperplane.fill").font(.caption).foregroundStyle(pushColor) }
+                    Spacer(minLength: 8)
+                    Text("查看详情").font(.caption.weight(.semibold)).foregroundStyle(.blue).fixedSize()
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.blue)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
@@ -2754,25 +2988,27 @@ private struct SavedLinkFeedRow: View {
 
 private struct SavedLinkImageGrid: View {
     let images: [SavedLinkImage]
+    var onTap: ((String) -> Void)? = nil
     var body: some View {
-        let urls = images
-            .compactMap { nativeThumbnailURL($0.url, maxPixelSize: 720) }
-            .filter { $0.pathExtension.lowercased() != "svg" }
-        if urls.isEmpty {
+        let entries = images.compactMap { image -> (String, URL)? in
+            guard let url = nativeThumbnailURL(image.url, maxPixelSize: 720), url.pathExtension.lowercased() != "svg" else { return nil }
+            return (image.url, url)
+        }
+        if entries.isEmpty {
             EmptyView()
-        } else if urls.count == 1 {
-            SavedLinkFeedImage(url: urls[0], maxPixelSize: 1400)
+        } else if entries.count == 1 {
+            imageButton(source: entries[0].0, image: SavedLinkFeedImage(url: entries[0].1, maxPixelSize: 1400))
                 .frame(height: 180)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
-                ForEach(Array(urls.prefix(3).enumerated()), id: \.offset) { index, url in
+                ForEach(Array(entries.prefix(3).enumerated()), id: \.offset) { index, entry in
                     ZStack {
-                        SavedLinkFeedImage(url: url, maxPixelSize: 600)
-                        if index == 2 && urls.count > 3 {
-                            Color.black.opacity(0.38)
-                            Text("+\(urls.count - 3)").font(.headline).foregroundStyle(.white)
+                        imageButton(source: entry.0, image: SavedLinkFeedImage(url: entry.1, maxPixelSize: 600))
+                        if index == 2 && entries.count > 3 {
+                            Color.black.opacity(0.38).allowsHitTesting(false)
+                            Text("+\(entries.count - 3)").font(.headline).foregroundStyle(.white).allowsHitTesting(false)
                         }
                     }
                     .frame(height: 118)
@@ -2780,6 +3016,15 @@ private struct SavedLinkImageGrid: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func imageButton<Content: View>(source: String, image: Content) -> some View {
+        if let onTap {
+            Button { onTap(source) } label: { image }.buttonStyle(.plain)
+        } else {
+            image
         }
     }
 }
@@ -3052,16 +3297,51 @@ private struct LicenseImageViewer: View {
     @Environment(\.dismiss) private var dismiss
     let records: [LicenseRecordItem]
     @Binding var selection: Int
-    var body: some View { NavigationStack { ZStack { Color.black.ignoresSafeArea(); TabView(selection: $selection) { ForEach(records) { record in ZoomableLicenseImage(url: record.imageURL).tag(record.id).overlay(alignment: .bottom) { Text(record.subjectName).font(.caption).foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 7).background(.black.opacity(0.55), in: Capsule()).padding(.bottom, 24) } } }.tabViewStyle(.page(indexDisplayMode: records.count > 1 ? .automatic : .never)) }.navigationTitle("执照图片").navigationBarTitleDisplayMode(.inline).toolbarColorScheme(.dark, for: .navigationBar).toolbarBackground(.black, for: .navigationBar).toolbar { ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() }.foregroundStyle(.white) } } } }
+    var body: some View { NavigationStack { ZStack { Color.black.ignoresSafeArea(); TabView(selection: $selection) { ForEach(records) { record in NativeZoomableRemoteImage(source: record.imageURL).tag(record.id).overlay(alignment: .bottom) { Text(record.subjectName).font(.caption).foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 7).background(.black.opacity(0.55), in: Capsule()).padding(.bottom, 24) } } }.tabViewStyle(.page(indexDisplayMode: records.count > 1 ? .automatic : .never)) }.navigationTitle("执照图片").navigationBarTitleDisplayMode(.inline).toolbarColorScheme(.dark, for: .navigationBar).toolbarBackground(.black, for: .navigationBar).toolbar { ToolbarItem(placement: .topBarTrailing) { Button { dismiss() } label: { Image(systemName: "xmark") }.foregroundStyle(.white).frame(width: 44, height: 44).accessibilityLabel("关闭图片预览") } } } }
 }
 
-private struct ZoomableLicenseImage: View {
-    let url: String?
+private struct NativeZoomableRemoteImage: View {
+    let source: String?
     @State private var scale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @GestureState private var gestureScale: CGFloat = 1
     @GestureState private var gestureOffset: CGSize = .zero
-    var body: some View { GeometryReader { proxy in ZStack { if let url, let imageURL = nativeImageURL(url) { CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 2600, placeholder: ProgressView().tint(.white)) } else { Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary) } }.frame(width: proxy.size.width, height: proxy.size.height).scaleEffect(min(max(scale * gestureScale, 1), 5)).offset(x: offset.width + gestureOffset.width, y: offset.height + gestureOffset.height).contentShape(Rectangle()).simultaneousGesture(MagnificationGesture().updating($gestureScale) { value, state, _ in state = value }.onEnded { value in scale = min(max(scale * value, 1), 5); if scale == 1 { offset = .zero } }).simultaneousGesture(DragGesture().updating($gestureOffset) { value, state, _ in if scale > 1 { state = value.translation } }.onEnded { value in if scale > 1 { offset.width += value.translation.width; offset.height += value.translation.height } }).onTapGesture(count: 2) { withAnimation(.easeInOut(duration: 0.2)) { if scale > 1 { scale = 1; offset = .zero } else { scale = 2.5 } } } } }
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if let source, let inlineImage = nativeInlineImage(source) {
+                    Image(uiImage: inlineImage).resizable().scaledToFit()
+                } else if let source, let imageURL = nativeImageURL(source) {
+                    CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 2600, placeholder: ProgressView().tint(.white))
+                } else {
+                    Image(systemName: "photo").font(.largeTitle).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .scaleEffect(min(max(scale * gestureScale, 1), 5))
+            .offset(x: offset.width + gestureOffset.width, y: offset.height + gestureOffset.height)
+            .contentShape(Rectangle())
+            .simultaneousGesture(MagnificationGesture().updating($gestureScale) { value, state, _ in
+                state = value
+            }.onEnded { value in
+                scale = min(max(scale * value, 1), 5)
+                if scale == 1 { offset = .zero }
+            })
+            .simultaneousGesture(DragGesture().updating($gestureOffset) { value, state, _ in
+                if scale > 1 { state = value.translation }
+            }.onEnded { value in
+                if scale > 1 {
+                    offset.width += value.translation.width
+                    offset.height += value.translation.height
+                }
+            })
+            .onTapGesture(count: 2) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if scale > 1 { scale = 1; offset = .zero } else { scale = 2.5 }
+                }
+            }
+        }
+    }
 }
 private struct LicenseRecordForm: View {
     @EnvironmentObject private var session: NativeSession; @Environment(\.dismiss) private var dismiss; let item: LicenseRecordItem?; let onSave: () async -> Void; @State private var subject: String; @State private var code: String; @State private var legal: String; @State private var issue: String; @State private var expiry: String; @State private var remark: String; @State private var saving = false; @State private var error: String?; @State private var photoItem: PhotosPickerItem?
@@ -3120,47 +3400,98 @@ private struct NativeModelsView: View {
     @State private var loading = false
     @State private var error: String?
     @State private var connections: [AIConnection] = []
+    @State private var knowledge: [KnowledgeCollection] = []
+    @State private var skills: [CapabilityItem] = []
+    @State private var tools: [CapabilityItem] = []
     @State private var segment = 0
+    @State private var query = ""
+    @State private var importing = false
     @State private var editingConnection: AIConnection?
     @State private var showingConnection = false
     @State private var notice: String?
     @State private var editingModel: AIModel?
     @State private var showingModel = false
+    private var filteredModels: [AIModel] { query.isEmpty ? models : models.filter { "\($0.name) \($0.baseModel) \(aiModelSourceLabel($0, connections: connections))".localizedCaseInsensitiveContains(query) } }
+    private var filteredConnections: [AIConnection] { query.isEmpty ? connections : connections.filter { "\($0.name) \($0.baseURL) \($0.providerType ?? "")".localizedCaseInsensitiveContains(query) } }
+    private var exportPayload: String { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return (try? String(data: encoder.encode(models), encoding: .utf8)) ?? "{\"models\":[]}" }
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) { Text("模型中心").font(.title3.bold()); Text("管理模型与平台连接").font(.caption).foregroundStyle(.secondary) }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) { Text("\(models.filter { $0.enabled != 0 }.count)").font(.title3.bold()); Text("已启用").font(.caption).foregroundStyle(.secondary) }
+            }.padding(.horizontal).padding(.top, 10)
             Picker("类型", selection: $segment) { Text("模型").tag(0); Text("账号连接").tag(1) }.pickerStyle(.segmented).padding()
             List {
             if let error { Text(error).foregroundStyle(.red) }
             if let notice { Text(notice).foregroundStyle(.green) }
-            if segment == 0 { ForEach(models) { model in
+            Section {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField(segment == 0 ? "搜索模型名称或型号" : "搜索连接", text: $query)
+                    if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
+                }
+            }
+            if segment == 0 { ForEach(filteredModels, id: \.pickerIdentity) { model in
                 HStack(spacing: 12) {
-                    AIModelIcon(model: model, connections: connections, size: 42)
+                    AIModelIcon(model: model, connections: connections, size: 64)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.name).fontWeight(.medium)
+                        HStack(spacing: 6) { Text(aiModelDisplayName(model)).fontWeight(.medium); if model.isDefault != 0 { Text("默认").font(.caption2).foregroundStyle(.blue).padding(.horizontal, 5).padding(.vertical, 2).background(Color.blue.opacity(0.1), in: Capsule()) } }
                         Text(model.baseModel).font(.caption).foregroundStyle(.secondary)
+                        Text(aiModelSourceLabel(model, connections: connections))
+                            .font(.caption2.weight(.medium)).foregroundStyle(.blue).lineLimit(1)
                         Label(aiModelAccountLabel(model, connections: connections), systemImage: "person.crop.circle")
                             .font(.caption2.weight(.medium)).foregroundStyle(.blue).lineLimit(1)
                     }
-                    Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary)
-                    Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
+                    Spacer(); Text(model.modelType ?? "chat").font(.caption).foregroundStyle(.secondary); Circle().fill(model.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8)
                 }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingModel = model; showingModel = true }
                     .swipeActions { Button("删除", role: .destructive) { Task { await deleteModel(model) } }; Button(model.enabled == 0 ? "启用" : "停用") { Task { await toggleModel(model) } }.tint(model.enabled == 0 ? .green : .orange) }
-            } } else { ForEach(connections) { connection in
+            } } else { ForEach(filteredConnections) { connection in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack { Text(connection.name).fontWeight(.semibold); Spacer(); Circle().fill(connection.enabled == 0 ? Color.gray : Color.green).frame(width: 8, height: 8) }
                     Text(connection.baseURL).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Text("\(connection.providerType ?? "openai") · \(connection.hasKey == true ? "Key 已配置" : "未配置 Key")").font(.caption2).foregroundStyle(.secondary)
                 }.padding(.vertical, 3).contentShape(Rectangle()).onTapGesture { editingConnection = connection; showingConnection = true }
-                    .swipeActions { Button(connection.enabled == 0 ? "启用" : "停用") { Task { await toggleConnection(connection) } }.tint(connection.enabled == 0 ? .green : .orange); Button("同步") { Task { await sync(connection) } }.tint(.blue) }
+                    .swipeActions { Button("删除", role: .destructive) { Task { await deleteConnection(connection) } }; Button("测试") { Task { await test(connection) } }.tint(.purple); Button("同步") { Task { await sync(connection) } }.tint(.blue); Button(connection.enabled == 0 ? "启用" : "停用") { Task { await toggleConnection(connection) } }.tint(connection.enabled == 0 ? .green : .orange) }
             } }
             }
         }
         .overlay { if loading && models.isEmpty { ProgressView() } }
         .navigationTitle("AI 模型").refreshable { await load() }.task { await load() }
-        .toolbar { Menu { Button("新增模型") { editingModel = nil; showingModel = true }; Button("新增连接") { editingConnection = nil; showingConnection = true }; Button("同步全部模型") { Task { await syncAll() } } } label: { Image(systemName: "plus") } }
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if segment == 0 {
+                    Button { editingModel = nil; showingModel = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("创建模型")
+                    .help("创建模型")
+                    Button { Task { await syncAll() } } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .accessibilityLabel("同步全部模型")
+                    .help("同步全部模型")
+                    .disabled(connections.isEmpty || loading)
+                    Menu {
+                        Button("全部启用") { Task { await batchUpdate(enabled: 1) } }
+                        Button("全部停用") { Task { await batchUpdate(enabled: 0) } }
+                        Button("全部显示") { Task { await batchUpdate(hidden: 0) } }
+                        Button("全部隐藏") { Task { await batchUpdate(hidden: 1) } }
+                        Divider()
+                        ShareLink(item: exportPayload, preview: SharePreview("模型配置")) { Label("导出配置", systemImage: "square.and.arrow.up") }
+                        Button { importing = true } label: { Label("导入配置", systemImage: "square.and.arrow.down") }
+                    } label: { Image(systemName: "slider.horizontal.3") }
+                } else {
+                    Button { editingConnection = nil; showingConnection = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("新增连接")
+                        .help("新增连接")
+                }
+            }
+        }
         .sheet(isPresented: $showingConnection) { ConnectionForm(item: editingConnection) { await load() } }
-        .sheet(isPresented: $showingModel) { ModelForm(item: editingModel, connections: connections) { await load() } }
+        .sheet(isPresented: $showingModel) { ModelForm(item: editingModel, connections: connections, knowledge: knowledge, skills: skills, tools: tools) { await load() } }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in Task { await importModels(result) } }
     }
 
     private func load() async {
@@ -3168,19 +3499,51 @@ private struct NativeModelsView: View {
         do {
             async let modelRequest: AIModelsResponse = session.get("ai-api/models")
             async let connectionRequest: AIConnectionsResponse = session.get("ai-api/connections")
-            let result = try await (modelRequest, connectionRequest); models = result.0.models; connections = result.1.connections
+            async let knowledgeRequest: KnowledgeResponse? = try? session.get("ai-api/knowledge")
+            async let skillsRequest: CapabilityResponse? = try? session.get("ai-api/skills")
+            async let toolsRequest: CapabilityResponse? = try? session.get("ai-api/tools")
+            let result = try await (modelRequest, connectionRequest, knowledgeRequest, skillsRequest, toolsRequest)
+            models = result.0.models; connections = result.1.connections
+            knowledge = result.2?.knowledge ?? []
+            skills = result.3?.skills ?? []
+            tools = result.4?.tools ?? []
         }
         catch { self.error = session.message(for: error) }
     }
 
     private func toggleConnection(_ item: AIConnection) async { do { let _: EmptyResponse = try await session.send("ai-api/connections/toggle", method: "POST", body: ["id": item.id, "enabled": item.enabled == 0], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
+    private func test(_ item: AIConnection) async { do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); notice = result.message ?? "连接测试成功" } catch { self.error = session.message(for: error) } }
+    private func deleteConnection(_ item: AIConnection) async { do { let _: EmptyResponse = try await session.send("ai-api/connections/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
     private func sync(_ item: AIConnection) async { do { let result: AISyncResponse = try await session.send("ai-api/connections/sync", method: "POST", body: ["id": item.id]); notice = "同步完成，共 \(result.total ?? 0) 个模型"; await load() } catch { self.error = session.message(for: error) } }
     private func toggleModel(_ item: AIModel) async {
-        let body: [String: Any] = ["id": item.id, "name": item.name, "base_model": item.baseModel, "model_type": item.modelType ?? "chat", "enabled": item.enabled == 0, "temperature": item.temperature ?? 0.7, "top_p": item.topP ?? 1, "max_tokens": item.maxTokens ?? 2048]
+        let body: [String: Any] = ["id": item.id, "name": item.name, "base_model": item.baseModel, "model_type": item.modelType ?? "chat", "enabled": item.enabled == 0 ? 1 : 0, "temperature": item.temperature ?? 0.7, "top_p": item.topP ?? 1, "max_tokens": item.maxTokens ?? 2048]
         do { let _: EmptyResponse = try await session.send("ai-api/models/update", method: "POST", body: body, allowEmpty: true); await load() } catch { self.error = session.message(for: error) }
     }
     private func deleteModel(_ item: AIModel) async { do { let _: EmptyResponse = try await session.send("ai-api/models/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
     private func syncAll() async { do { let result: AISyncResponse = try await session.send("ai-api/models/sync", method: "POST", body: [:]); notice = "同步完成，共 \(result.total ?? 0) 个模型"; await load() } catch { self.error = session.message(for: error) } }
+    private func batchUpdate(enabled: Int? = nil, hidden: Int? = nil) async { for model in filteredModels { var body: [String: Any] = ["id": model.id]; if let enabled { body["enabled"] = enabled }; if let hidden { body["hidden"] = hidden }; do { let _: EmptyResponse = try await session.send("ai-api/models/update", method: "POST", body: body, allowEmpty: true) } catch { self.error = session.message(for: error); return } }; await load() }
+    private func importModels(_ result: Result<URL, Error>) async {
+        do {
+            let url = try result.get()
+            guard url.startAccessingSecurityScopedResource() else { throw NativeAPIError.invalidResponse }
+            defer { url.stopAccessingSecurityScopedResource() }
+            let data = try Data(contentsOf: url)
+            let json = try JSONSerialization.jsonObject(with: data)
+            let rows: [[String: Any]]
+            if let object = json as? [String: Any], let models = object["models"] as? [[String: Any]] {
+                rows = models
+            } else {
+                rows = (json as? [[String: Any]]) ?? []
+            }
+            for row in rows {
+                let endpoint = row["id"] == nil ? "ai-api/models" : "ai-api/models/update"
+                let _: EmptyResponse = try await session.send(endpoint, method: "POST", body: row, allowEmpty: true)
+            }
+            await load()
+        } catch {
+            self.error = session.message(for: error)
+        }
+    }
 }
 
 private struct NativeKnowledgeView: View {
@@ -3264,39 +3627,142 @@ private struct ConnectionForm: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
     let item: AIConnection?; let onSave: () async -> Void
-    @State private var name: String; @State private var baseURL: String; @State private var apiKey = ""; @State private var provider: String; @State private var purpose: String
+    @State private var name: String; @State private var baseURL: String; @State private var apiKey = ""; @State private var provider: String; @State private var providerID: String; @State private var purpose: String; @State private var enabled: Bool
     @State private var saving = false; @State private var testing = false; @State private var message: String?
-    init(item: AIConnection?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? "OpenAI"); _baseURL = State(initialValue: item?.baseURL ?? "https://api.openai.com/v1"); _provider = State(initialValue: item?.providerType ?? "openai"); _purpose = State(initialValue: item?.purpose ?? "general") }
+    private let providerOptions = [("openai", "OpenAI"), ("anthropic", "Anthropic Claude"), ("google", "Google Gemini"), ("azure", "Azure OpenAI"), ("mistral", "Mistral AI"), ("groq", "Groq"), ("xai", "xAI Grok"), ("openrouter", "OpenRouter"), ("cohere", "Cohere"), ("meta", "Meta Llama"), ("deepseek", "DeepSeek"), ("qwen", "阿里云通义千问"), ("zhipu", "智谱 GLM"), ("moonshot", "月之暗面 Kimi"), ("baichuan", "百川智能"), ("yi", "零一万物 Yi"), ("doubao", "火山方舟 / 豆包"), ("siliconflow", "硅基流动"), ("minimax", "MiniMax"), ("stepfun", "阶跃星辰"), ("ollama", "Ollama"), ("custom", "其他 OpenAI 兼容平台")]
+    init(item: AIConnection?, onSave: @escaping () async -> Void) { self.item = item; self.onSave = onSave; _name = State(initialValue: item?.name ?? "OpenAI"); _baseURL = State(initialValue: item?.baseURL ?? "https://api.openai.com/v1"); _provider = State(initialValue: item?.providerType ?? "openai"); _providerID = State(initialValue: item?.providerID ?? item?.providerType ?? "openai"); _purpose = State(initialValue: item?.purpose ?? "general"); _enabled = State(initialValue: item?.enabled != 0) }
     var body: some View { NavigationStack { Form {
         if let message { Text(message).foregroundStyle(.secondary) }
-        Section("账号连接") { TextField("账号名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never) }
-        Section("类型") { Picker("协议", selection: $provider) { Text("OpenAI 兼容").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }; Picker("用途", selection: $purpose) { Text("通用").tag("general"); Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio") } }
+        Section("账号连接") { TextField("账号名称", text: $name); TextField("接口地址", text: $baseURL).textInputAutocapitalization(.never).keyboardType(.URL); SecureField(item?.hasKey == true ? "留空保留已有 Key" : "API Key", text: $apiKey).textInputAutocapitalization(.never); Toggle("启用连接", isOn: $enabled) }
+        Section("平台与协议") {
+            Picker("平台", selection: $providerID) { ForEach(providerOptions, id: \.0) { Text($0.1).tag($0.0) } }
+            Picker("协议", selection: $provider) { Text("OpenAI 兼容").tag("openai"); Text("Ollama").tag("ollama"); Text("Pipeline").tag("pipeline") }
+            Picker("用途", selection: $purpose) { Text("通用").tag("general"); Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio") }
+        }
         if item != nil { Button(testing ? "测试中..." : "测试连接") { Task { await test() } }.disabled(testing) }
     }.navigationTitle(item == nil ? "新增连接" : "编辑连接").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseURL.isEmpty || (item == nil && apiKey.isEmpty && provider != "ollama")) } } } }
-    private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_url": baseURL, "provider_type": provider, "provider_id": provider, "purpose": purpose, "enabled": true]; if !apiKey.isEmpty { body["api_key"] = apiKey }; do { let _: EmptyResponse = try await session.send("ai-api/connections/save", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { message = session.message(for: error) } }
+    private func save() async { saving = true; defer { saving = false }; var body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_url": baseURL, "provider_type": provider, "provider_id": providerID, "purpose": purpose, "enabled": enabled ? 1 : 0]; if !apiKey.isEmpty { body["api_key"] = apiKey }; do { let _: EmptyResponse = try await session.send("ai-api/connections/save", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { message = session.message(for: error) } }
     private func test() async { guard let item else { return }; testing = true; defer { testing = false }; do { let result: ConnectionTestResponse = try await session.send("ai-api/connections/test", method: "POST", body: ["id": item.id]); message = result.message ?? "连接成功" } catch { message = session.message(for: error) } }
 }
 
 private struct ModelForm: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
-    let item: AIModel?; let connections: [AIConnection]; let onSave: () async -> Void
+    let item: AIModel?; let connections: [AIConnection]; let knowledge: [KnowledgeCollection]; let skills: [CapabilityItem]; let tools: [CapabilityItem]; let onSave: () async -> Void
     @State private var name: String; @State private var baseModel: String; @State private var type: String; @State private var connectionID: String
     @State private var description: String; @State private var systemPrompt: String; @State private var temperature: Double; @State private var topP: Double; @State private var maxTokens: Int
-    @State private var enabled: Bool; @State private var saving = false; @State private var error: String?
-    init(item: AIModel?, connections: [AIConnection], onSave: @escaping () async -> Void) {
-        self.item = item; self.connections = connections; self.onSave = onSave
+    @State private var enabled: Bool; @State private var pinned: Bool; @State private var isDefault: Bool; @State private var hidden: Bool
+    @State private var inputPrice: Double; @State private var outputPrice: Double; @State private var access: String
+    @State private var knowledgeID: String; @State private var selectedSkillIDs: Set<String>; @State private var selectedToolIDs: Set<String>
+    @State private var saving = false; @State private var error: String?
+    init(item: AIModel?, connections: [AIConnection], knowledge: [KnowledgeCollection], skills: [CapabilityItem], tools: [CapabilityItem], onSave: @escaping () async -> Void) {
+        self.item = item; self.connections = connections; self.knowledge = knowledge; self.skills = skills; self.tools = tools; self.onSave = onSave
         _name = State(initialValue: item?.name ?? ""); _baseModel = State(initialValue: item?.baseModel ?? ""); _type = State(initialValue: item?.modelType ?? "chat")
         _connectionID = State(initialValue: item?.connectionID ?? connections.first?.id ?? ""); _description = State(initialValue: item?.description ?? ""); _systemPrompt = State(initialValue: item?.systemPrompt ?? "")
         _temperature = State(initialValue: item?.temperature ?? 0.7); _topP = State(initialValue: item?.topP ?? 1); _maxTokens = State(initialValue: item?.maxTokens ?? 2048); _enabled = State(initialValue: item?.enabled != 0)
+        _pinned = State(initialValue: item?.pinned == 1); _isDefault = State(initialValue: item?.isDefault == 1); _hidden = State(initialValue: item?.hidden == 1)
+        _inputPrice = State(initialValue: item?.inputPrice ?? 0); _outputPrice = State(initialValue: item?.outputPrice ?? 0); _access = State(initialValue: item?.access ?? "private")
+        _knowledgeID = State(initialValue: item?.knowledgeID ?? "")
+        _selectedSkillIDs = State(initialValue: Self.decodeIDs(item?.skillIDs))
+        _selectedToolIDs = State(initialValue: Self.decodeIDs(item?.toolIDs))
     }
-    var body: some View { NavigationStack { Form {
-        if let error { Text(error).foregroundStyle(.red) }
-        Section("模型") { TextField("显示名称", text: $name); TextField("基础模型，例如 gpt-4.1", text: $baseModel).textInputAutocapitalization(.never); Picker("模型类型", selection: $type) { Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio"); Text("嵌入").tag("embedding") }; Picker("所属账号连接", selection: $connectionID) { Text("未绑定账号").tag(""); ForEach(connections) { Text("\($0.name) · \($0.providerType ?? "通用")").tag($0.id) } }; Toggle("启用", isOn: $enabled) }
-        Section("说明") { TextField("模型用途", text: $description, axis: .vertical).lineLimit(2...5); TextField("系统提示词", text: $systemPrompt, axis: .vertical).lineLimit(4...10) }
-        if type == "chat" { Section("生成参数") { LabeledContent("Temperature", value: String(format: "%.1f", temperature)); Slider(value: $temperature, in: 0...2, step: 0.1); LabeledContent("Top P", value: String(format: "%.1f", topP)); Slider(value: $topP, in: 0...1, step: 0.1); Stepper("最大 Token：\(maxTokens)", value: $maxTokens, in: 128...128000, step: 128) } }
-    }.navigationTitle(item == nil ? "新增模型" : "编辑模型").navigationBarTitleDisplayMode(.inline).toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "保存中..." : "保存") { Task { await save() } }.disabled(saving || name.isEmpty || baseModel.isEmpty) } } } }
-    private func save() async { saving = true; defer { saving = false }; let body: [String: Any] = ["id": item?.id ?? "", "name": name, "base_model": baseModel, "model_type": type, "connection_id": connectionID, "description": description, "system_prompt": systemPrompt, "temperature": temperature, "top_p": topP, "max_tokens": maxTokens, "enabled": enabled, "capabilities": ["knowledge"]]; do { let _: EmptyResponse = try await session.send(item == nil ? "ai-api/models" : "ai-api/models/update", method: "POST", body: body, allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let error { Text(error).foregroundStyle(.red) }
+                Section("模型") {
+                    TextField("显示名称", text: $name)
+                    TextField("基础模型，例如 gpt-4.1", text: $baseModel)
+                        .textInputAutocapitalization(.never)
+                    Picker("模型类型", selection: $type) {
+                        Text("对话").tag("chat"); Text("图片").tag("image"); Text("音频").tag("audio"); Text("嵌入").tag("embedding")
+                    }
+                    Picker("所属账号连接", selection: $connectionID) {
+                        Text("未绑定账号").tag("")
+                        ForEach(connections) { Text("\($0.name) · \($0.providerType ?? "通用")").tag($0.id) }
+                    }
+                }
+                Section("可见性与权限") {
+                    Toggle("启用", isOn: $enabled)
+                    Toggle("设为默认模型", isOn: $isDefault)
+                    Toggle("置顶显示", isOn: $pinned)
+                    Toggle("隐藏模型", isOn: $hidden)
+                    Picker("访问范围", selection: $access) {
+                        Text("仅自己").tag("private"); Text("团队").tag("team"); Text("公开").tag("public")
+                    }
+                }
+                Section("能力绑定") {
+                    Picker("知识库", selection: $knowledgeID) {
+                        Text("不绑定").tag("")
+                        ForEach(knowledge) { Text($0.name).tag($0.id) }
+                    }
+                    if !skills.isEmpty {
+                        ForEach(skills) { skill in
+                            Toggle(skill.displayName, isOn: setBinding($selectedSkillIDs, skill.id))
+                        }
+                    }
+                    if !tools.isEmpty {
+                        ForEach(tools) { tool in
+                            Toggle(tool.displayName, isOn: setBinding($selectedToolIDs, tool.id))
+                        }
+                    }
+                }
+                Section("说明") {
+                    TextField("模型用途", text: $description, axis: .vertical).lineLimit(2...5)
+                    TextField("系统提示词", text: $systemPrompt, axis: .vertical).lineLimit(4...10)
+                }
+                if type == "chat" {
+                    Section("生成参数") {
+                        LabeledContent("Temperature", value: String(format: "%.1f", temperature)); Slider(value: $temperature, in: 0...2, step: 0.1)
+                        LabeledContent("Top P", value: String(format: "%.1f", topP)); Slider(value: $topP, in: 0...1, step: 0.1)
+                        Stepper("最大 Token：\(maxTokens)", value: $maxTokens, in: 128...128000, step: 128)
+                    }
+                }
+                Section("费用（每百万 Token）") {
+                    TextField("输入价格", value: $inputPrice, format: .number).keyboardType(.decimalPad)
+                    TextField("输出价格", value: $outputPrice, format: .number).keyboardType(.decimalPad)
+                }
+                if item != nil {
+                    Section("危险操作") {
+                        Button("复制为新模型") { Task { await duplicate() } }
+                        Button("删除模型", role: .destructive) { Task { await remove() } }
+                    }
+                }
+            }
+            .navigationTitle(item == nil ? "新增模型" : "编辑模型")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "保存中..." : "保存") { Task { await save() } }
+                        .disabled(saving || name.isEmpty || baseModel.isEmpty)
+                }
+            }
+        }
+    }
+    private func payload(id: String = "", name: String? = nil) -> [String: Any] {
+        ["id": id, "name": name ?? self.name, "base_model": baseModel, "model_type": type, "connection_id": connectionID,
+         "description": description, "system_prompt": systemPrompt, "temperature": temperature, "top_p": topP, "max_tokens": maxTokens,
+         "enabled": enabled ? 1 : 0, "hidden": hidden ? 1 : 0, "pinned": pinned ? 1 : 0, "is_default": isDefault ? 1 : 0,
+         "access": access, "input_price": inputPrice, "output_price": outputPrice, "knowledge_id": knowledgeID,
+         "skill_ids": Self.encodeIDs(selectedSkillIDs), "tool_ids": Self.encodeIDs(selectedToolIDs), "capabilities": ["knowledge"]]
+    }
+    private func save() async { saving = true; defer { saving = false }; do { let _: EmptyResponse = try await session.send(item == nil ? "ai-api/models" : "ai-api/models/update", method: "POST", body: payload(id: item?.id ?? ""), allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+    private func duplicate() async { guard item != nil else { return }; saving = true; defer { saving = false }; do { let _: EmptyResponse = try await session.send("ai-api/models", method: "POST", body: payload(name: "\(name) 副本"), allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+    private func remove() async { guard let item else { return }; saving = true; defer { saving = false }; do { let _: EmptyResponse = try await session.send("ai-api/models/delete", method: "POST", body: ["id": item.id], allowEmpty: true); await onSave(); dismiss() } catch { self.error = session.message(for: error) } }
+    private func setBinding(_ selection: Binding<Set<String>>, _ id: String) -> Binding<Bool> {
+        Binding(get: { selection.wrappedValue.contains(id) }, set: { enabled in
+            if enabled { selection.wrappedValue.insert(id) } else { selection.wrappedValue.remove(id) }
+        })
+    }
+    private static func decodeIDs(_ value: String?) -> Set<String> {
+        guard let value, let data = value.data(using: .utf8), let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(ids)
+    }
+    private static func encodeIDs(_ ids: Set<String>) -> String {
+        guard let data = try? JSONEncoder().encode(Array(ids).sorted()), let result = String(data: data, encoding: .utf8) else { return "[]" }
+        return result
+    }
 }
 
 private struct NativeCapabilitiesView: View {
@@ -3353,7 +3819,26 @@ private struct NativeOperationsView: View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             if section == .usage {
-                if let summary { Section { HStack { Metric(title: "调用", value: "\(summary.calls)"); Metric(title: "输入 Token", value: "\(summary.inputTokens)"); Metric(title: "输出 Token", value: "\(summary.outputTokens)") }; LabeledContent("累计费用", value: String(format: "¥ %.4f", summary.cost)); HStack { Text("月度预算"); Spacer(); TextField("0", value: $monthlyBudget, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90) }; if monthlyBudget > 0 { ProgressView(value: min(summary.cost / monthlyBudget, 1)); Text(String(format: "已使用 %.1f%%", summary.cost / monthlyBudget * 100)).font(.caption).foregroundStyle(.secondary) } } }
+                if let summary {
+                    Section("累计用量") { HStack { Metric(title: "调用", value: "\(summary.calls)"); Metric(title: "输入 Token", value: "\(summary.inputTokens)"); Metric(title: "输出 Token", value: "\(summary.outputTokens)") }; LabeledContent("累计费用", value: String(format: "¥ %.4f", summary.cost)); HStack { Text("月度预算"); Spacer(); TextField("0", value: $monthlyBudget, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90) }; if monthlyBudget > 0 { ProgressView(value: min(summary.cost / monthlyBudget, 1)); Text(String(format: "已使用 %.1f%%", summary.cost / monthlyBudget * 100)).font(.caption).foregroundStyle(.secondary) } }
+                    Section("今日用量") {
+                        HStack { Metric(title: "调用", value: "\(todayUsage.calls)"); Metric(title: "输入 Token", value: "\(todayUsage.inputTokens)"); Metric(title: "输出 Token", value: "\(todayUsage.outputTokens)") }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("近 7 天 Token").font(.caption).foregroundStyle(.secondary)
+                            HStack(alignment: .bottom, spacing: 8) {
+                                ForEach(lastSevenDays) { day in
+                                    VStack(spacing: 4) {
+                                        Text("\(day.summary.totalTokens)").font(.caption2).monospacedDigit().foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
+                                        RoundedRectangle(cornerRadius: 4).fill(day.date == lastSevenDays.last?.date ? Color.blue : Color.blue.opacity(0.45)).frame(maxWidth: .infinity, minHeight: 3, maxHeight: max(CGFloat(day.summary.totalTokens) / CGFloat(dailyTokenMaximum) * 72, 3))
+                                        Text(usageDayLabel(day.date)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .bottom)
+                                }
+                            }
+                            .frame(height: 112, alignment: .bottom)
+                        }
+                    }
+                }
                 ForEach(usage.filter { query.isEmpty || "\($0.operation) \($0.modelID ?? "")".localizedCaseInsensitiveContains(query) }) { item in VStack(alignment: .leading, spacing: 5) { HStack { Text(item.operation).fontWeight(.medium); Spacer(); Text("\(item.inputTokens + item.outputTokens) Token").font(.caption) }; Text("\(item.modelID.flatMap { $0.isEmpty ? nil : $0 } ?? "默认模型") · \(item.latencyMS) ms").font(.caption).foregroundStyle(.secondary) } }
             } else if section == .memory {
                 ForEach(memories) { item in VStack(alignment: .leading, spacing: 6) { Text(item.content); HStack { Text(item.sourceChatID?.isEmpty == false ? "来自会话" : "手动添加").font(.caption).foregroundStyle(.secondary); Spacer(); Toggle("", isOn: Binding(get: { item.enabled != 0 }, set: { enabled in Task { await toggleMemory(item, enabled) } })).labelsHidden() } }.contentShape(Rectangle()).onTapGesture { editingMemory = item; showingMemory = true }.swipeActions { Button("删除", role: .destructive) { Task { await deleteMemory(item) } } } }
@@ -3398,6 +3883,34 @@ private struct NativeOperationsView: View {
         .sheet(isPresented: $showingMemory) { MemoryForm(item: editingMemory) { await load() } }
         .sheet(isPresented: $showingWorkflow) { WorkflowForm(item: editingWorkflow) { await load() } }
         .alert("运行工作流", isPresented: Binding(get: { runWorkflow != nil }, set: { if !$0 { runWorkflow = nil } })) { TextField("输入内容", text: $runInput); Button("运行") { if let workflow = runWorkflow { Task { await run(workflow) } } }; Button("取消", role: .cancel) { runWorkflow = nil } } message: { Text("输入工作流处理内容") }
+    }
+    private var todayUsage: UsageDailySummary {
+        let calendar = Calendar.current
+        return usage.reduce(into: UsageDailySummary()) { result, item in
+            if let date = item.createdAt, calendar.isDateInToday(date) { result.add(item) }
+        }
+    }
+    private var lastSevenDays: [UsageDay] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        var totals: [Date: UsageDailySummary] = [:]
+        for item in usage {
+            guard let date = item.createdAt else { continue }
+            let day = calendar.startOfDay(for: date)
+            let offset = calendar.dateComponents([.day], from: day, to: today).day ?? 99
+            guard (0...6).contains(offset) else { continue }
+            totals[day, default: UsageDailySummary()].add(item)
+        }
+        return (0..<7).reversed().compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else { return nil }
+            return UsageDay(date: day, summary: totals[day] ?? UsageDailySummary())
+        }
+    }
+    private var dailyTokenMaximum: Int { max(lastSevenDays.map(\.summary.totalTokens).max() ?? 1, 1) }
+    private func usageDayLabel(_ date: Date) -> String {
+        if Calendar.current.isDateInToday(date) { return "今天" }
+        let formatter = DateFormatter(); formatter.dateFormat = "M/d"
+        return formatter.string(from: date)
     }
     private func load() async { loading = true; error = nil; defer { loading = false }; do { switch section { case .usage: let result: UsageResponse = try await session.get("ai-api/usage"); usage = result.usage; summary = result.summary; case .memory: let result: MemoriesResponse = try await session.get("ai-api/memories"); memories = result.memories; case .workflow: let result: WorkflowsResponse = try await session.get("ai-api/workflows"); workflows = result.workflows; case .jobs: let result: JobsResponse = try await session.get("ai-api/jobs"); jobs = result.jobs; case .shares: let result: SharesResponse = try await session.get("ai-api/shares"); shares = result.shares } } catch { self.error = session.message(for: error) } }
     private func toggleMemory(_ item: AIMemory, _ enabled: Bool) async { do { let _: EmptyResponse = try await session.send("ai-api/memories", method: "POST", body: ["id": item.id, "content": item.content, "source_chat_id": item.sourceChatID ?? "", "enabled": enabled], allowEmpty: true); await load() } catch { self.error = session.message(for: error) } }
@@ -3714,11 +4227,185 @@ private struct WarehouseOutboundDetail: View {
 }
 
 private struct WarehouseBasicEditor: View {
-    enum Kind { case warehouse, product }; @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let kind:Kind; let warehouse: WarehouseRecord?; let product: WarehouseProduct?; let onSave:() async->Void
-    @State private var code:String; @State private var name:String; @State private var extra:String; @State private var unit:String; @State private var price:String; @State private var warning:Int; @State private var enabled:Bool; @State private var error:String?
-    init(kind:Kind,warehouse:WarehouseRecord?,product:WarehouseProduct?,onSave:@escaping()async->Void){self.kind=kind;self.warehouse=warehouse;self.product=product;self.onSave=onSave;_code=State(initialValue:warehouse?.code ?? product?.sku ?? "");_name=State(initialValue:warehouse?.name ?? product?.name ?? "");_extra=State(initialValue:warehouse?.address ?? product?.barcode ?? "");_unit=State(initialValue:product?.unit ?? "件");_price=State(initialValue:product.map{String($0.costPrice)} ?? "0");_warning=State(initialValue:product?.warningQuantity ?? 0);_enabled=State(initialValue:warehouse?.isActive ?? product?.isActive ?? true)}
-    var body:some View{NavigationStack{Form{if let error{Text(error).foregroundStyle(.red)};TextField(kind == .warehouse ? "仓库编码":"SKU",text:$code).textInputAutocapitalization(.characters);TextField(kind == .warehouse ? "仓库名称":"商品名称",text:$name);TextField(kind == .warehouse ? "地址":"条码",text:$extra);if kind == .product{TextField("单位",text:$unit);TextField("成本价",text:$price).keyboardType(.decimalPad);Stepper("预警库存：\(warning)",value:$warning,in:0...999999)};Toggle("启用",isOn:$enabled)}.navigationTitle((warehouse != nil || product != nil) ? "编辑资料" : (kind == .warehouse ? "新增仓库":"新增商品")).toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("保存"){Task{await save()}}.disabled(code.isEmpty || name.isEmpty)}}}}
-    private func save()async{do{if kind == .warehouse{let path=warehouse.map{"warehouse/warehouses/\($0.id)"} ?? "warehouse/warehouses";let _:WarehouseRecord=try await session.send(path,method:warehouse == nil ? "POST":"PUT",body:["code":code,"name":name,"address":extra,"contact_name":warehouse?.contactName ?? "","contact_phone":warehouse?.contactPhone ?? "","is_active":enabled,"remark":warehouse?.remark ?? ""])}else{let path=product.map{"warehouse/products/\($0.id)"} ?? "warehouse/products";let _:WarehouseProduct=try await session.send(path,method:product == nil ? "POST":"PUT",body:["sku":code,"name":name,"barcode":extra,"specification":product?.specification ?? "","unit":unit,"cost_price":Double(price) ?? 0,"warning_quantity":warning,"is_active":enabled,"remark":product?.remark ?? ""])};await onSave();dismiss()}catch{self.error=session.message(for:error)}}
+    enum Kind { case warehouse, product }
+
+    @EnvironmentObject private var session: NativeSession
+    @Environment(\.dismiss) private var dismiss
+    let kind: Kind
+    let warehouse: WarehouseRecord?
+    let product: WarehouseProduct?
+    let onSave: () async -> Void
+
+    @State private var code: String
+    @State private var name: String
+    @State private var extra: String
+    @State private var unit: String
+    @State private var price: String
+    @State private var warning: Int
+    @State private var enabled: Bool
+    @State private var savedProduct: WarehouseProduct?
+    @State private var photoItem: PhotosPickerItem?
+    @State private var photoImage: UIImage?
+    @State private var photoData: Data?
+    @State private var loadingPhoto = false
+    @State private var saving = false
+    @State private var error: String?
+
+    init(kind: Kind, warehouse: WarehouseRecord?, product: WarehouseProduct?, onSave: @escaping () async -> Void) {
+        self.kind = kind
+        self.warehouse = warehouse
+        self.product = product
+        self.onSave = onSave
+        _code = State(initialValue: warehouse?.code ?? product?.sku ?? "")
+        _name = State(initialValue: warehouse?.name ?? product?.name ?? "")
+        _extra = State(initialValue: warehouse?.address ?? product?.barcode ?? "")
+        _unit = State(initialValue: product?.unit ?? "件")
+        _price = State(initialValue: product.map { String($0.costPrice) } ?? "0")
+        _warning = State(initialValue: product?.warningQuantity ?? 0)
+        _enabled = State(initialValue: warehouse?.isActive ?? product?.isActive ?? true)
+        _savedProduct = State(initialValue: product)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let error { Text(error).foregroundStyle(.red) }
+                if kind == .product { productPhotoSection }
+                Section(kind == .warehouse ? "仓库资料" : "商品资料") {
+                    TextField(kind == .warehouse ? "仓库编码" : "SKU", text: $code)
+                        .textInputAutocapitalization(.characters)
+                    TextField(kind == .warehouse ? "仓库名称" : "商品名称", text: $name)
+                    TextField(kind == .warehouse ? "地址" : "条码", text: $extra)
+                    if kind == .product {
+                        TextField("单位", text: $unit)
+                        TextField("成本价", text: $price).keyboardType(.decimalPad)
+                        Stepper("预警库存：\(warning)", value: $warning, in: 0...999999)
+                    }
+                    Toggle("启用", isOn: $enabled)
+                }
+            }
+            .navigationTitle((warehouse != nil || product != nil) ? "编辑资料" : (kind == .warehouse ? "新增仓库" : "新增商品"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "保存中…" : "保存") { Task { await save() } }
+                        .disabled(saving || loadingPhoto || code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .onChange(of: photoItem) { item in Task { await receivePhoto(item) } }
+        }
+    }
+
+    private var productPhotoSection: some View {
+        Section("商品图片") {
+            HStack(alignment: .top, spacing: 16) {
+                Group {
+                    if let photoImage {
+                        Image(uiImage: photoImage).resizable().scaledToFill()
+                    } else if let imageURL = savedProduct?.imageURL ?? product?.imageURL {
+                        NativeRemoteImage(url: imageURL, size: 96)
+                    } else {
+                        ZStack {
+                            Color(.tertiarySystemFill)
+                            Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .accessibilityLabel(photoImage == nil ? "当前商品图片" : "新选择的商品图片")
+
+                VStack(alignment: .leading, spacing: 8) {
+                    PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
+                        Label(photoImage == nil ? "选择照片" : "重新选择", systemImage: "photo.on.rectangle")
+                            .frame(minHeight: 44)
+                    }
+                    if photoImage != nil {
+                        Button(role: .destructive) {
+                            photoItem = nil
+                            photoImage = nil
+                            photoData = nil
+                        } label: {
+                            Label("移除已选照片", systemImage: "trash")
+                                .frame(minHeight: 44)
+                        }
+                    }
+                }
+            }
+            if loadingPhoto {
+                ProgressView("正在读取照片…")
+            } else {
+                Text(photoData == nil ? "支持从系统照片图库选择，保存商品时一并上传。" : "照片已准备好，点击保存完成上传。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @MainActor
+    private func receivePhoto(_ item: PhotosPickerItem?) async {
+        guard let item else { return }
+        loadingPhoto = true
+        error = nil
+        defer { loadingPhoto = false }
+        do {
+            guard let source = try await item.loadTransferable(type: Data.self),
+                  let prepared = preparedWarehouseProductPhoto(source) else {
+                throw NativeAPIError.invalidResponse
+            }
+            photoImage = prepared.image
+            photoData = prepared.data
+        } catch {
+            photoItem = nil
+            photoImage = nil
+            photoData = nil
+            self.error = "无法读取这张照片，请重新选择。"
+        }
+    }
+
+    private func save() async {
+        saving = true
+        error = nil
+        defer { saving = false }
+        do {
+            if kind == .warehouse {
+                let path = warehouse.map { "warehouse/warehouses/\($0.id)" } ?? "warehouse/warehouses"
+                let _: WarehouseRecord = try await session.send(path, method: warehouse == nil ? "POST" : "PUT", body: ["code": code, "name": name, "address": extra, "contact_name": warehouse?.contactName ?? "", "contact_phone": warehouse?.contactPhone ?? "", "is_active": enabled, "remark": warehouse?.remark ?? ""])
+            } else {
+                let existing = savedProduct ?? product
+                let path = existing.map { "warehouse/products/\($0.id)" } ?? "warehouse/products"
+                let saved: WarehouseProduct = try await session.send(path, method: existing == nil ? "POST" : "PUT", body: ["sku": code, "name": name, "barcode": extra, "specification": product?.specification ?? "", "unit": unit, "cost_price": Double(price) ?? 0, "warning_quantity": warning, "is_active": enabled, "remark": product?.remark ?? ""])
+                savedProduct = saved
+                if let photoData {
+                    let uploaded: WarehouseProduct = try await session.upload(path: "warehouse/products/\(saved.id)/image", field: "image", filename: "product.jpg", data: photoData, mime: "image/jpeg")
+                    savedProduct = uploaded
+                }
+            }
+            await onSave()
+            dismiss()
+        } catch {
+            self.error = session.message(for: error)
+        }
+    }
+}
+
+private func preparedWarehouseProductPhoto(_ data: Data) -> (image: UIImage, data: Data)? {
+    guard let image = UIImage(data: data) else { return nil }
+    let maximum: CGFloat = 1600
+    let longest = max(image.size.width, image.size.height)
+    let scale = longest > maximum ? maximum / longest : 1
+    let size = CGSize(width: max(image.size.width * scale, 1), height: max(image.size.height * scale, 1))
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = true
+    let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        UIColor.white.setFill()
+        UIRectFill(CGRect(origin: .zero, size: size))
+        image.draw(in: CGRect(origin: .zero, size: size))
+    }
+    guard let jpeg = rendered.jpegData(compressionQuality: 0.82) else { return nil }
+    return (rendered, jpeg)
 }
 private struct WarehouseOrderEditor: View {
     @EnvironmentObject private var session:NativeSession; @Environment(\.dismiss) private var dismiss; let outbound:Bool; let warehouses:[WarehouseRecord]; let products:[WarehouseProduct]; let onSave:() async->Void
@@ -3771,9 +4458,72 @@ private struct AIChatsResponse: Decodable { let chats: [AIChat] }
 
 private struct AIModel: Codable, Identifiable {
     let id: String; let name: String; let baseModel: String; let modelType: String?; let enabled: Int; let hidden: Int?
+    let pinned: Int?; let isDefault: Int?; let inputPrice: Double?; let outputPrice: Double?; let access: String?
+    let knowledgeID: String?; let skillIDs: String?; let toolIDs: String?; let tags: String?; let capabilities: String?
     let temperature: Double?; let topP: Double?; let maxTokens: Int?
     let description: String?; let systemPrompt: String?; let connectionID: String?
-    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden, temperature, description; case baseModel = "base_model"; case modelType = "model_type"; case topP = "top_p"; case maxTokens = "max_tokens"; case systemPrompt = "system_prompt"; case connectionID = "connection_id" }
+    let providerID: String?; let providerName: String?; let connectionName: String?; let syncSource: String?; let syncedAt: String?
+    var pickerIdentity: String { "\(connectionID ?? connectionName ?? syncSource ?? "unbound")::\(id)" }
+    enum CodingKeys: String, CodingKey { case id, name, enabled, hidden, pinned, isDefault = "is_default", inputPrice = "input_price", outputPrice = "output_price", access, knowledgeID = "knowledge_id", skillIDs = "skill_ids", toolIDs = "tool_ids", tags, capabilities, temperature, description; case baseModel = "base_model"; case modelType = "model_type"; case topP = "top_p"; case maxTokens = "max_tokens"; case systemPrompt = "system_prompt"; case connectionID = "connection_id"; case providerID = "provider_id"; case providerName = "provider_name"; case connectionName = "connection_name"; case syncSource = "sync_source"; case syncedAt = "synced_at" }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let rawID = Self.string(values, .id)
+        id = rawID ?? UUID().uuidString
+        baseModel = Self.string(values, .baseModel) ?? rawID ?? "unknown-model"
+        name = Self.string(values, .name) ?? baseModel
+        modelType = Self.string(values, .modelType) ?? "chat"
+        enabled = Self.integer(values, .enabled) ?? 1
+        hidden = Self.integer(values, .hidden)
+        pinned = Self.integer(values, .pinned)
+        isDefault = Self.integer(values, .isDefault)
+        inputPrice = Self.double(values, .inputPrice)
+        outputPrice = Self.double(values, .outputPrice)
+        access = Self.string(values, .access)
+        knowledgeID = Self.string(values, .knowledgeID)
+        skillIDs = Self.jsonString(values, .skillIDs)
+        toolIDs = Self.jsonString(values, .toolIDs)
+        tags = Self.jsonString(values, .tags)
+        capabilities = Self.jsonString(values, .capabilities)
+        temperature = Self.double(values, .temperature)
+        topP = Self.double(values, .topP)
+        maxTokens = Self.integer(values, .maxTokens)
+        description = Self.string(values, .description)
+        systemPrompt = Self.string(values, .systemPrompt)
+        connectionID = Self.string(values, .connectionID)
+        providerID = Self.string(values, .providerID)
+        providerName = Self.string(values, .providerName)
+        connectionName = Self.string(values, .connectionName)
+        syncSource = Self.string(values, .syncSource)
+        syncedAt = Self.string(values, .syncedAt)
+    }
+
+    private static func string(_ values: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> String? {
+        if let value = try? values.decode(String.self, forKey: key) { return value }
+        if let value = try? values.decode(Int.self, forKey: key) { return String(value) }
+        if let value = try? values.decode(Double.self, forKey: key) { return String(value) }
+        if let value = try? values.decode(Bool.self, forKey: key) { return value ? "true" : "false" }
+        return nil
+    }
+
+    private static func integer(_ values: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Int? {
+        if let value = try? values.decode(Int.self, forKey: key) { return value }
+        if let value = try? values.decode(Bool.self, forKey: key) { return value ? 1 : 0 }
+        if let value = string(values, key), let parsed = Int(value) { return parsed }
+        return nil
+    }
+
+    private static func double(_ values: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Double? {
+        if let value = try? values.decode(Double.self, forKey: key) { return value }
+        if let value = string(values, key), let parsed = Double(value) { return parsed }
+        return nil
+    }
+
+    private static func jsonString(_ values: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> String? {
+        if let value = try? values.decode(String.self, forKey: key) { return value }
+        if let value = try? values.decode([String].self, forKey: key), let data = try? JSONEncoder().encode(value) { return String(data: data, encoding: .utf8) }
+        return nil
+    }
 }
 private struct AIModelsResponse: Codable { let models: [AIModel] }
 
@@ -3790,11 +4540,27 @@ private struct AIModelIcon: View {
 
     var body: some View {
         Group {
-            if let model, let provider = aiProviderKey(for: model, connections: connections), let image = UIImage(named: "AIProvider\(provider)") {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(size * 0.17)
+            if let model {
+                let provider = aiProviderKey(for: model, connections: connections)
+                ZStack {
+                    if let assetName = aiProviderAssetName(provider) {
+                        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+                            .fill(.white)
+                        Image(assetName)
+                            .renderingMode(.original)
+                            .resizable()
+                            .scaledToFit()
+                            .scaleEffect(1.38)
+                    } else {
+                        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+                            .fill(aiProviderColor(provider))
+                        Text(aiProviderShortName(provider, model: model))
+                            .font(.system(size: size * 0.26, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.55)
+                    }
+                }
             } else {
                 Image(systemName: fallbackSymbol)
                     .font(.system(size: size * 0.38, weight: .semibold))
@@ -3802,6 +4568,7 @@ private struct AIModelIcon: View {
             }
         }
         .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
         .accessibilityHidden(true)
     }
@@ -3811,14 +4578,26 @@ private struct AIModelIcon: View {
 }
 
 private func aiProviderKey(for model: AIModel, connections: [AIConnection]) -> String? {
-    let connectionProvider = connections.first(where: { $0.id == model.connectionID })?.providerType ?? ""
-    let value = "\(connectionProvider) \(model.name) \(model.baseModel)".lowercased()
+    let connection = connections.first(where: { $0.id == model.connectionID })
+    let relayTerms = ["中转", "中转站", "网关", "中继", "relay", "gateway", "newapi", "oneapi"]
+    let relayValues = [connection?.name, model.connectionName, model.syncSource, model.providerName]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    if relayValues.contains(where: { value in relayTerms.contains(where: value.contains) })
+        || connection?.providerID?.lowercased() == "custom"
+        || connection?.providerType?.lowercased() == "custom" {
+        return "Relay"
+    }
+    let value = [model.providerID, model.providerName, connection?.providerID, connection?.providerType, connection?.name, model.name, model.baseModel]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+        .lowercased()
     let mappings: [(String, String)] = [
         ("anthropic", "Anthropic"), ("claude", "Anthropic"), ("deepseek", "Deepseek"),
         ("google", "Google"), ("gemini", "Google"), ("qwen", "Qwen"), ("通义", "Qwen"),
         ("doubao", "Doubao"), ("豆包", "Doubao"), ("moonshot", "Moonshot"), ("kimi", "Moonshot"),
         ("minimax", "Minimax"), ("zhipu", "Zhipu"), ("智谱", "Zhipu"), ("glm", "Zhipu"),
-        ("yi-", "Yi"), ("零一", "Yi"), ("cohere", "Cohere"), ("mistral", "Mistral"),
+        ("yi-", "Yi"), ("yi", "Yi"), ("零一", "Yi"), ("cohere", "Cohere"), ("mistral", "Mistral"),
         ("groq", "Groq"), ("xai", "Xai"), ("grok", "Xai"), ("meta", "Meta"),
         ("baichuan", "Baichuan"), ("百川", "Baichuan"), ("stepfun", "Stepfun"),
         ("siliconflow", "Siliconflow"), ("硅基", "Siliconflow"), ("openrouter", "Openrouter"),
@@ -3827,19 +4606,210 @@ private func aiProviderKey(for model: AIModel, connections: [AIConnection]) -> S
     return mappings.first(where: { value.contains($0.0) })?.1
 }
 
-private func aiModelAccountLabel(_ model: AIModel, connections: [AIConnection]) -> String {
-    guard let connectionID = model.connectionID,
-          let connection = connections.first(where: { $0.id == connectionID }) else {
-        return "未分配账号"
+private func aiProviderShortName(_ provider: String?, model: AIModel) -> String {
+    switch model.modelType {
+    case "image": return "IMG"
+    case "audio": return "MIC"
+    default:
+        if let provider {
+            switch provider {
+                case "Anthropic": return "A"
+                case "Deepseek": return "DS"
+                case "Google": return "G"
+                case "Qwen": return "Q"
+                case "Openai": return "AI"
+                case "Relay": return "中转"
+                case "Moonshot": return "K"
+                case "Zhipu": return "GLM"
+                default: return String(provider.prefix(2)).uppercased()
+            }
+        }
+        let base = aiModelDisplayName(model).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).first.map(String.init) ?? ""
+        if !base.isEmpty { return String(base.prefix(3)).uppercased() }
+        return "AI"
     }
-    let name = connection.name.isEmpty ? "未命名账号" : connection.name
+}
+
+private func aiModelDisplayName(_ model: AIModel) -> String {
+    let name = aiNonEmpty(model.name)
+    let baseModel = aiNonEmpty(model.baseModel)
+    let normalizedName = name?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    let genericNames: Set<String> = ["ai", "gpt", "cod", "模型", "基础模型", "default", "unknown", "chat", "assistant"]
+    if let name, !genericNames.contains(normalizedName), name.count > 2 { return name }
+    if let baseModel, !genericNames.contains(baseModel.lowercased()), baseModel.count > 2 { return baseModel }
+    let modelID = model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !modelID.isEmpty { return modelID.replacingOccurrences(of: "model-", with: "") }
+    return baseModel ?? name ?? "基础模型"
+}
+
+private func aiModelTypeLabel(_ model: AIModel) -> String {
+    switch model.modelType?.lowercased() {
+    case "image": return "图片"
+    case "audio": return "语音"
+    case "embedding": return "向量"
+    default: return "对话"
+    }
+}
+
+private func aiModelSubtitle(_ model: AIModel, connections: [AIConnection]) -> String {
+    let connection = connections.first(where: { $0.id == model.connectionID })
+    let provider = aiModelProviderLabel(model, connections: connections)
+    let account = aiNonEmpty(model.connectionName) ?? aiNonEmpty(connection?.name)
+    let capability: String
+    switch model.modelType?.lowercased() {
+    case "image": capability = "图片"
+    case "audio": capability = "语音"
+    case "embedding": capability = "向量"
+    default: capability = "对话"
+    }
+    let baseModel = aiNonEmpty(model.baseModel)
+    var values: [String] = []
+    values.append(provider)
+    if let account, account.caseInsensitiveCompare(provider) != .orderedSame {
+        values.append(account)
+    }
+    values.append(capability)
+    if let baseModel, baseModel.caseInsensitiveCompare(aiModelDisplayName(model)) != .orderedSame,
+       !baseModel.localizedCaseInsensitiveContains(provider) {
+        values.append(baseModel)
+    }
+    return values.joined(separator: " · ")
+}
+
+private func aiModelProviderLabel(_ model: AIModel, connections: [AIConnection]) -> String {
+    let connection = connections.first(where: { $0.id == model.connectionID })
+    if let providerName = aiNonEmpty(model.providerName) {
+        return aiProviderDisplayName(providerName)
+    }
+    if let providerType = aiNonEmpty(connection?.providerType) {
+        return aiProviderDisplayName(providerType)
+    }
+    if let provider = aiProviderKey(for: model, connections: connections) {
+        return aiProviderDisplayName(provider)
+    }
+    return "其他平台"
+}
+
+private func aiProviderColor(_ provider: String?) -> Color {
+    switch provider {
+    case "Anthropic": return .orange
+    case "Deepseek": return .indigo
+    case "Google": return .blue
+    case "Azure": return .blue
+    case "Qwen": return .teal
+    case "Openai": return Color(.systemGray6)
+    case "Relay": return .indigo
+    case "Moonshot": return .purple
+    case "Zhipu": return .pink
+    case "Doubao": return .red
+    case "Cohere": return .green
+    case "Meta": return .blue
+    case "Baichuan": return .cyan
+    case "Yi": return .green
+    case "Xai": return .black
+    case "Groq": return .orange
+    case "Mistral": return .orange
+    case "Minimax": return .pink
+    case "Stepfun": return .purple
+    case "Siliconflow": return .green
+    case "Openrouter": return .indigo
+    default: return .blue
+    }
+}
+
+private func aiProviderAssetName(_ provider: String?) -> String? {
+    switch provider {
+    case "Openai": return "AIProviderOpenai"
+    case "Anthropic": return "AIProviderAnthropic"
+    case "Google": return "AIProviderGoogle"
+    case "Azure": return "AIProviderAzure"
+    case "Mistral": return "AIProviderMistral"
+    case "Groq": return "AIProviderGroq"
+    case "Xai": return "AIProviderXai"
+    case "Openrouter": return "AIProviderOpenrouter"
+    case "Relay": return nil
+    case "Cohere": return "AIProviderCohere"
+    case "Meta": return "AIProviderMeta"
+    case "Deepseek": return "AIProviderDeepseek"
+    case "Qwen": return "AIProviderQwen"
+    case "Zhipu": return "AIProviderZhipu"
+    case "Moonshot": return "AIProviderMoonshot"
+    case "Baichuan": return "AIProviderBaichuan"
+    case "Yi": return "AIProviderYi"
+    case "Doubao": return "AIProviderDoubao"
+    case "Siliconflow": return "AIProviderSiliconflow"
+    case "Minimax": return "AIProviderMinimax"
+    case "Stepfun": return "AIProviderStepfun"
+    default: return nil
+    }
+}
+
+private func aiModelSourceLabel(_ model: AIModel, connections: [AIConnection]) -> String {
+    let connection = connections.first(where: { $0.id == model.connectionID })
+    let source = aiNonEmpty(model.syncSource) ?? aiNonEmpty(model.connectionName) ?? aiNonEmpty(connection?.name) ?? "历史模型"
+    let provider = aiModelProviderLabel(model, connections: connections)
+    return source.localizedCaseInsensitiveContains(provider) ? "同步来源：\(source)" : "同步来源：\(source) · \(provider)"
+}
+
+private func aiNonEmpty(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func aiProviderDisplayName(_ value: String) -> String {
+    let normalized = value.lowercased()
+    let names: [(String, String)] = [
+        ("relay", "AI 中转"), ("gateway", "AI 中转"), ("中转", "AI 中转"),
+        ("anthropic", "Anthropic"), ("deepseek", "DeepSeek"), ("google", "Google"), ("gemini", "Google"),
+        ("qwen", "通义千问"), ("doubao", "豆包"), ("moonshot", "Moonshot"), ("kimi", "Kimi"),
+        ("zhipu", "智谱"), ("glm", "智谱"), ("openai", "OpenAI"), ("azure", "Azure"),
+        ("siliconflow", "硅基流动"), ("openrouter", "OpenRouter"), ("cohere", "Cohere"),
+        ("meta", "Meta Llama"), ("baichuan", "百川智能"), ("yi", "零一万物 Yi"),
+        ("mistral", "Mistral"), ("groq", "Groq"), ("xai", "xAI Grok"),
+        ("minimax", "MiniMax"), ("stepfun", "阶跃星辰"), ("ollama", "Ollama")
+    ]
+    return names.first(where: { normalized.contains($0.0) })?.1 ?? value
+}
+
+private func aiModelAccountLabel(_ model: AIModel, connections: [AIConnection]) -> String {
+    let connection = model.connectionID.flatMap { id in connections.first(where: { $0.id == id }) }
+    let accountName = aiModelAccountName(model, connections: connections)
+    guard let connection else { return "账号：\(accountName) · 未关联" }
     let status = connection.enabled == 0 ? "已停用" : (connection.hasKey == false && connection.providerType != "ollama" ? "未配置 Key" : "可用")
-    return "账号：\(name) · \(status)"
+    return "账号：\(accountName) · \(status)"
+}
+
+private func aiModelAccountName(_ model: AIModel, connections: [AIConnection]) -> String {
+    let connection = model.connectionID.flatMap { id in connections.first(where: { $0.id == id }) }
+    return aiNonEmpty(model.connectionName) ?? aiNonEmpty(connection?.name) ?? "未绑定连接"
 }
 
 private struct AIConnection: Codable, Identifiable {
-    let id: String; let name: String; let baseURL: String; let providerType: String?; let purpose: String?; let enabled: Int; let hasKey: Bool?
-    enum CodingKeys: String, CodingKey { case id, name, purpose, enabled; case baseURL = "base_url"; case providerType = "provider_type"; case hasKey = "has_key" }
+    let id: String; let name: String; let baseURL: String; let providerType: String?; let providerID: String?; let purpose: String?; let enabled: Int; let hasKey: Bool?
+    enum CodingKeys: String, CodingKey { case id, name, purpose, enabled; case baseURL = "base_url"; case providerType = "provider_type"; case providerID = "provider_id"; case hasKey = "has_key" }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? values.decode(String.self, forKey: .id)) ?? String((try? values.decode(Int.self, forKey: .id)) ?? 0)
+        name = (try? values.decode(String.self, forKey: .name)) ?? "未命名账号"
+        baseURL = (try? values.decode(String.self, forKey: .baseURL)) ?? ""
+        providerType = try? values.decode(String.self, forKey: .providerType)
+        providerID = try? values.decode(String.self, forKey: .providerID)
+        purpose = try? values.decode(String.self, forKey: .purpose)
+        if let value = try? values.decode(Int.self, forKey: .enabled) {
+            enabled = value
+        } else {
+            enabled = (try? values.decode(Bool.self, forKey: .enabled)) == true ? 1 : 0
+        }
+        if let value = try? values.decode(Bool.self, forKey: .hasKey) {
+            hasKey = value
+        } else if let value = try? values.decode(Int.self, forKey: .hasKey) {
+            hasKey = value != 0
+        } else {
+            hasKey = nil
+        }
+    }
 }
 private struct AIConnectionsResponse: Codable { let connections: [AIConnection] }
 private struct AISyncResponse: Codable { let total: Int? }
@@ -3866,9 +4836,28 @@ private struct CapabilityResponse: Codable {
 }
 private enum OperationsSection: String, CaseIterable, Identifiable { case usage, memory, workflow, jobs, shares; var id: String { rawValue }; var title: String { switch self { case .usage: return "用量"; case .memory: return "记忆"; case .workflow: return "工作流"; case .jobs: return "任务"; case .shares: return "分享" } } }
 private struct UsageRecord: Codable, Identifiable {
-    let id: String; let operation: String; let modelID: String?; let inputTokens: Int; let outputTokens: Int; let latencyMS: Int
-    enum CodingKeys: String, CodingKey { case id, operation; case modelID = "model_id"; case inputTokens = "input_tokens"; case outputTokens = "output_tokens"; case latencyMS = "latency_ms" }
-    init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(Int.self, forKey: .id)).map(String.init) ?? UUID().uuidString; operation = try c.decodeIfPresent(String.self, forKey: .operation) ?? "AI 调用"; modelID = try c.decodeIfPresent(String.self, forKey: .modelID); inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0; outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0; latencyMS = try c.decodeIfPresent(Int.self, forKey: .latencyMS) ?? 0 }
+    let id: String; let operation: String; let modelID: String?; let inputTokens: Int; let outputTokens: Int; let latencyMS: Int; let createdAt: Date?
+    enum CodingKeys: String, CodingKey { case id, operation; case modelID = "model_id"; case inputTokens = "input_tokens"; case outputTokens = "output_tokens"; case latencyMS = "latency_ms"; case createdAt = "created_at" }
+    init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); id = (try? c.decode(String.self, forKey: .id)) ?? (try? c.decode(Int.self, forKey: .id)).map(String.init) ?? UUID().uuidString; operation = try c.decodeIfPresent(String.self, forKey: .operation) ?? "AI 调用"; modelID = try c.decodeIfPresent(String.self, forKey: .modelID); inputTokens = try c.decodeIfPresent(Int.self, forKey: .inputTokens) ?? 0; outputTokens = try c.decodeIfPresent(Int.self, forKey: .outputTokens) ?? 0; latencyMS = try c.decodeIfPresent(Int.self, forKey: .latencyMS) ?? 0; createdAt = Self.date(c, forKey: .createdAt) }
+    private static func date(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> Date? {
+        if let seconds = try? container.decode(Double.self, forKey: key) { return Date(timeIntervalSince1970: seconds > 100_000_000_000 ? seconds / 1000 : seconds) }
+        if let raw = try? container.decode(String.self, forKey: key) {
+            if let seconds = Double(raw) { return Date(timeIntervalSince1970: seconds > 100_000_000_000 ? seconds / 1000 : seconds) }
+            let iso = ISO8601DateFormatter(); if let value = iso.date(from: raw) { return value }
+            let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"; formatter.locale = Locale(identifier: "en_US_POSIX"); return formatter.date(from: raw)
+        }
+        return nil
+    }
+}
+
+private struct UsageDailySummary {
+    var calls = 0; var inputTokens = 0; var outputTokens = 0
+    var totalTokens: Int { inputTokens + outputTokens }
+    mutating func add(_ item: UsageRecord) { calls += 1; inputTokens += item.inputTokens; outputTokens += item.outputTokens }
+}
+private struct UsageDay: Identifiable {
+    let date: Date; let summary: UsageDailySummary
+    var id: Date { date }
 }
 
 private struct ShopFieldsView: View {
@@ -4285,8 +5274,10 @@ private struct SavedLinkArticleContent: View {
 
 private struct SavedLinkDetail: View {
     let item: SavedLink
-    @State private var previewURL: URL?
+    @State private var selectedGalleryID = ""
+    @State private var showingGallery = false
     private var isArticle: Bool { savedLinkIsArticle(item) }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -4295,14 +5286,14 @@ private struct SavedLinkDetail: View {
                 if let category = item.category, !category.isEmpty { Label(category.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]), systemImage: "tag").font(.caption).foregroundStyle(.secondary) }
                 if item.pushStatus != "idle" { SavedLinkPushStatusView(item: item) }
                 if isArticle {
-                    SavedLinkArticleContent(source: item.description, onImageTap: { previewURL = nativeImageURL($0) })
+                    SavedLinkArticleContent(source: item.description, onImageTap: openImage)
                 } else if let value = item.description, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(value).lineLimit(nil).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                 }
                 let segments = isArticle ? savedLinkContentSegments(item.description) : []
                 let inlineURLs = Set(segments.compactMap { segment -> String? in if case .image(let url, _) = segment { return nativeImageURL(url)?.absoluteString }; return nil })
                 if isArticle {
-                    ForEach(Array(item.images.filter { image in guard let value = nativeImageURL(image.url)?.absoluteString else { return true }; return !inlineURLs.contains(value) }.enumerated()), id: \.offset) { _, image in Button { previewURL = nativeImageURL(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
+                    ForEach(Array(item.images.filter { image in guard let value = nativeImageURL(image.url)?.absoluteString else { return true }; return !inlineURLs.contains(value) }.enumerated()), id: \.offset) { _, image in Button { openImage(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
                 }
                 if let value = item.url,
                    let url = URL(string: value),
@@ -4319,7 +5310,110 @@ private struct SavedLinkDetail: View {
             }.padding(20)
         }.background(Color(.systemBackground)).navigationTitle(isArticle ? "文章" : "帖子").navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .sheet(isPresented: Binding(get: { previewURL != nil }, set: { if !$0 { previewURL = nil } })) { NavigationStack { ZStack { Color.black.ignoresSafeArea(); if let previewURL { CachedRemoteImage(url: previewURL, contentMode: .fit, placeholder: ProgressView().tint(.white)) } }.toolbar { Button("关闭") { previewURL = nil } } } }
+        .fullScreenCover(isPresented: $showingGallery) {
+            SavedLinkImageGallery(images: savedLinkGalleryImages(item), initialSelection: selectedGalleryID)
+        }
+    }
+
+    private func openImage(_ source: String) {
+        guard let url = nativeImageURL(source) else { return }
+        let key = savedLinkURLComparisonKey(url)
+        guard savedLinkGalleryImages(item).contains(where: { $0.id == key }) else { return }
+        selectedGalleryID = key
+        showingGallery = true
+    }
+}
+
+private struct SavedLinkGalleryImage: Identifiable {
+    let id: String
+    let source: String
+    let name: String?
+}
+
+private struct SavedLinkGalleryRoute: Identifiable {
+    let id = UUID()
+    let item: SavedLink
+    let source: String
+}
+
+private func savedLinkGalleryImages(_ item: SavedLink) -> [SavedLinkGalleryImage] {
+    var result: [SavedLinkGalleryImage] = []
+    var seen: Set<String> = []
+
+    func append(_ source: String, name: String?) {
+        guard let url = nativeImageURL(source) else { return }
+        let key = savedLinkURLComparisonKey(url)
+        guard seen.insert(key).inserted else { return }
+        result.append(SavedLinkGalleryImage(id: key, source: source, name: name))
+    }
+
+    if savedLinkIsArticle(item) {
+        for segment in savedLinkContentSegments(item.description) {
+            if case .image(let url, let alt) = segment { append(url, name: alt) }
+        }
+    }
+    for image in item.images { append(image.url, name: image.name) }
+    return result
+}
+
+private struct SavedLinkImageGallery: View {
+    @Environment(\.dismiss) private var dismiss
+    let images: [SavedLinkGalleryImage]
+    @State private var selection: String
+
+    init(images: [SavedLinkGalleryImage], initialSelection: String) {
+        self.images = images
+        let normalizedSelection = nativeImageURL(initialSelection).map(savedLinkURLComparisonKey) ?? initialSelection
+        _selection = State(initialValue: normalizedSelection)
+    }
+
+    private var selectedIndex: Int {
+        max(images.firstIndex(where: { $0.id == selection }) ?? 0, 0)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                TabView(selection: $selection) {
+                    ForEach(images) { image in
+                        NativeZoomableRemoteImage(source: image.source)
+                            .tag(image.id)
+                            .accessibilityLabel(image.name?.nilIfEmpty ?? "图片 \(selectedIndex + 1)")
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: images.count > 1 ? .automatic : .never))
+
+                if !images.isEmpty {
+                    VStack {
+                        Spacer()
+                        Text("\(selectedIndex + 1) / \(images.count)")
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(.black.opacity(0.55), in: Capsule())
+                            .padding(.bottom, 28)
+                            .accessibilityLabel("第 \(selectedIndex + 1) 张，共 \(images.count) 张")
+                    }
+                }
+            }
+            .navigationTitle(images.indices.contains(selectedIndex) ? (images[selectedIndex].name?.nilIfEmpty ?? "图片预览") : "图片预览")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(.black, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("关闭图片预览")
+                }
+            }
+            .onAppear {
+                if !images.contains(where: { $0.id == selection }) { selection = images.first?.id ?? "" }
+            }
+        }
     }
 }
 
@@ -4461,9 +5555,19 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
 
     func get<T: Decodable>(_ path: String) async throws -> T { try await send(path, method: "GET") }
 
-    func send<T: Decodable>(_ path: String, method: String, body: [String: Any]? = nil, allowEmpty: Bool = false) async throws -> T {
+    func probe(_ path: String) async throws -> ServerEndpointProbe {
         guard let url = URL(string: path, relativeTo: origin) else { throw NativeAPIError.invalidResponse }
-        var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = 20; request.setValue("application/json", forHTTPHeaderField: "Accept")
+        var request = URLRequest(url: url); request.httpMethod = "GET"; request.timeoutInterval = 10; request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyWorkspaceHeaders(to: &request, path: path)
+        let started = Date()
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
+        return ServerEndpointProbe(statusCode: http.statusCode, latencyMS: Int(Date().timeIntervalSince(started) * 1000), message: nil)
+    }
+
+    func send<T: Decodable>(_ path: String, method: String, body: [String: Any]? = nil, allowEmpty: Bool = false, timeout: TimeInterval = 20) async throws -> T {
+        guard let url = URL(string: path, relativeTo: origin) else { throw NativeAPIError.invalidResponse }
+        var request = URLRequest(url: url); request.httpMethod = method; request.timeoutInterval = timeout; request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyWorkspaceHeaders(to: &request, path: path)
         if let body { request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -4529,13 +5633,17 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
             var raw = Data()
             for try await byte in bytes { raw.append(byte) }
             let payload = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any]
-            let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "AI 服务返回错误（(http.statusCode)）"
+            let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "AI 服务返回错误（\(http.statusCode)）"
             throw NativeAPIError.server(http.statusCode, detail)
         }
         var receivedChunk = false
         for try await line in bytes.lines {
             try Task.checkCancellation()
-            guard let data = line.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let content = object["content"] as? String else { continue }
+            let normalizedLine = line.hasPrefix("data:") ? String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces) : line
+            guard let data = normalizedLine.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if let streamError = object["error"] as? String, !streamError.isEmpty { throw NativeAPIError.server(502, streamError) }
+            let content = (object["content"] as? String) ?? (object["delta"] as? String) ?? (object["text"] as? String) ?? (object["answer"] as? String)
+            guard let content, !content.isEmpty else { continue }
             receivedChunk = true
             onChunk(content)
         }
@@ -4549,7 +5657,14 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
 
     func message(for error: Error) -> String {
         if case let NativeAPIError.server(_, detail) = error { return detail }
-        if let network = error as? URLError { return network.code == .notConnectedToInternet ? "当前网络不可用，请联网后重试。" : "网络请求失败，请稍后重试。" }
+        if let network = error as? URLError {
+            switch network.code {
+            case .notConnectedToInternet: return "当前网络不可用，请联网后重试。"
+            case .timedOut: return "服务器处理超时，请稍后重试。"
+            case .cannotFindHost, .cannotConnectToHost, .networkConnectionLost: return "无法连接服务器，请检查网络或服务地址。"
+            default: return "网络请求失败，请稍后重试。"
+            }
+        }
         return "数据加载失败，请检查网络后重试。"
     }
 
@@ -4566,7 +5681,42 @@ private func outboundStatus(_ value: String) -> String { switch value { case "pe
 private func nextStatus(_ value: String) -> String? { switch value { case "pending": return "picking"; case "picking": return "checked"; case "checked": return "packed"; case "packed": return "shipped"; default: return nil } }
 struct EmptyResponse: Codable {}
 private struct ChatResponse: Codable { let content: String?; let answer: String?; let response: String? }
-private struct ImageGenerationResponse: Decodable { let url: String }
+private struct ImageGenerationResponse: Decodable {
+    let url: String
+
+    private struct Item: Decodable {
+        let url: String?
+        let b64JSON: String?
+        enum CodingKeys: String, CodingKey { case url; case b64JSON = "b64_json" }
+    }
+
+    enum CodingKeys: String, CodingKey { case url, imageURL = "image_url", data, images, error }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        if let value = try? values.decode(String.self, forKey: .url), !value.isEmpty {
+            url = value
+            return
+        }
+        if let value = try? values.decode(String.self, forKey: .imageURL), !value.isEmpty {
+            url = value
+            return
+        }
+        let items = (try? values.decode([Item].self, forKey: .data)) ?? (try? values.decode([Item].self, forKey: .images)) ?? []
+        if let value = items.compactMap(\.url).first(where: { !$0.isEmpty }) {
+            url = value
+            return
+        }
+        if let value = items.compactMap(\.b64JSON).first(where: { !$0.isEmpty }) {
+            url = "data:image/png;base64,\(value)"
+            return
+        }
+        if let detail = try? values.decode(String.self, forKey: .error), !detail.isEmpty {
+            throw NativeAPIError.server(502, detail)
+        }
+        throw NativeAPIError.server(502, "上级图片接口未返回图片地址")
+    }
+}
 struct SearchDocument: Decodable { let title: String?; let content: String?; let url: String?; var body: [String: Any] { ["title":title ?? "","content":content ?? "","url":url ?? ""] } }
 private struct SearchDocumentsResponse: Decodable { let documents: [SearchDocument]; enum CodingKeys: CodingKey { case documents }; init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); documents = try c.decodeIfPresent([SearchDocument].self, forKey: .documents) ?? [] } }
 private struct LoginCaptcha: Decodable { let captchaID: String; let imageData: String; enum CodingKeys: String, CodingKey { case captchaID = "captcha_id"; case imageData = "image_data" } }
@@ -4885,12 +6035,20 @@ private func nativeThumbnailURL(_ value: String, maxPixelSize: CGFloat = 720) ->
     components.queryItems = items
     return components.url ?? url
 }
+private func nativeInlineImage(_ source: String) -> UIImage? {
+    guard source.hasPrefix("data:image/"),
+          let separator = source.firstIndex(of: ","),
+          let data = Data(base64Encoded: String(source[source.index(after: separator)...])) else { return nil }
+    return UIImage(data: data)
+}
 private struct NativeRemoteImage: View {
     let url: String?
     let size: CGFloat
     var body: some View {
         Group {
-            if let url, let imageURL = nativeThumbnailURL(url, maxPixelSize: size * 3) {
+            if let url, let image = nativeInlineImage(url) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if let url, let imageURL = nativeThumbnailURL(url, maxPixelSize: size * 3) {
                 CachedRemoteImage(url: imageURL, contentMode: .fill, maxPixelSize: size * 3, placeholder: placeholder)
             } else { placeholder }
         }

@@ -69,6 +69,21 @@ async function readRaw(req, limit = 25 * 1024 * 1024) {
   return Buffer.concat(chunks)
 }
 
+function multipartImage(req, raw) {
+  const contentType = String(req.headers['content-type'] || '')
+  const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)?.slice(1).find(Boolean)
+  if (!boundary) return null
+  const headerEnd = raw.indexOf(Buffer.from('\r\n\r\n'))
+  if (headerEnd < 0) return null
+  const headers = raw.subarray(0, headerEnd).toString('utf8')
+  const mime = headers.match(/Content-Type:\s*(image\/[a-z0-9.+-]+)/i)?.[1]?.toLowerCase()
+  if (!mime) return null
+  const dataStart = headerEnd + 4
+  const dataEnd = raw.indexOf(Buffer.from(`\r\n--${boundary}`), dataStart)
+  if (dataEnd <= dataStart) return null
+  return { mime, data: raw.subarray(dataStart, dataEnd) }
+}
+
 function nextId(items) {
   return Math.max(0, ...items.map((item) => Number(item.id || item.source_record_id || 0))) + 1
 }
@@ -312,10 +327,19 @@ async function handleApi(req, res, url) {
     if (method === 'GET') return json(res, 200, data.products), true
     if (method === 'POST') {
       const body = await readJson(req)
-      const item = { id: nextId(data.products), sku: body.sku || `SKU-${nextId(data.products)}`, name: body.name || '新商品', barcode: body.barcode || null, specification: body.specification || null, unit: body.unit || '件', cost_price: Number(body.cost_price || 0), warning_quantity: Number(body.warning_quantity || 0), is_active: body.is_active !== false, remark: body.remark || null, image_url: '/favicon.svg' }
+      const item = { id: nextId(data.products), sku: body.sku || `SKU-${nextId(data.products)}`, name: body.name || '新商品', barcode: body.barcode || null, specification: body.specification || null, unit: body.unit || '件', cost_price: Number(body.cost_price || 0), warning_quantity: Number(body.warning_quantity || 0), is_active: body.is_active !== false, remark: body.remark || null, image_url: body.image_url || null }
       data.products.push(item)
       return json(res, 201, item), true
     }
+  }
+  const productImageMatch = pathname.match(/^\/warehouse\/products\/(\d+)\/image$/)
+  if (productImageMatch && method === 'POST') {
+    const item = data.products.find((product) => product.id === Number(productImageMatch[1]))
+    if (!item) return json(res, 404, { detail: '商品不存在' }), true
+    const image = multipartImage(req, await readRaw(req))
+    if (!image) return json(res, 400, { detail: '请选择有效的商品图片' }), true
+    item.image_url = `data:${image.mime};base64,${image.data.toString('base64')}`
+    return json(res, 200, item), true
   }
   const productMatch = pathname.match(/^\/warehouse\/products\/(\d+)$/)
   if (productMatch) {
@@ -745,7 +769,31 @@ async function handleApi(req, res, url) {
   if (pathname.startsWith('/ai-api/')) {
     if (pathname === '/ai-api/models' && method === 'GET') return json(res, 200, { models: data.aiModels }), true
     if (pathname === '/ai-api/models' && method === 'POST') {
-      const body = await readJson(req); const item = { id: body.id || `model-${Date.now()}`, name: body.name || '新模型', base_model: body.base_model || 'demo-model', model_type: body.model_type || 'chat', enabled: body.enabled === false ? 0 : 1, hidden: 0, temperature: Number(body.temperature || 0.7), top_p: Number(body.top_p || 1), max_tokens: Number(body.max_tokens || 4096), description: body.description || null, system_prompt: body.system_prompt || null, connection_id: body.connection_id || data.aiConnections[0]?.id || null }; data.aiModels.push(item); return json(res, 201, item), true
+      const body = await readJson(req)
+      const item = {
+        id: body.id || `model-${Date.now()}`,
+        name: body.name || '新模型',
+        base_model: body.base_model || 'demo-model',
+        model_type: body.model_type || 'chat',
+        enabled: body.enabled === false ? 0 : Number(body.enabled ?? 1),
+        hidden: Number(body.hidden ?? 0),
+        pinned: Number(body.pinned ?? 0),
+        is_default: Number(body.is_default ?? 0),
+        access: body.access || 'private',
+        input_price: Number(body.input_price || 0),
+        output_price: Number(body.output_price || 0),
+        knowledge_id: body.knowledge_id || null,
+        skill_ids: body.skill_ids || '[]',
+        tool_ids: body.tool_ids || '[]',
+        temperature: Number(body.temperature ?? 0.7),
+        top_p: Number(body.top_p ?? 1),
+        max_tokens: Number(body.max_tokens ?? 4096),
+        description: body.description || null,
+        system_prompt: body.system_prompt || null,
+        connection_id: body.connection_id || data.aiConnections[0]?.id || null,
+      }
+      data.aiModels.push(item)
+      return json(res, 201, item), true
     }
     if (pathname === '/ai-api/models/update' && method === 'POST') { const body = await readJson(req); const item = data.aiModels.find((row) => row.id === body.id); if (item) { Object.assign(item, body); item.enabled = body.enabled === false ? 0 : Number(body.enabled ?? item.enabled) }; return empty(res), true }
     if (pathname === '/ai-api/models/delete' && method === 'POST') { const body = await readJson(req); data.aiModels = data.aiModels.filter((item) => item.id !== body.id); return empty(res), true }

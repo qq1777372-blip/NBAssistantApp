@@ -186,9 +186,9 @@ function createSeedData(demoUser = createDemoUser()) {
       { id: 'conn-demo-image', name: '演示图片模型接口', base_url: 'https://image.example.com/v1', provider_type: 'openai', purpose: 'image', enabled: 1, has_key: true },
     ],
     aiModels: [
-      { id: 'model-demo-chat', name: '演示智能助手', base_model: 'demo-chat-1', model_type: 'chat', enabled: 1, hidden: 0, temperature: 0.7, top_p: 1, max_tokens: 4096, description: '用于本地功能展示，不访问外部服务', system_prompt: '你是运营管理演示助手。', connection_id: 'conn-demo-openai' },
-      { id: 'model-demo-image', name: '演示图片生成', base_model: 'demo-image-1', model_type: 'image', enabled: 1, hidden: 0, temperature: null, top_p: null, max_tokens: null, description: '返回本地演示图片', system_prompt: null, connection_id: 'conn-demo-image' },
-      { id: 'model-demo-audio', name: '演示语音转写', base_model: 'demo-audio-1', model_type: 'audio', enabled: 1, hidden: 0, temperature: null, top_p: null, max_tokens: null, description: '返回固定的本地转写内容', system_prompt: null, connection_id: 'conn-demo-openai' },
+      { id: 'model-demo-chat', name: '演示智能助手', base_model: 'demo-chat-1', model_type: 'chat', enabled: 1, hidden: 0, temperature: 0.7, top_p: 1, max_tokens: 4096, description: '用于本地功能展示，不访问外部服务', system_prompt: '你是运营管理演示助手。', connection_id: 'conn-demo-openai', provider_id: 'openai', provider_name: 'OpenAI', sync_source: '演示 OpenAI 兼容接口' },
+      { id: 'model-demo-image', name: '演示图片生成', base_model: 'demo-image-1', model_type: 'image', enabled: 1, hidden: 0, temperature: null, top_p: null, max_tokens: null, description: '返回本地演示图片', system_prompt: null, connection_id: 'conn-demo-image', provider_id: 'openai', provider_name: 'OpenAI', sync_source: '演示图片模型接口' },
+      { id: 'model-demo-audio', name: '演示语音转写', base_model: 'demo-audio-1', model_type: 'audio', enabled: 1, hidden: 0, temperature: null, top_p: null, max_tokens: null, description: '返回固定的本地转写内容', system_prompt: null, connection_id: 'conn-demo-openai', provider_id: 'openai', provider_name: 'OpenAI', sync_source: '演示 OpenAI 兼容接口' },
     ],
     aiChats: [
       { id: 'chat-demo-1', title: '今日经营简报', messages: [{ id: 'msg-1', role: 'user', content: '帮我总结今天的经营情况' }, { id: 'msg-2', role: 'assistant', content: '今日四个店铺整体运营稳定，云帆数码店销售额领先，需要重点处理 2 条待签收任务和 1 条库存预警。' }], model_id: 'model-demo-chat', favorite: true, archived: false, folder: '运营复盘', created_at: epochSeconds(1), updated_at: epochSeconds(0) },
@@ -206,8 +206,8 @@ function createSeedData(demoUser = createDemoUser()) {
     aiTools: [{ id: 'tool-search', name: '本地资料搜索', description: '搜索演示知识库', content: null, kind: 'function', enabled: 1 }],
     aiNotes: [{ id: 'note-campaign', title: '下月活动提醒', command: null, content: '星河生活馆需要在下周三前完成活动报名。', enabled: 1 }],
     aiUsage: [
-      { id: 'usage-1', operation: 'chat', model_id: 'model-demo-chat', input_tokens: 386, output_tokens: 214, latency_ms: 680 },
-      { id: 'usage-2', operation: 'knowledge_search', model_id: 'model-demo-chat', input_tokens: 128, output_tokens: 76, latency_ms: 240 },
+      { id: 'usage-1', operation: 'chat', model_id: 'model-demo-chat', input_tokens: 386, output_tokens: 214, latency_ms: 680, created_at: dateTime(0, 9, 20) },
+      { id: 'usage-2', operation: 'knowledge_search', model_id: 'model-demo-chat', input_tokens: 128, output_tokens: 76, latency_ms: 240, created_at: dateTime(1, 15, 40) },
     ],
     aiMemories: [{ id: 'memory-1', content: '经营日报需要优先展示利润、待办和库存预警。', source_chat_id: 'chat-demo-1', enabled: 1 }],
     aiWorkflows: [{ id: 'workflow-daily', name: '生成经营日报', description: '根据输入内容生成日报结构', steps: JSON.stringify([{ type: 'prompt', content: '把 {{input}} 整理成经营日报。' }]), enabled: 1 }],

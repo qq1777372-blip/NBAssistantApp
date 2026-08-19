@@ -72,6 +72,18 @@ private struct SearchResultDetail: View {
 struct NativeServerView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var status: ServerStatus?; @State private var error: String?
+    @State private var endpointQuery = ""
+    @State private var endpointResults: [String: ServerEndpointProbe] = [:]
+    @State private var probingEndpoint: String?
+    private var filteredEndpoints: [ServerAPIEndpoint] {
+        let query = endpointQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return serverAPICatalog }
+        return serverAPICatalog.filter { "\($0.group) \($0.title) \($0.method) \($0.path)".localizedCaseInsensitiveContains(query) }
+    }
+    private var endpointGroups: [(String, [ServerAPIEndpoint])] {
+        let grouped = Dictionary(grouping: filteredEndpoints, by: \.group)
+        return grouped.keys.sorted().compactMap { key in grouped[key].map { (key, $0) } }
+    }
     var body: some View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
@@ -81,10 +93,129 @@ struct NativeServerView: View {
                 Section("系统") { LabeledContent("操作系统", value: status.operatingSystem); LabeledContent("架构", value: status.architecture); LabeledContent("数据库", value: status.databaseConnectionStatus); LabeledContent("数据库数量", value: "\(status.databaseCount)") }
                 Section("服务") { ForEach(status.services) { service in HStack { VStack(alignment: .leading) { Text(service.displayName); Text(service.subState).font(.caption).foregroundStyle(.secondary) }; Spacer(); Circle().fill(service.isActive ? .green : .red).frame(width: 8, height: 8) } } }
             }
+            Section("接口目录") {
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("搜索接口名称、方法或路径", text: $endpointQuery)
+                    Text("\(filteredEndpoints.count)").font(.caption).foregroundStyle(.secondary)
+                }
+                Text("仅 GET 接口提供测试，写入接口只展示目录信息。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(endpointGroups, id: \.0) { group, endpoints in
+                Section(group) {
+                    ForEach(endpoints) { endpoint in
+                        ServerEndpointRow(endpoint: endpoint, probe: endpointResults[endpoint.id], testing: probingEndpoint == endpoint.id) {
+                            Task { await test(endpoint) }
+                        }
+                    }
+                }
+            }
         }.navigationTitle("服务器运行").task { await load(false) }.refreshable { await load(true) }
     }
     private func load(_ force: Bool) async { do { status = try await session.get("dashboard/server-status\(force ? "?refresh=true" : "")") } catch { self.error = session.message(for: error) } }
+    private func test(_ endpoint: ServerAPIEndpoint) async {
+        guard endpoint.method == "GET", probingEndpoint == nil else { return }
+        probingEndpoint = endpoint.id; defer { probingEndpoint = nil }
+        let path = endpoint.path.replacingOccurrences(of: "{current_user}", with: String(session.currentUser?.id ?? 0))
+        do { endpointResults[endpoint.id] = try await session.probe(path) }
+        catch { endpointResults[endpoint.id] = ServerEndpointProbe(statusCode: nil, latencyMS: nil, message: session.message(for: error)) }
+    }
 }
+
+private struct ServerEndpointRow: View {
+    let endpoint: ServerAPIEndpoint
+    let probe: ServerEndpointProbe?
+    let testing: Bool
+    let action: () -> Void
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(endpoint.method)
+                .font(.caption2.weight(.bold).monospaced())
+                .foregroundStyle(endpoint.method == "GET" ? .green : .orange)
+                .frame(width: 42)
+                .padding(.vertical, 4)
+                .background((endpoint.method == "GET" ? Color.green : Color.orange).opacity(0.12), in: Capsule())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(endpoint.title).font(.subheadline.weight(.medium))
+                Text(endpoint.path).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                if let probe, let code = probe.statusCode {
+                    Text("HTTP \(code) · \(probe.latencyMS ?? 0) ms").font(.caption2).foregroundStyle(code < 400 ? .green : .red)
+                } else if let message = probe?.message {
+                    Text(message).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 4)
+            if endpoint.method == "GET" {
+                Button(action: action) {
+                    Image(systemName: testing ? "hourglass" : "play.circle")
+                        .frame(width: 32, height: 32)
+                }
+                .disabled(testing)
+                .accessibilityLabel("测试\(endpoint.title)")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct ServerAPIEndpoint: Identifiable {
+    let group: String
+    let title: String
+    let method: String
+    let path: String
+    var id: String { "\(method):\(path)" }
+}
+
+struct ServerEndpointProbe {
+    let statusCode: Int?
+    let latencyMS: Int?
+    let message: String?
+}
+
+private let serverAPICatalog: [ServerAPIEndpoint] = [
+    .init(group: "系统", title: "服务器状态", method: "GET", path: "dashboard/server-status"),
+    .init(group: "系统", title: "系统设置", method: "GET", path: "system-settings"),
+    .init(group: "系统", title: "系统通知", method: "GET", path: "system-alerts"),
+    .init(group: "系统", title: "全局搜索", method: "GET", path: "global-search?q="),
+    .init(group: "认证", title: "当前用户", method: "GET", path: "auth/me"),
+    .init(group: "认证", title: "登录", method: "POST", path: "auth/login"),
+    .init(group: "认证", title: "退出登录", method: "POST", path: "auth/logout"),
+    .init(group: "任务记账", title: "任务列表", method: "GET", path: "task-bookkeeping/records"),
+    .init(group: "任务记账", title: "任务汇总", method: "GET", path: "task-bookkeeping/summary"),
+    .init(group: "任务记账", title: "负责人列表", method: "GET", path: "task-bookkeeping/owners"),
+    .init(group: "公司记账", title: "公司消费列表", method: "GET", path: "company-expenses"),
+    .init(group: "公司记账", title: "公司消费汇总", method: "GET", path: "company-expenses/summary"),
+    .init(group: "公司记账", title: "新增公司消费", method: "POST", path: "company-expenses"),
+    .init(group: "钉钉利润", title: "利润记录", method: "GET", path: "dingtalk-profits"),
+    .init(group: "钉钉利润", title: "利润汇总", method: "GET", path: "dingtalk-profits/summary"),
+    .init(group: "钉钉利润", title: "月度利润", method: "GET", path: "dingtalk-profits/monthly-summary"),
+    .init(group: "仓储", title: "仓储汇总", method: "GET", path: "warehouse/summary"),
+    .init(group: "仓储", title: "仓库列表", method: "GET", path: "warehouse/warehouses"),
+    .init(group: "仓储", title: "商品列表", method: "GET", path: "warehouse/products"),
+    .init(group: "仓储", title: "库存列表", method: "GET", path: "warehouse/stocks"),
+    .init(group: "仓储", title: "入库单", method: "GET", path: "warehouse/inbound-orders"),
+    .init(group: "仓储", title: "出库单", method: "GET", path: "warehouse/outbound-orders"),
+    .init(group: "仓储", title: "库存流水", method: "GET", path: "warehouse/movements"),
+    .init(group: "链接广场", title: "链接列表", method: "GET", path: "saved-links"),
+    .init(group: "链接广场", title: "新增链接", method: "POST", path: "saved-links"),
+    .init(group: "AI", title: "模型列表", method: "GET", path: "ai-api/models"),
+    .init(group: "AI", title: "模型连接", method: "GET", path: "ai-api/connections"),
+    .init(group: "AI", title: "AI 用量", method: "GET", path: "ai-api/usage"),
+    .init(group: "AI", title: "AI 会话", method: "GET", path: "ai-api/chats?user_id={current_user}"),
+    .init(group: "AI", title: "知识库", method: "GET", path: "ai-api/knowledge"),
+    .init(group: "AI", title: "技能列表", method: "GET", path: "ai-api/skills"),
+    .init(group: "AI", title: "工具列表", method: "GET", path: "ai-api/tools?all=1"),
+    .init(group: "AI", title: "流式对话", method: "POST", path: "ai-api/chat/stream"),
+    .init(group: "AI", title: "图片生成", method: "POST", path: "ai-api/images/generations"),
+    .init(group: "管理", title: "管理账号", method: "GET", path: "admin-users"),
+    .init(group: "管理", title: "卡密列表", method: "GET", path: "license-admin/licenses"),
+    .init(group: "管理", title: "手机设备", method: "GET", path: "mobile-devices"),
+    .init(group: "管理", title: "同行店铺", method: "GET", path: "peer-shops"),
+    .init(group: "管理", title: "执照档案", method: "GET", path: "license-records"),
+    .init(group: "管理", title: "账号使用记录", method: "GET", path: "account-usage-records")
+]
 
 struct NativeSystemSettingsView: View {
     @EnvironmentObject private var session: NativeSession
