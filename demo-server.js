@@ -22,9 +22,18 @@ let demoUser = createDemoUser()
 let data = createSeedData(demoUser)
 const startedAt = Date.now()
 
+function normalizeAIData() {
+  for (const chat of data.aiChats || []) chat.user_id = chat.user_id || demoUser.id
+  for (const share of data.aiShares || []) share.user_id = share.user_id || demoUser.id
+  data.aiFeedback ||= []
+}
+
+normalizeAIData()
+
 function resetDemoData() {
   demoUser = createDemoUser()
   data = createSeedData(demoUser)
+  normalizeAIData()
 }
 
 function json(res, status, payload, headers = {}) {
@@ -158,12 +167,45 @@ function refreshStockState(stock) {
   stock.is_low_stock = stock.available_quantity <= Number(product?.warning_quantity || 0)
 }
 
-function demoAnswer(question = '') {
+function demoAnswer(question = '', history = []) {
   const value = String(question).trim()
+  const previousQuestion = [...history].reverse().find((item) => item?.role === 'user')?.content
+  if (/上一句|刚才|上一个问题/.test(value) && previousQuestion) return `你上一条消息是：“${previousQuestion}”。请继续告诉我需要怎样处理。`
   if (/库存|仓库/.test(value)) return '当前共有 4 个演示商品，星河保温杯低于库存预警线。建议优先补货，并核对待处理出库单。'
   if (/任务|待办|签收/.test(value)) return '目前有 5 条任务记录，其中 2 条等待签收、2 条等待结算。可以先处理今日重点任务。'
   if (/利润|经营|日报|总结/.test(value)) return '今日店铺整体经营稳定，云帆数码店销售表现领先。需要关注待签收任务、员工垫付费用和低库存商品。'
   return `这是本地模拟回复：已收到“${value || '演示问题'}”。你可以继续测试消息、历史会话、知识库和工作流界面。`
+}
+
+function aiUsagePayload() {
+  const daily = new Map()
+  for (const item of data.aiUsage || []) {
+    const day = String(item.created_at || '').slice(0, 10) || dateOnly(0)
+    const row = daily.get(day) || { date: day, calls: 0, input_tokens: 0, output_tokens: 0, cost: 0 }
+    row.calls += 1
+    row.input_tokens += Number(item.input_tokens || 0)
+    row.output_tokens += Number(item.output_tokens || 0)
+    row.cost += Number(item.cost || 0)
+    daily.set(day, row)
+  }
+  const input = (data.aiUsage || []).reduce((sum, item) => sum + Number(item.input_tokens || 0), 0)
+  const output = (data.aiUsage || []).reduce((sum, item) => sum + Number(item.output_tokens || 0), 0)
+  return { usage: data.aiUsage || [], daily: [...daily.values()].sort((a, b) => b.date.localeCompare(a.date)), summary: { calls: data.aiUsage?.length || 0, input_tokens: input, output_tokens: output, cost: 0 } }
+}
+
+function recordAIUsage(operation, modelID, question, answer) {
+  data.aiUsage ||= []
+  data.aiUsage.unshift({
+    id: `usage-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    operation,
+    model_id: modelID || null,
+    input_tokens: Math.max(1, Math.ceil(String(question || '').length / 2)),
+    output_tokens: Math.max(1, Math.ceil(String(answer || '').length / 2)),
+    latency_ms: 120,
+    cost: 0,
+    created_at: new Date().toISOString(),
+  })
+  data.aiUsage = data.aiUsage.slice(0, 500)
 }
 
 async function handleIntegerCollection(req, res, pathname, basePath, collectionKey, defaults = {}) {
@@ -805,11 +847,50 @@ async function handleApi(req, res, url) {
     if (pathname === '/ai-api/connections/test' && method === 'POST') return json(res, 200, { message: '本地模拟连接正常' }), true
     if (pathname === '/ai-api/connections/sync' && method === 'POST') return json(res, 200, { total: data.aiModels.length }), true
 
-    if (pathname === '/ai-api/chats' && method === 'GET') return json(res, 200, { chats: data.aiChats }), true
-    if (pathname === '/ai-api/chats/save' && method === 'POST') { const body = await readJson(req); let item = data.aiChats.find((row) => row.id === body.id); const now = Math.floor(Date.now() / 1000); if (!item) { item = { id: body.id || `chat-${Date.now()}`, created_at: body.created_at || now }; data.aiChats.unshift(item) }; Object.assign(item, { title: body.title || '新对话', messages: body.messages || [], model_id: body.model_id || null, favorite: Boolean(body.favorite), archived: Boolean(body.archived), folder: body.folder || '', updated_at: now }); return empty(res), true }
-    if (pathname === '/ai-api/chats/delete' && method === 'POST') { const body = await readJson(req); data.aiChats = data.aiChats.filter((item) => item.id !== body.id); return empty(res), true }
-    if (pathname === '/ai-api/chat' && method === 'POST') { const body = await readJson(req); return json(res, 200, { content: demoAnswer(body.question) }), true }
-    if (pathname === '/ai-api/chat/stream' && method === 'POST') { const body = await readJson(req); const answer = demoAnswer(body.question); res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' }); for (const part of answer.match(/.{1,18}/gu) || [answer]) res.write(`${JSON.stringify({ content: part })}\n`); res.end(); return true }
+    if (pathname === '/ai-api/chats' && method === 'GET') {
+      const userID = String(url.searchParams.get('user_id') || req.headers['x-workspace-user'] || demoUser.id)
+      return json(res, 200, { chats: data.aiChats.filter((item) => String(item.user_id || demoUser.id) === userID) }), true
+    }
+    if (pathname === '/ai-api/chats/save' && method === 'POST') {
+      const body = await readJson(req)
+      const userID = String(body.user_id || req.headers['x-workspace-user'] || demoUser.id)
+      let item = data.aiChats.find((row) => row.id === body.id && String(row.user_id || demoUser.id) === userID)
+      const now = Math.floor(Date.now() / 1000)
+      if (!item) {
+        item = { id: body.id || `chat-${Date.now()}`, user_id: userID, created_at: body.created_at || now }
+        data.aiChats.unshift(item)
+      }
+      Object.assign(item, { title: body.title || '新对话', messages: Array.isArray(body.messages) ? body.messages : [], model_id: body.model_id || null, favorite: Boolean(body.favorite), archived: Boolean(body.archived), folder: body.folder || '', updated_at: now })
+      return json(res, 200, item), true
+    }
+    if (pathname === '/ai-api/chats/delete' && method === 'POST') {
+      const body = await readJson(req)
+      const userID = String(body.user_id || req.headers['x-workspace-user'] || demoUser.id)
+      data.aiChats = data.aiChats.filter((item) => !(item.id === body.id && String(item.user_id || demoUser.id) === userID))
+      return empty(res), true
+    }
+    if (pathname === '/ai-api/chats/summary' && method === 'POST') {
+      const body = await readJson(req)
+      const messages = Array.isArray(body.messages) ? body.messages : []
+      const recent = messages.slice(-6).map((item) => `${item.role === 'user' ? '用户' : '助手'}：${String(item.content || '').slice(0, 160)}`).join('\n')
+      return json(res, 200, { summary: recent || '暂无可总结内容', message_count: messages.length }), true
+    }
+    if (pathname === '/ai-api/chat' && method === 'POST') {
+      const body = await readJson(req)
+      const answer = demoAnswer(body.question, body.history || body.messages || [])
+      recordAIUsage('chat', body.model_id, body.question, answer)
+      return json(res, 200, { content: answer, chat_id: body.chat_id || null }), true
+    }
+    if (pathname === '/ai-api/chat/stream' && method === 'POST') {
+      const body = await readJson(req)
+      const history = Array.isArray(body.history) ? body.history : (Array.isArray(body.messages) ? body.messages.slice(0, -1) : [])
+      const answer = demoAnswer(body.question, history)
+      recordAIUsage('chat', body.model_id, body.question, answer)
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Chat-ID': String(body.chat_id || '') })
+      for (const part of answer.match(/.{1,18}/gu) || [answer]) res.write(`${JSON.stringify({ content: part, chat_id: body.chat_id || null })}\n`)
+      res.end()
+      return true
+    }
     if (pathname === '/ai-api/web-pages/read' && method === 'POST') {
       const body = await readJson(req)
       let target
@@ -836,7 +917,7 @@ async function handleApi(req, res, url) {
       if (pathname === `/ai-api/${name}/delete` && method === 'POST') { const body = await readJson(req); data[key] = data[key].filter((item) => item.id !== body.id); return empty(res), true }
     }
 
-    if (pathname === '/ai-api/usage') { const input = data.aiUsage.reduce((sum, item) => sum + item.input_tokens, 0); const output = data.aiUsage.reduce((sum, item) => sum + item.output_tokens, 0); return json(res, 200, { usage: data.aiUsage, summary: { calls: data.aiUsage.length, input_tokens: input, output_tokens: output, cost: 0 } }), true }
+    if (pathname === '/ai-api/usage') return json(res, 200, aiUsagePayload()), true
     if (pathname === '/ai-api/memories' && method === 'GET') return json(res, 200, { memories: data.aiMemories }), true
     if (pathname === '/ai-api/memories' && method === 'POST') { const body = await readJson(req); let item = data.aiMemories.find((row) => row.id === body.id); if (!item) { item = { id: body.id || `memory-${Date.now()}` }; data.aiMemories.unshift(item) }; Object.assign(item, body, { enabled: body.enabled === false ? 0 : 1 }); return empty(res), true }
     if (pathname === '/ai-api/memories/delete' && method === 'POST') { const body = await readJson(req); data.aiMemories = data.aiMemories.filter((item) => item.id !== body.id); return empty(res), true }
@@ -846,7 +927,25 @@ async function handleApi(req, res, url) {
     if (pathname === '/ai-api/workflows/run' && method === 'POST') { const body = await readJson(req); const job = { id: `job-${Date.now()}`, kind: '本地工作流', status: 'completed', output: JSON.stringify({ result: `已处理：${body.input || '演示输入'}` }), error: null }; data.aiJobs.unshift(job); return json(res, 200, { job_id: job.id, status: job.status }), true }
     if (pathname === '/ai-api/jobs' && method === 'GET') return json(res, 200, { jobs: data.aiJobs }), true
     if (/^\/ai-api\/jobs\/(retry|cancel|delete)$/.test(pathname) && method === 'POST') { const body = await readJson(req); const action = pathname.split('/').pop(); const job = data.aiJobs.find((item) => item.id === body.id); if (action === 'delete') data.aiJobs = data.aiJobs.filter((item) => item.id !== body.id); else if (job) job.status = action === 'retry' ? 'completed' : 'cancelled'; return empty(res), true }
-    if (pathname === '/ai-api/shares') return json(res, 200, { shares: data.aiShares }), true
+    if (pathname === '/ai-api/shares' && method === 'GET') return json(res, 200, { shares: data.aiShares }), true
+    if (pathname === '/ai-api/shares' && method === 'POST') {
+      const body = await readJson(req)
+      const item = { id: `share-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, user_id: String(body.user_id || req.headers['x-workspace-user'] || demoUser.id), title: body.title || 'AI 对话分享', messages: Array.isArray(body.messages) ? body.messages : [], created_at: new Date().toISOString() }
+      data.aiShares.unshift(item)
+      return json(res, 201, item), true
+    }
+    const shareMatch = pathname.match(/^\/ai-api\/shares\/([^/]+)$/)
+    if (shareMatch && method === 'GET') {
+      const item = data.aiShares.find((share) => share.id === shareMatch[1])
+      return item ? json(res, 200, item) : json(res, 404, { detail: '分享不存在或已失效' }), true
+    }
+    if (pathname === '/ai-api/messages/feedback' && method === 'POST') {
+      const body = await readJson(req)
+      data.aiFeedback ||= []
+      const item = { id: `feedback-${Date.now()}`, message_id: body.message_id || '', chat_id: body.chat_id || '', rating: body.rating || null, note: body.note || '', user_id: String(body.user_id || req.headers['x-workspace-user'] || demoUser.id), created_at: new Date().toISOString() }
+      data.aiFeedback.unshift(item)
+      return json(res, 201, item), true
+    }
     if (pathname === '/ai-api/images/generations' && method === 'POST') return json(res, 200, { url: `http://${req.headers.host || `${HOST}:${PORT}`}/favicon.svg` }), true
     if (pathname === '/ai-api/audio/transcriptions' && method === 'POST') return json(res, 200, { text: '请帮我生成今天的经营简报' }), true
     if ((pathname === '/ai-api/search' || pathname === '/ai-api/web-search') && method === 'POST') return json(res, 200, { documents: [{ title: '本地演示资料', content: '经营数据整体稳定，注意待签收任务和低库存商品。', url: 'https://example.com/local-demo' }] }), true

@@ -103,6 +103,28 @@ async function main() {
     assert.equal(stream.status, 200)
     assert.ok(stream.payload.some((item) => item.content))
 
+    const savedChat = await request('/ai-api/chats/save', {
+      method: 'POST',
+      body: {
+        id: 'chat-check-memory',
+        user_id: '1',
+        title: '上下文测试',
+        messages: [{ id: 'm1', role: 'user', content: '我上一句说的是库存吗？' }],
+        model_id: 'model-demo-chat',
+      },
+    })
+    assert.equal(savedChat.status, 200)
+    assert.equal((await request('/ai-api/chats?user_id=1')).payload.chats.some((item) => item.id === 'chat-check-memory'), true)
+    const memoryStream = await request('/ai-api/chat/stream', { method: 'POST', body: { chat_id: 'chat-check-memory', question: '请重复上一句', history: savedChat.payload.messages } })
+    assert.ok(memoryStream.payload.map((item) => item.content).join('').includes('库存'))
+    const summary = await request('/ai-api/chats/summary', { method: 'POST', body: { messages: savedChat.payload.messages } })
+    assert.equal(summary.status, 200)
+    const share = await request('/ai-api/shares', { method: 'POST', body: { user_id: '1', title: '分享测试', messages: savedChat.payload.messages } })
+    assert.equal(share.status, 201)
+    assert.equal((await request(`/ai-api/shares/${share.payload.id}`)).payload.title, '分享测试')
+    assert.equal((await request('/ai-api/messages/feedback', { method: 'POST', body: { chat_id: 'chat-check-memory', message_id: 'm1', rating: 'up' } })).status, 201)
+    assert.ok((await request('/ai-api/usage')).payload.daily)
+
     assert.equal((await request('/demo/reset', { method: 'POST' })).status, 200)
     assert.equal((await request('/task-bookkeeping/not-implemented')).status, 501)
     console.log(`本地演示检查通过：${arrayPaths.length} 个列表、${objectPaths.length} 个对象接口及增删改操作均正常。`)
