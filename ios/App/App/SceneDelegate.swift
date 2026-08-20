@@ -341,7 +341,7 @@ private struct NativeProfitView: View {
     @State private var months: [ProfitMonth] = []
     @State private var rows: [ProfitRecord] = []
     @State private var query = ""
-    @State private var period = "month"
+    @State private var period = "day"
     @State private var error: String?
     private var filtered: [ProfitRecord] {
         rows
@@ -2662,7 +2662,7 @@ private struct ExpenseLedgerRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.category).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                 HStack(spacing: 5) {
-                    Text(item.description.isEmpty ? "\(item.paymentAccount) · \(item.submitterName)" : item.description)
+                    Text(item.description.isEmpty ? "\(item.paymentAccount) · 提交人：\(item.submitterName)" : "\(item.description) · 提交人：\(item.submitterName)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -3000,6 +3000,8 @@ private struct ExpenseForm: View {
     }
 }
 
+private enum NativeArticleMode: Hashable { case write, split, preview }
+
 private struct LinkForm: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
@@ -3007,15 +3009,19 @@ private struct LinkForm: View {
     @State private var title: String; @State private var category: String; @State private var url: String
     @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
     @State private var photoItems: [PhotosPickerItem] = []; @State private var images: [URL] = []
-    @State private var previewing = false
+    @State private var editorMode: NativeArticleMode = .write
     @State private var editCommand: ArticleEditCommand?
     @State private var pendingInlineImages: [PendingInlineImage] = []
     @State private var draftNotice: String?
     @State private var showingLinkPrompt = false
+    @State private var showingEmojiPicker = false
     @State private var linkURL = "https://"
 
     init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
         self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
+        if article, let storedCategory = item?.category {
+            _category = State(initialValue: storedCategory.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]))
+        }
         _url = State(initialValue: item?.url ?? ""); _description = State(initialValue: item?.description ?? ""); _pinned = State(initialValue: item?.isPinned ?? false)
     }
 
@@ -3023,12 +3029,12 @@ private struct LinkForm: View {
         NavigationStack {
             Group { if article { articleEditorBody } else { postEditorBody } }
             .navigationTitle(item == nil ? (article ? "发布文章" : "发布帖子") : (article ? "编辑文章" : "编辑帖子")).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; if article { ToolbarItem(placement: .principal) { Picker("模式", selection: $previewing) { Text("写作").tag(false); Text("预览").tag(true) }.pickerStyle(.segmented).frame(width: 150) } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }; if article { ToolbarItem(placement: .principal) { Picker("模式", selection: $editorMode) { Text("写作").tag(NativeArticleMode.write); Text("分栏").tag(NativeArticleMode.split); Text("预览").tag(NativeArticleMode.preview) }.pickerStyle(.segmented).frame(width: 220) } }; ToolbarItem(placement: .confirmationAction) { Button(saving ? "发布中..." : "保存") { Task { await save() } }.disabled(saving || title.trimmingCharacters(in: .whitespaces).isEmpty) } }
             .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
             .task { restoreDraft() }
-            .onChange(of: title) { _ in saveDraft() }
-            .onChange(of: category) { _ in saveDraft() }
-            .onChange(of: description) { _ in saveDraft() }
+            .onChange(of: title) { _ in title = String(title.prefix(100)); saveDraft() }
+            .onChange(of: category) { _ in category = String(category.prefix(50)); saveDraft() }
+            .onChange(of: description) { _ in description = String(description.prefix(100000)); saveDraft() }
             .alert("插入链接", isPresented: $showingLinkPrompt) {
                 TextField("https://example.com", text: $linkURL)
                     .textInputAutocapitalization(.never)
@@ -3040,6 +3046,14 @@ private struct LinkForm: View {
                 .disabled(normalizedLinkURL == nil)
             } message: {
                 Text("输入完整网页地址，链接文字会使用当前选中的内容。")
+            }
+            .sheet(isPresented: $showingEmojiPicker) {
+                ArticleEmojiPicker { value in
+                    editCommand = ArticleEditCommand(.emoji(value))
+                    showingEmojiPicker = false
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
             }
         }
     }
@@ -3062,8 +3076,10 @@ private struct LinkForm: View {
     private var articleEditorBody: some View {
         VStack(spacing: 0) {
             if let error { Text(error).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
-            if previewing {
+            if editorMode == .preview {
                 articlePreviewBody
+            } else if editorMode == .split {
+                articleSplitBody
             } else {
                 if let draftNotice { Text(draftNotice).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 8) }
                 VStack(spacing: 0) {
@@ -3076,7 +3092,17 @@ private struct LinkForm: View {
             }
         }
         .background(Color(.systemBackground))
-        .safeAreaInset(edge: .bottom, spacing: 0) { if !previewing { articleToolbar } }
+        .safeAreaInset(edge: .bottom, spacing: 0) { if editorMode != .preview { articleToolbar } }
+    }
+
+    private var articleSplitBody: some View {
+        VStack(spacing: 0) {
+            NativeArticleTextEditor(text: $description, command: $editCommand)
+                .frame(maxWidth: .infinity, minHeight: 170)
+                .padding(.horizontal, 20)
+            Divider()
+            articlePreviewBody
+        }
     }
 
     private var articleToolbar: some View {
@@ -3098,17 +3124,22 @@ private struct LinkForm: View {
                     Button { editCommand = ArticleEditCommand(.bold) } label: { Label("粗体", systemImage: "bold") }
                     Button { editCommand = ArticleEditCommand(.italic) } label: { Label("斜体", systemImage: "italic") }
                     Button { editCommand = ArticleEditCommand(.strikethrough) } label: { Label("删除线", systemImage: "strikethrough") }
+                    Button { editCommand = ArticleEditCommand(.inlineCode) } label: { Label("行内代码", systemImage: "chevron.left.forwardslash.chevron.right") }
+                    Button { editCommand = ArticleEditCommand(.codeBlock) } label: { Label("代码块", systemImage: "curlybraces.square") }
                     Button { linkURL = "https://"; showingLinkPrompt = true } label: { Label("链接", systemImage: "link") }
                     Button { editCommand = ArticleEditCommand(.center) } label: { Label("居中", systemImage: "text.aligncenter") }
                 } label: { ArticleToolIcon("paintbrush", "样式") }.frame(maxWidth: .infinity)
 
                 Menu {
-                    ForEach(["😀", "👍", "✅", "📌", "💡", "🎉"], id: \.self) { value in
-                        Button(value) { editCommand = ArticleEditCommand(.emoji(value)) }
-                    }
-                } label: { ArticleToolIcon("face.smiling", "表情") }.frame(maxWidth: .infinity)
+                    Button { editCommand = ArticleEditCommand(.table) } label: { Label("表格", systemImage: "tablecells") }
+                    Button { editCommand = ArticleEditCommand(.divider) } label: { Label("分割线", systemImage: "minus") }
+                } label: { ArticleToolIcon("tablecells", "更多") }.frame(maxWidth: .infinity)
 
-                PhotosPicker(selection: $photoItems, maxSelectionCount: max(9 - images.count, 1), matching: .images) { ArticleToolIcon("photo", "图片") }.frame(maxWidth: .infinity).buttonStyle(.plain).disabled(images.count >= 9)
+                Button { showingEmojiPicker = true } label: { ArticleToolIcon("face.smiling", "表情") }
+                    .frame(maxWidth: .infinity)
+                    .buttonStyle(.plain)
+
+                PhotosPicker(selection: $photoItems, maxSelectionCount: max(9 - imageCount, 1), matching: .images) { ArticleToolIcon("photo", "图片") }.frame(maxWidth: .infinity).buttonStyle(.plain).disabled(imageCount >= 9)
                 Button { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) } label: { ArticleToolIcon("keyboard.chevron.compact.down", "收起") }.frame(maxWidth: .infinity).buttonStyle(.plain)
             }
             .padding(.horizontal, 8).padding(.vertical, 5)
@@ -3132,6 +3163,8 @@ private struct LinkForm: View {
         }
     }
 
+    private var imageCount: Int { (item?.images.count ?? 0) + images.count }
+
     private var normalizedLinkURL: String? {
         let value = linkURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil else { return nil }
@@ -3148,7 +3181,7 @@ private struct LinkForm: View {
     }
 
     @MainActor private func receivePhotos(_ items: [PhotosPickerItem]) async {
-        let remaining = max(9 - images.count, 0)
+        let remaining = max(9 - imageCount, 0)
         guard remaining > 0, !items.isEmpty else { photoItems = []; return }
         var selected: [URL] = []
         for item in items.prefix(remaining) {
@@ -3179,20 +3212,24 @@ private struct LinkForm: View {
         saving = true; error = nil; defer { saving = false }
         let normalizedCategory = article && !category.lowercased().hasPrefix("tutorial:") ? "tutorial:\(category.isEmpty ? "未分类" : category)" : category
         let savedCategory: Any = normalizedCategory.isEmpty ? NSNull() : normalizedCategory
+        let livePending = pendingInlineImages.filter { description.contains("(\($0.token))") }
         var initialDescription = description
-        for pending in pendingInlineImages {
+        for pending in livePending {
             let token = NSRegularExpression.escapedPattern(for: pending.token)
             initialDescription = initialDescription.replacingOccurrences(of: "!\\[[^\\]]*\\]\\(\(token)\\)", with: "", options: .regularExpression)
         }
         let savedDescription: Any = initialDescription.isEmpty ? NSNull() : initialDescription
         let savedURLValue = article ? firstArticleURL : url.trimmingCharacters(in: .whitespacesAndNewlines)
         let savedURL: Any = savedURLValue?.isEmpty == false ? savedURLValue! : NSNull()
-        var body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": 0]
+        let preservedSortOrder = item?.sortOrder ?? 0
+        var body: [String: Any] = ["title": title.trimmingCharacters(in: .whitespacesAndNewlines), "category": savedCategory, "description": savedDescription, "url": savedURL, "is_pinned": pinned, "sort_order": preservedSortOrder]
         do {
             var saved: SavedLink = try await session.send(item.map { "saved-links/\($0.id)" } ?? "saved-links", method: item == nil ? "POST" : "PUT", body: body)
-            if !images.isEmpty {
+            let liveImageURLs = Set(livePending.map(\.url))
+            let liveImages = images.filter { liveImageURLs.contains($0) }
+            if !liveImages.isEmpty {
                 var files: [MultipartFile] = []
-                for image in images {
+                for image in liveImages {
                     let hasSecurityScope = image.startAccessingSecurityScopedResource()
                     defer { if hasSecurityScope { image.stopAccessingSecurityScopedResource() } }
                     let mime = UTType(filenameExtension: image.pathExtension)?.preferredMIMEType ?? "image/jpeg"
@@ -3200,11 +3237,11 @@ private struct LinkForm: View {
                 }
                 if !files.isEmpty { saved = try await session.uploadMany(path: "saved-links/\(saved.id)/images/append", files: files) }
             }
-            if article && !pendingInlineImages.isEmpty {
+            if article && !livePending.isEmpty {
                 var finalDescription = description
-                let uploaded = Array(saved.images.suffix(pendingInlineImages.count))
-                guard uploaded.count == pendingInlineImages.count else { throw NativeImageError.invalidResponse }
-                for (pending, remote) in zip(pendingInlineImages, uploaded) {
+                let uploaded = Array(saved.images.suffix(livePending.count))
+                guard uploaded.count == livePending.count else { throw NativeImageError.invalidResponse }
+                for (pending, remote) in zip(livePending, uploaded) {
                     finalDescription = finalDescription.replacingOccurrences(of: "(\(pending.token))", with: "(\(remote.url))")
                 }
                 if finalDescription != description {
@@ -3218,7 +3255,7 @@ private struct LinkForm: View {
         } catch { self.error = session.message(for: error) }
     }
 
-    private var draftKey: String { "native-link-draft-\(article ? "article" : "post")" }
+    private var draftKey: String { "native-link-draft-\(session.currentUser?.id ?? 0)-\(article ? "article" : "post")" }
     private func saveDraft() {
         guard item == nil, !title.isEmpty || !description.isEmpty else { return }
         let draft = LinkDraft(title: title, category: category, description: description, updatedAt: Date())
@@ -3364,13 +3401,46 @@ private struct LinkLoadErrorView: View {
 
 private struct ArticleToolIcon: View { let symbol: String; let title: String; init(_ symbol: String, _ title: String) { self.symbol = symbol; self.title = title }; var body: some View { VStack(spacing: 5) { Image(systemName: symbol).font(.headline); Text(title).font(.caption2) }.frame(minWidth: 48, minHeight: 46).contentShape(Rectangle()) } }
 
+private let articleEmojiCatalog = [
+    "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘",
+    "😎", "🤔", "😐", "😑", "🙄", "😏", "😣", "😥", "😮", "🤐", "😯", "😪", "😫", "🥱", "😴", "🤗",
+    "🤩", "🥳", "😇", "🤓", "🧐", "👍", "👎", "👏", "🙌", "🙏", "💪", "🤝", "👀", "💡", "🔥", "✨",
+    "⭐️", "✅", "❌", "⚠️", "❗️", "❓", "📌", "📎", "🎉", "🎊", "❤️", "💯", "🚀", "🌟", "☀️", "🌈"
+]
+
+private struct ArticleEmojiPicker: View {
+    let onSelect: (String) -> Void
+    private let columns = [GridItem(.adaptive(minimum: 44), spacing: 10)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(articleEmojiCatalog, id: \.self) { value in
+                        Button { onSelect(value) } label: {
+                            Text(value)
+                                .font(.system(size: 28))
+                                .frame(maxWidth: .infinity, minHeight: 42)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle("选择表情")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
 private struct PendingInlineImage {
     let token: String
     let url: URL
 }
 
 private struct ArticleEditCommand: Identifiable {
-    enum Kind { case heading1, heading2, body, bold, italic, strikethrough, quote, list, numberedList, checklist, link(String), center, emoji(String), images([PendingInlineImage]) }
+    enum Kind { case heading1, heading2, body, bold, italic, strikethrough, inlineCode, codeBlock, quote, list, numberedList, checklist, link(String), center, table, divider, emoji(String), images([PendingInlineImage]) }
     let id = UUID()
     let kind: Kind
     init(_ kind: Kind) { self.kind = kind }
@@ -3412,6 +3482,8 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
             case .bold: replacement = "**\(selected.isEmpty ? "粗体文字" : selected)**"
             case .italic: replacement = "*\(selected.isEmpty ? "斜体文字" : selected)*"
             case .strikethrough: replacement = "~~\(selected.isEmpty ? "删除线文字" : selected)~~"
+            case .inlineCode: replacement = "`\(selected.isEmpty ? "代码" : selected)`"
+            case .codeBlock: replacement = isolatedBlock("```\n\(selected.isEmpty ? "在这里输入代码" : selected)\n```", in: ns, replacing: range)
             case .link(let url): replacement = "[\(selected.isEmpty ? "链接文字" : selected)](\(url))"
             case .heading1: replacement = isolatedBlock("# \(selected.isEmpty ? "一级标题" : selected)", in: ns, replacing: range)
             case .heading2: replacement = isolatedBlock("## \(selected.isEmpty ? "二级标题" : selected)", in: ns, replacing: range)
@@ -3419,10 +3491,14 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
             case .quote: replacement = isolatedBlock("> \(selected.isEmpty ? "引用内容" : selected.replacingOccurrences(of: "\n", with: "\n> "))", in: ns, replacing: range)
             case .list: replacement = isolatedBlock("- \(selected.isEmpty ? "列表项目" : selected.replacingOccurrences(of: "\n", with: "\n- "))", in: ns, replacing: range)
             case .numberedList:
-                let value = (selected.isEmpty ? ["列表项目"] : selected.components(separatedBy: "\n")).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+                let lines = selected.isEmpty ? ["列表项目"] : selected.components(separatedBy: "\n")
+                let start = selected.isEmpty ? nextNumber(in: ns, before: range.location) : 1
+                let value = lines.enumerated().map { "\(start + $0.offset). \($0.element)" }.joined(separator: "\n")
                 replacement = isolatedBlock(value, in: ns, replacing: range)
             case .checklist: replacement = isolatedBlock("- [ ] \(selected.isEmpty ? "待办事项" : selected.replacingOccurrences(of: "\n", with: "\n- [ ] "))", in: ns, replacing: range)
             case .center: replacement = isolatedBlock("::: align-center\n\(selected.isEmpty ? "居中内容" : selected)\n:::", in: ns, replacing: range)
+            case .table: replacement = isolatedBlock("| 列 1 | 列 2 |\n| --- | --- |\n| 内容 | 内容 |", in: ns, replacing: range)
+            case .divider: replacement = isolatedBlock("---", in: ns, replacing: range)
             case .emoji(let value): replacement = value
             case .images(let images): replacement = images.map { image in
                 let alt = image.url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "]", with: "")
@@ -3440,6 +3516,19 @@ private struct NativeArticleTextEditor: UIViewRepresentable {
             let end = range.location + range.length
             let needsTrailingBreak = end < source.length && source.substring(with: NSRange(location: end, length: 1)) != "\n"
             return (needsLeadingBreak ? "\n" : "") + value + (needsTrailingBreak ? "\n" : "")
+        }
+
+        private func nextNumber(in source: NSString, before location: Int) -> Int {
+            let safeLocation = min(max(location, 0), source.length)
+            let prefix = source.substring(to: safeLocation)
+            let pattern = try? NSRegularExpression(pattern: #"^\s*(\d+)\.\s+"#)
+            for line in prefix.components(separatedBy: .newlines).reversed() {
+                guard let match = pattern?.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                      let numberRange = Range(match.range(at: 1), in: line),
+                      let number = Int(line[numberRange]) else { continue }
+                return number + 1
+            }
+            return 1
         }
     }
 }
@@ -5775,6 +5864,9 @@ private enum SavedLinkArticleBlock {
     case numbered(number: String, text: String)
     case checklist(checked: Bool, text: String)
     case centered(String)
+    case code(String)
+    case table(headers: [String], rows: [[String]])
+    case divider
 }
 
 private func savedLinkArticleBlocks(_ source: String) -> [SavedLinkArticleBlock] {
@@ -5782,6 +5874,28 @@ private func savedLinkArticleBlocks(_ source: String) -> [SavedLinkArticleBlock]
     var paragraph: [String] = []
     var centered: [String] = []
     var isCentering = false
+    var codeLines: [String] = []
+    var isCode = false
+    var tableLines: [String] = []
+
+    func tableRow(_ line: String) -> [String] {
+        line.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "|"))
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    func flushTable() {
+        guard tableLines.count >= 2 else { tableLines.removeAll(); return }
+        let rows = tableLines.map(tableRow)
+        guard rows.count >= 2, !rows[0].isEmpty else { tableLines.removeAll(); return }
+        let headers = rows[0]
+        let dataRows = rows.dropFirst().filter { row in
+            !row.allSatisfy { $0.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: ":", with: "").trimmingCharacters(in: .whitespaces).isEmpty }
+        }
+        blocks.append(.table(headers: headers, rows: Array(dataRows)))
+        tableLines.removeAll()
+    }
 
     func flushParagraph() {
         guard !paragraph.isEmpty else { return }
@@ -5797,6 +5911,26 @@ private func savedLinkArticleBlocks(_ source: String) -> [SavedLinkArticleBlock]
 
     for line in source.components(separatedBy: .newlines) {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if isCode {
+            if trimmed.hasPrefix("```") {
+                blocks.append(.code(codeLines.joined(separator: "\n")))
+                codeLines.removeAll()
+                isCode = false
+            } else {
+                codeLines.append(line)
+            }
+            continue
+        }
+        if trimmed.hasPrefix("```") {
+            flushTable(); flushParagraph(); isCode = true
+            continue
+        }
+        if trimmed.contains("|") {
+            if tableLines.isEmpty { flushParagraph() }
+            tableLines.append(line)
+            continue
+        }
+        if !tableLines.isEmpty { flushTable() }
         if isCentering {
             if trimmed == ":::" {
                 flushCenter()
@@ -5809,6 +5943,9 @@ private func savedLinkArticleBlocks(_ source: String) -> [SavedLinkArticleBlock]
         if trimmed == "::: align-center" {
             flushParagraph()
             isCentering = true
+        } else if ["---", "***", "___"].contains(trimmed) {
+            flushParagraph()
+            blocks.append(.divider)
         } else if trimmed.isEmpty {
             flushParagraph()
         } else if trimmed.hasPrefix("## ") {
@@ -5835,6 +5972,8 @@ private func savedLinkArticleBlocks(_ source: String) -> [SavedLinkArticleBlock]
             paragraph.append(line)
         }
     }
+    if isCode { blocks.append(.code(codeLines.joined(separator: "\n"))) }
+    flushTable()
     flushParagraph()
     if isCentering { flushCenter() }
     return blocks
@@ -5886,7 +6025,47 @@ private struct SavedLinkArticleBlockView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .center)
+        case .code(let text):
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(text.isEmpty ? " " : text)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(Color.white)
+                    .textSelection(.enabled)
+                    .padding(12)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(red: 0.08, green: 0.11, blue: 0.16), in: RoundedRectangle(cornerRadius: 10))
+        case .table(let headers, let rows):
+            VStack(spacing: 0) {
+                SavedLinkTableRow(values: headers, emphasized: true)
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    SavedLinkTableRow(values: row, emphasized: false)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
+        case .divider:
+            Divider().padding(.vertical, 6)
         }
+    }
+}
+
+private struct SavedLinkTableRow: View {
+    let values: [String]
+    let emphasized: Bool
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(values.enumerated()), id: \.offset) { _, value in
+                Text(savedLinkMarkdown(value))
+                    .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 7)
+                    .overlay(alignment: .trailing) { Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1) }
+            }
+        }
+        .background(emphasized ? Color.secondary.opacity(0.1) : Color.clear)
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.secondary.opacity(0.2)).frame(height: 1) }
     }
 }
 
@@ -6126,9 +6305,10 @@ private struct SavedLinkDetailImage: View {
 }
 private struct SavedLink: Codable, Identifiable {
     let id: Int; let title: String; let url: String?; let category: String?; let description: String?
+    let sortOrder: Int
     let isPinned: Bool; let authorUsername: String; let authorAvatarURL: String?; let images: [SavedLinkImage]; let createdAt: String; let updatedAt: String
     let pushStatus: String; let pushScheduledAt: String?; let pushSentAt: String?; let pushError: String?
-    enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case isPinned = "is_pinned"; case authorUsername = "author_username"; case authorAvatarURL = "author_avatar_url"; case createdAt = "created_at"; case updatedAt = "updated_at"; case pushStatus = "push_status"; case pushScheduledAt = "push_scheduled_at"; case pushSentAt = "push_sent_at"; case pushError = "push_error" }
+    enum CodingKeys: String, CodingKey { case id, title, url, category, description, images; case sortOrder = "sort_order"; case isPinned = "is_pinned"; case authorUsername = "author_username"; case authorAvatarURL = "author_avatar_url"; case createdAt = "created_at"; case updatedAt = "updated_at"; case pushStatus = "push_status"; case pushScheduledAt = "push_scheduled_at"; case pushSentAt = "push_sent_at"; case pushError = "push_error" }
 }
 
 enum NativeAPIError: Error { case invalidResponse; case microphoneDenied; case server(Int, String) }
