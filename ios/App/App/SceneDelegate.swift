@@ -2808,7 +2808,11 @@ private struct NativeLinksView: View {
                     Button("发布文章", systemImage: "doc.text") { composer = LinkComposerRoute(item: nil, article: true) }
                 } label: { Image(systemName: "square.and.pencil") }
             }
-            .sheet(item: $composer) { route in LinkForm(item: route.item, article: route.article) { await load() } }
+            .sheet(item: $composer) { route in
+                LinkForm(item: route.item, article: route.article) { updated in
+                    update(updated)
+                }
+            }
             .sheet(item: $scheduling) { item in SavedLinkPushSheet(item: item) { updated in update(updated) } }
             .confirmationDialog("确定删除这条内容吗？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
                 Button("删除", role: .destructive) { if let item = deleting { Task { await remove(item) } } }
@@ -2850,7 +2854,13 @@ private struct NativeLinksView: View {
         } catch { self.error = session.message(for: error); pushing = nil }
     }
 
-    private func update(_ item: SavedLink) { if let index = records.firstIndex(where: { $0.id == item.id }) { records[index] = item } }
+    private func update(_ item: SavedLink) {
+        if let index = records.firstIndex(where: { $0.id == item.id }) {
+            records[index] = item
+        } else {
+            records.insert(item, at: 0)
+        }
+    }
 
     private func remove(_ item: SavedLink) async {
         do { try await session.delete("saved-links/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
@@ -3005,7 +3015,7 @@ private enum NativeArticleMode: Hashable { case write, split, preview }
 private struct LinkForm: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.dismiss) private var dismiss
-    let item: SavedLink?; let article: Bool; let onSave: () async -> Void
+    let item: SavedLink?; let article: Bool; let onSave: (SavedLink) -> Void
     @State private var title: String; @State private var category: String; @State private var url: String
     @State private var description: String; @State private var pinned: Bool; @State private var saving = false; @State private var error: String?
     @State private var photoItems: [PhotosPickerItem] = []; @State private var images: [URL] = []
@@ -3017,7 +3027,7 @@ private struct LinkForm: View {
     @State private var showingEmojiPicker = false
     @State private var linkURL = "https://"
 
-    init(item: SavedLink?, article: Bool = false, onSave: @escaping () async -> Void) {
+    init(item: SavedLink?, article: Bool = false, onSave: @escaping (SavedLink) -> Void) {
         self.item = item; self.article = article; self.onSave = onSave; _title = State(initialValue: item?.title ?? ""); _category = State(initialValue: item?.category ?? "")
         if article, let storedCategory = item?.category {
             _category = State(initialValue: storedCategory.replacingOccurrences(of: "tutorial:", with: "", options: [.caseInsensitive, .anchored]))
@@ -3246,12 +3256,13 @@ private struct LinkForm: View {
                 }
                 if finalDescription != description {
                     body["description"] = finalDescription
-                    let _: SavedLink = try await session.send("saved-links/\(saved.id)", method: "PUT", body: body)
+                    saved = try await session.send("saved-links/\(saved.id)", method: "PUT", body: body)
                     description = finalDescription
                 }
             }
             UserDefaults.standard.removeObject(forKey: draftKey)
-            await onSave(); dismiss()
+            onSave(saved)
+            dismiss()
         } catch { self.error = session.message(for: error) }
     }
 
@@ -3603,17 +3614,18 @@ private struct SavedLinkFeedRow: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("更多操作")
                 }
+                .zIndex(10)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .zIndex(10)
 
-            Button(action: onOpen) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(item.title).font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary).multilineTextAlignment(.leading).lineLimit(2)
-                    if !bodyText.isEmpty { Text(bodyText).font(.body).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(3).fixedSize(horizontal: false, vertical: true) }
-                }
-                .contentShape(Rectangle())
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(item.title).font(.system(size: 18, weight: .semibold)).foregroundStyle(.primary).multilineTextAlignment(.leading).lineLimit(2)
+                if !bodyText.isEmpty { Text(bodyText).font(.body).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(3).fixedSize(horizontal: false, vertical: true) }
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onOpen)
 
             if isArticle && !item.images.isEmpty {
                 SavedLinkImageGrid(images: item.images, onTap: onOpenImage)
@@ -3651,15 +3663,20 @@ private struct SavedLinkImageGrid: View {
         if entries.isEmpty {
             EmptyView()
         } else if entries.count == 1 {
-            imageButton(source: entries[0].0, image: SavedLinkFeedImage(url: entries[0].1, maxPixelSize: 1400))
-                .frame(height: 180)
+            SavedLinkFeedImage(url: entries[0].1, maxPixelSize: 1400)
+                .frame(maxWidth: .infinity)
+                .frame(height: 156)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.14), lineWidth: 0.5))
+                .contentShape(Rectangle())
+                .onTapGesture { onTap?(entries[0].0) }
+                .padding(.top, 10)
         } else {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
                 ForEach(Array(entries.prefix(3).enumerated()), id: \.offset) { index, entry in
                     ZStack {
-                        imageButton(source: entry.0, image: SavedLinkFeedImage(url: entry.1, maxPixelSize: 600))
+                        SavedLinkFeedImage(url: entry.1, maxPixelSize: 600)
                         if index == 2 && entries.count > 3 {
                             Color.black.opacity(0.38).allowsHitTesting(false)
                             Text("+\(entries.count - 3)").font(.headline).foregroundStyle(.white).allowsHitTesting(false)
@@ -3668,17 +3685,11 @@ private struct SavedLinkImageGrid: View {
                     .frame(height: 118)
                     .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 6))
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTap?(entry.0) }
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func imageButton<Content: View>(source: String, image: Content) -> some View {
-        if let onTap {
-            Button { onTap(source) } label: { image }.buttonStyle(.plain)
-        } else {
-            image
+            .padding(.top, 10)
         }
     }
 }
@@ -3688,11 +3699,10 @@ private struct SavedLinkFeedImage: View {
     let maxPixelSize: CGFloat
 
     var body: some View {
-        GeometryReader { proxy in
-            CachedRemoteImage(url: url, contentMode: .fill, maxPixelSize: maxPixelSize, placeholder: ProgressView())
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
-        }
+        CachedRemoteImage(url: url, contentMode: .fill, maxPixelSize: maxPixelSize, placeholder: ProgressView())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .allowsHitTesting(false)
     }
 }
 
