@@ -591,7 +591,7 @@ private struct NativeAIWorkspaceView: View {
     @State private var importingFile = false; @State private var importingAttachment = false; @State private var importedFileNames: [String] = []
     @State private var pendingAttachmentIDs: [String] = []; @State private var pendingWebPages: [AIWebPage] = []
     @State private var showingWebURLInput = false; @State private var webURLText = ""; @State private var readingWebPage = false
-    @State private var showingModelPicker = false
+    @State private var showingModelPicker = false; @State private var modelPickerQuery = ""
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
@@ -611,8 +611,18 @@ private struct NativeAIWorkspaceView: View {
     private var pickerModels: [AIModel] {
         models.filter { $0.enabled != 0 && $0.hidden != 1 }
     }
+    private var filteredPickerModels: [AIModel] {
+        let query = modelPickerQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return pickerModels }
+        return pickerModels.filter { model in
+            let connection = modelConnections.first(where: { $0.id == model.connectionID })
+            let account = connection?.name ?? ""
+            let searchable = "\(aiModelDisplayName(model)) \(model.baseModel) \(aiModelProviderLabel(model, connections: modelConnections)) \(aiModelAccountName(model, connections: modelConnections)) \(account)"
+            return searchable.localizedCaseInsensitiveContains(query)
+        }
+    }
     private var selectableModelGroups: [(String, [AIModel])] {
-        let grouped = Dictionary(grouping: pickerModels) { model in
+        let grouped = Dictionary(grouping: filteredPickerModels) { model in
             let provider = aiModelProviderLabel(model, connections: modelConnections)
             let account = aiModelAccountName(model, connections: modelConnections)
             return "\(provider) · \(account)"
@@ -821,11 +831,25 @@ private struct NativeAIWorkspaceView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 56)
+                } else if filteredPickerModels.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.secondary)
+                        Text("没有匹配的模型")
+                            .font(.headline)
+                        Text("尝试搜索模型名称、品牌或账号")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
                 }
             }
             .listStyle(.insetGrouped)
             .navigationTitle("选择模型")
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $modelPickerQuery, prompt: "搜索模型、品牌或账号")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { showingModelPicker = false }
