@@ -48,6 +48,15 @@ Computer development remains in `D:\PY\RuoShopAdmin\app-frontend` and runs with
 `npm run dev`. Only `build:native` targets the bundled iOS runtime and the remote
 API at `https://xiaoxu666.asia`.
 
+## Current release
+
+- Web: `v2026.08.20.5`
+- iOS: `v1.3.6 (build 55)`
+- Latest commit: `6625888`
+
+The web bundle and demo API in this repository include the synchronized AI
+workspace session context, daily usage data, share links, and message feedback.
+
 ## Cloud build
 
 1. Create a private GitHub repository.
