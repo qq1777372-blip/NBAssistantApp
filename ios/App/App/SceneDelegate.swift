@@ -412,40 +412,121 @@ private enum AIContentBlock {
 
 private struct AIMessageContent: View {
     let content: String
+    let isStreaming: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(aiContentBlocks(content).enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .markdown(let text):
-                    Text(aiMarkdown(text))
-                        .textSelection(.enabled)
-                        .tint(.blue)
-                case .code(let language, let value):
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack(spacing: 8) {
-                            Text(language.isEmpty ? "代码" : language.uppercased())
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button { UIPasteboard.general.string = value } label: {
-                                Image(systemName: "doc.on.doc")
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("复制代码")
-                        }
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            Text(value)
-                                .font(.system(.footnote, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+        Group {
+            if isStreaming {
+                Text(content)
+                    .textSelection(.enabled)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(aiContentBlocks(content).enumerated()), id: \.offset) { _, block in
+                        switch block {
+                        case .markdown(let text):
+                            AIMarkdownFlow(content: text)
+                        case .code(let language, let value):
+                            AICodeEditor(language: language, value: value)
                         }
                     }
-                    .padding(10)
-                    .background(Color.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
                 }
             }
         }
+    }
+}
+
+private struct AIMarkdownFlow: View {
+    let content: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            ForEach(Array(aiMarkdownSections(content).enumerated()), id: \.offset) { _, section in
+                Text(aiMarkdown(section))
+                    .textSelection(.enabled)
+                    .tint(.blue)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct AICodeEditor: View {
+    let language: String
+    let value: String
+    @State private var copied = false
+
+    private let editorBackground = Color(red: 0.035, green: 0.04, blue: 0.055)
+    private let editorText = Color.white.opacity(0.94)
+    private var codeHeight: CGFloat {
+        let lineCount = max(value.components(separatedBy: "\n").count, 1)
+        return min(max(CGFloat(lineCount) * 24 + 28, 96), 420)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(language.isEmpty ? "代码" : language.lowercased())
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.58))
+                Spacer()
+                Button {
+                    UIPasteboard.general.string = value
+                    copied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.4))
+                        await MainActor.run { copied = false }
+                    }
+                } label: {
+                    Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.72))
+                .accessibilityLabel("复制代码")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 38)
+
+            NativeCodeTextView(value: value, textColor: UIColor(editorText))
+                .frame(height: codeHeight)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(editorBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct NativeCodeTextView: UIViewRepresentable {
+    let value: String
+    let textColor: UIColor
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = true
+        view.backgroundColor = .clear
+        view.textColor = textColor
+        view.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .regular)
+        view.textContainerInset = UIEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        view.textContainer.lineFragmentPadding = 0
+        view.textContainer.widthTracksTextView = true
+        view.showsVerticalScrollIndicator = true
+        view.showsHorizontalScrollIndicator = false
+        view.alwaysBounceVertical = false
+        view.contentInsetAdjustmentBehavior = .never
+        view.text = value
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != value { view.text = value }
+        view.textColor = textColor
     }
 }
 
@@ -457,13 +538,55 @@ private func aiMarkdown(_ value: String) -> AttributedString {
     return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
 }
 
+private func aiMarkdownSections(_ source: String) -> [String] {
+    let normalized = source.replacingOccurrences(of: "\r\n", with: "\n")
+    var sections: [String] = []
+    var current: [String] = []
+
+    func flush() {
+        let value = current.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty { sections.append(value) }
+        current.removeAll(keepingCapacity: true)
+    }
+
+    for rawLine in normalized.components(separatedBy: "\n") {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.isEmpty {
+            flush()
+            continue
+        }
+        let isHeading = line.hasPrefix("#")
+        let isListItem = line.range(of: "^(?:[-*•]|[0-9]+[.)、])\\s+", options: .regularExpression) != nil
+        if (isHeading || isListItem) && !current.isEmpty { flush() }
+        if isHeading || isListItem {
+            sections.append(line)
+        } else {
+            current.append(line)
+        }
+    }
+    flush()
+    return sections.isEmpty ? [source] : sections
+}
+
 private func aiContentBlocks(_ source: String) -> [AIContentBlock] {
     guard let regex = try? NSRegularExpression(pattern: "(?s)```([^\\n]*)\\n(.*?)```") else {
         return [.markdown(source)]
     }
     let ns = source as NSString
     let matches = regex.matches(in: source, range: NSRange(location: 0, length: ns.length))
-    guard !matches.isEmpty else { return [.markdown(source)] }
+    guard !matches.isEmpty else {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = trimmed.components(separatedBy: "\n")
+        let codeSignals = ["function ", "const ", "let ", "var ", "import ", "class ", "return ", "=>", "{", "};", "</"]
+        let signalCount = codeSignals.reduce(into: 0) { count, signal in
+            if trimmed.contains(signal) { count += 1 }
+        }
+        let indentedLines = lines.filter { $0.hasPrefix("    ") || $0.hasPrefix("\t") }.count
+        if lines.count >= 4 && (signalCount >= 3 || (signalCount >= 2 && indentedLines >= 2)) {
+            return [.code(language: inferredCodeLanguage(trimmed), value: trimmed)]
+        }
+        return [.markdown(source)]
+    }
     var result: [AIContentBlock] = []
     var cursor = 0
     for match in matches {
@@ -480,6 +603,14 @@ private func aiContentBlocks(_ source: String) -> [AIContentBlock] {
         result.append(.markdown(ns.substring(with: NSRange(location: cursor, length: ns.length - cursor))))
     }
     return result
+}
+
+private func inferredCodeLanguage(_ value: String) -> String {
+    if value.contains("<html") || value.contains("<div") { return "HTML" }
+    if value.contains("import SwiftUI") || value.contains(".frame(") { return "SWIFT" }
+    if value.contains("function ") || value.contains("const ") || value.contains("console.log") { return "JAVASCRIPT" }
+    if value.contains("def ") || value.contains("import ") && value.contains(":") { return "PYTHON" }
+    return "CODE"
 }
 
 private struct ComposerContextChip: View {
@@ -580,6 +711,7 @@ private struct NativeAIWorkspaceView: View {
     @State private var streamFlushTask: Task<Void, Never>?; @State private var streamBuffer = ""
     @State private var loadingWorkspace = false
     @State private var showingHistory = false; @State private var renaming: AIChat?; @State private var renameText = ""
+    @State private var historyQuery = ""
     @StateObject private var recorder = NativeAudioRecorder(); @State private var audioModel = ""
     @State private var knowledge: [KnowledgeCollection] = []; @State private var skills: [CapabilityItem] = []; @State private var tools: [CapabilityItem] = []
     @State private var selectedKnowledge = ""; @State private var selectedSkills: Set<String> = []; @State private var selectedTools: Set<String> = []
@@ -592,6 +724,9 @@ private struct NativeAIWorkspaceView: View {
     @State private var pendingAttachmentIDs: [String] = []; @State private var pendingWebPages: [AIWebPage] = []
     @State private var showingWebURLInput = false; @State private var webURLText = ""; @State private var readingWebPage = false
     @State private var showingModelPicker = false; @State private var modelPickerQuery = ""
+    @State private var editingMessageID: String?
+    @State private var editingMessageText = ""
+    @State private var showingMessageEditor = false
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
     private var activeIndex: Int? { chats.firstIndex { $0.id == activeChatID } }
@@ -696,6 +831,7 @@ private struct NativeAIWorkspaceView: View {
         .sheet(isPresented: $showingTools) { toolsSheet }
         .sheet(isPresented: $showingKnowledge) { knowledgeSheet }
         .sheet(isPresented: $showingAttachmentActions, onDismiss: performPendingAttachmentAction) { attachmentSheet }
+        .sheet(isPresented: $showingMessageEditor) { messageEditorSheet }
         .fileImporter(isPresented: $importingFile, allowedContentTypes: [.pdf, .plainText, .json, .commaSeparatedText, .image, .data]) { result in Task { await importAttachment(result) } }
         .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItems, maxSelectionCount: max(4 - pendingImages.count, 1), matching: .images)
         .onChange(of: photoItems) { items in Task { await receivePhotos(items) } }
@@ -719,7 +855,20 @@ private struct NativeAIWorkspaceView: View {
                 LazyVStack(spacing: 14) {
                     chatEmptyState
                     ForEach(activeChat?.messages ?? []) { item in
-                        chatMessage(item).id(item.id)
+                        chatMessage(item)
+                            .id(item.id)
+                            .contextMenu {
+                                if item.role == "user" {
+                                    Button { beginEditing(item) } label: { Label("编辑并重新生成", systemImage: "pencil") }
+                                    Button { resendUserMessage(item) } label: { Label("重新发送", systemImage: "arrow.up.circle") }
+                                } else if !item.content.isEmpty {
+                                    Button { UIPasteboard.general.string = item.content } label: { Label("复制回答", systemImage: "doc.on.doc") }
+                                    Button { regenerate(item.id) } label: { Label("重新生成", systemImage: "arrow.clockwise") }
+                                }
+                                if !sending {
+                                    Button(role: .destructive) { deleteMessage(item.id) } label: { Label("删除消息", systemImage: "trash") }
+                                }
+                            }
                     }
                     Color.clear.frame(height: 1).id("ai-chat-bottom")
                 }
@@ -860,6 +1009,10 @@ private struct NativeAIWorkspaceView: View {
         .presentationDragIndicator(.visible)
     }
     @ViewBuilder private func chatMessage(_ item: AIChatMessage) -> some View {
+        let isCodeResponse = item.role == "assistant" && item.status != "streaming" && aiContentBlocks(item.content).contains { block in
+            if case .code = block { return true }
+            return false
+        }
         HStack {
             if item.role == "user" { Spacer(minLength: 48) }
             VStack(alignment: .leading, spacing: 8) {
@@ -885,7 +1038,7 @@ private struct NativeAIWorkspaceView: View {
                             Text("模型未返回内容").foregroundStyle(.secondary)
                         }
                     } else {
-                        AIMessageContent(content: item.content)
+                        AIMessageContent(content: item.content, isStreaming: item.status == "streaming")
                     }
                 }
                 if !item.webPages.isEmpty {
@@ -903,18 +1056,26 @@ private struct NativeAIWorkspaceView: View {
                 }
             }
             .padding(.trailing, item.role == "user" && (!item.content.isEmpty || !item.imageURLs.isEmpty) ? 20 : 0)
-            .padding(13)
+            .padding(item.role == "assistant" || isCodeResponse ? 0 : 13)
             .foregroundStyle(item.role == "user" ? Color.white : Color.primary)
-            .background(item.role == "user" ? Color.blue : Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 15))
+            .background(item.role == "assistant" || isCodeResponse ? Color.clear : Color.blue, in: RoundedRectangle(cornerRadius: 15))
             .overlay(alignment: .bottomTrailing) {
                 if item.role == "user" && (!item.content.isEmpty || !item.imageURLs.isEmpty) {
-                    Button { resendUserMessage(item) } label: {
-                        Image(systemName: "arrow.up.circle")
-                            .font(.caption.weight(.semibold))
-                            .frame(width: 28, height: 28)
+                    HStack(spacing: 2) {
+                        Button { beginEditing(item) } label: {
+                            Image(systemName: "pencil")
+                                .font(.caption2.weight(.semibold))
+                                .frame(width: 28, height: 28)
+                        }
+                        .accessibilityLabel("编辑消息")
+                        Button { resendUserMessage(item) } label: {
+                            Image(systemName: "arrow.up.circle")
+                                .font(.caption.weight(.semibold))
+                                .frame(width: 28, height: 28)
+                        }
+                        .accessibilityLabel("重新发送消息")
                     }
                     .foregroundStyle(.white.opacity(0.9))
-                    .accessibilityLabel("重新发送消息")
                     .disabled(sending)
                     .padding(.trailing, 5)
                     .padding(.bottom, 4)
@@ -1015,6 +1176,29 @@ private struct NativeAIWorkspaceView: View {
         .presentationDetents([.height(320)])
         .presentationDragIndicator(.visible)
     }
+    private var messageEditorSheet: some View {
+        NavigationStack {
+            TextEditor(text: $editingMessageText)
+                .textSelection(.enabled)
+                .padding(12)
+                .scrollContentBackground(.hidden)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                .padding()
+                .navigationTitle("编辑消息")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { showingMessageEditor = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("重新生成") { applyMessageEdit() }
+                            .disabled(editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
     private func queueAttachmentAction(_ action: AIComposerAttachmentAction) {
         pendingAttachmentAction = action
         showingAttachmentActions = false
@@ -1053,7 +1237,63 @@ private struct NativeAIWorkspaceView: View {
     private var canSend: Bool { !sending && (!question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty || !pendingAttachmentIDs.isEmpty || !pendingWebPages.isEmpty) }
     private var activeTools: Bool { webSearch || imageMode || knowledgeEnabled || !selectedSkills.isEmpty || !selectedTools.isEmpty || !pendingAttachmentIDs.isEmpty || !pendingWebPages.isEmpty }
     private var knowledgeLabel: String { knowledge.first(where: { $0.id == selectedKnowledge })?.name ?? "全部知识" }
-    private var historySheet: some View { NavigationStack { List { ForEach(chats.sorted { $0.updatedAt > $1.updatedAt }) { chat in Button { activeChatID = chat.id; if let chatModel = chat.modelID, !chatModel.isEmpty { selectedModel = chatModel; persistSelectedModel(); applySelectedModelConfiguration() }; showingHistory = false } label: { HStack { Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left").foregroundStyle(chat.favorite ? .yellow : .secondary); VStack(alignment: .leading) { Text(chat.title).foregroundStyle(.primary); Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary) } } }.swipeActions { Button("删除", role: .destructive) { Task { await delete(chat) } }; Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange); Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow); Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue) } } }.navigationTitle("历史会话").toolbar { if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }; Button("完成") { showingHistory = false } } } }
+    private var historySheet: some View {
+        NavigationStack {
+            List {
+                ForEach(filteredHistoryChats) { chat in
+                    Button {
+                        activeChatID = chat.id
+                        if let chatModel = chat.modelID, !chatModel.isEmpty {
+                            selectedModel = chatModel
+                            persistSelectedModel()
+                            applySelectedModelConfiguration()
+                        }
+                        showingHistory = false
+                    } label: {
+                        HStack {
+                            Image(systemName: chat.favorite ? "star.fill" : chat.archived ? "archivebox" : "bubble.left")
+                                .foregroundStyle(chat.favorite ? .yellow : .secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(chat.title).foregroundStyle(.primary).lineLimit(2)
+                                Text(shortTimestamp(chat.updatedAt)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .swipeActions {
+                        Button("删除", role: .destructive) { Task { await delete(chat) } }
+                        Button(chat.archived ? "恢复" : "归档") { update(chat, archived: !chat.archived) }.tint(.orange)
+                        Button(chat.favorite ? "取消收藏" : "收藏") { update(chat, favorite: !chat.favorite) }.tint(.yellow)
+                        Button("重命名") { renaming = chat; renameText = chat.title }.tint(.blue)
+                    }
+                }
+                if filteredHistoryChats.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
+                        Text("没有匹配的会话").font(.headline)
+                        Text("尝试搜索会话标题或消息内容").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 48)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("历史会话")
+            .searchable(text: $historyQuery, prompt: "搜索会话或消息")
+            .toolbar {
+                if let chat = activeChat { ShareLink(item: exportText(chat)) { Image(systemName: "square.and.arrow.up") } }
+                Button("完成") { showingHistory = false }
+            }
+        }
+    }
+    private var filteredHistoryChats: [AIChat] {
+        let query = historyQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sorted = chats.sorted { $0.updatedAt > $1.updatedAt }
+        guard !query.isEmpty else { return sorted }
+        return sorted.filter { chat in
+            chat.title.localizedCaseInsensitiveContains(query)
+                || chat.messages.contains { $0.content.localizedCaseInsensitiveContains(query) }
+        }
+    }
     private var toolsSheet: some View {
         NavigationStack {
             Form {
@@ -1165,6 +1405,8 @@ private struct NativeAIWorkspaceView: View {
         chats[index].messages.append(AIChatMessage(id: answerID, role: "assistant", content: "", status: "streaming"))
         if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }
         chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true
+        persistChatsLocally()
+        Task { await saveActiveChat() }
         streamTask = Task {
             do {
                 if imageMode {
@@ -1207,7 +1449,9 @@ private struct NativeAIWorkspaceView: View {
             }
             flushStreamBuffer(answerID: answerID)
             if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) {
-                chats[chatIndex].messages[messageIndex].status = chats[chatIndex].messages[messageIndex].content.isEmpty ? "empty" : "completed"
+                if chats[chatIndex].messages[messageIndex].status == "streaming" {
+                    chats[chatIndex].messages[messageIndex].status = chats[chatIndex].messages[messageIndex].content.isEmpty ? "empty" : "completed"
+                }
             }
             sending = false
             await saveActiveChat()
@@ -1223,7 +1467,7 @@ private struct NativeAIWorkspaceView: View {
         streamBuffer += chunk
         guard streamFlushTask == nil else { return }
         streamFlushTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
             flushStreamBuffer(answerID: answerID)
         }
@@ -1287,6 +1531,14 @@ private struct NativeAIWorkspaceView: View {
     private func update(_ chat: AIChat, favorite: Bool? = nil, archived: Bool? = nil) { guard let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; if let favorite { chats[index].favorite = favorite }; if let archived { chats[index].archived = archived }; activeChatID = chat.id; Task { await saveActiveChat() } }
     private func applyRename() { guard let chat = renaming, let index = chats.firstIndex(where: { $0.id == chat.id }) else { return }; chats[index].title = renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? chat.title : renameText; activeChatID = chat.id; renaming = nil; Task { await saveActiveChat() } }
     private func delete(_ chat: AIChat) async { let _: EmptyResponse? = try? await session.send("ai-api/chats/delete", method: "POST", body: ["id": chat.id, "user_id": session.currentUser?.id ?? 0], allowEmpty: true); chats.removeAll { $0.id == chat.id }; if activeChatID == chat.id { activeChatID = chats.first?.id ?? ""; if chats.isEmpty { createChat() } }; persistChatsLocally() }
+    private func deleteMessage(_ messageID: String) {
+        guard !sending, let index = activeIndex else { return }
+        chats[index].messages.removeAll { $0.id == messageID }
+        if chats[index].messages.isEmpty { chats[index].title = "新对话" }
+        chats[index].updatedAt = Date().timeIntervalSince1970
+        persistChatsLocally()
+        Task { await saveActiveChat() }
+    }
     private func regenerate(_ messageID: String) { guard let index = activeIndex, let answerIndex = chats[index].messages.firstIndex(where: { $0.id == messageID }), answerIndex > 0 else { return }; let value = chats[index].messages[..<answerIndex].last(where: { $0.role == "user" })?.content ?? ""; chats[index].messages.removeSubrange((answerIndex - 1)...answerIndex); question = value; send() }
     private func resendUserMessage(_ item: AIChatMessage) {
         guard !sending,
@@ -1301,6 +1553,32 @@ private struct NativeAIWorkspaceView: View {
         pendingAttachmentIDs = item.fileIDs
         pendingWebPages = item.webPages
         error = nil
+        send()
+    }
+    private func beginEditing(_ item: AIChatMessage) {
+        guard !sending, item.role == "user" else { return }
+        editingMessageID = item.id
+        editingMessageText = item.content
+        showingMessageEditor = true
+    }
+    private func applyMessageEdit() {
+        let value = editingMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !sending,
+              let messageID = editingMessageID,
+              let index = activeIndex,
+              let messageIndex = chats[index].messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let item = chats[index].messages[messageIndex]
+        let restoredImages = item.imageURLs.map { source in
+            PendingChatImage(image: nativeInlineImage(source) ?? UIImage(systemName: "photo")!, dataURL: source)
+        }
+        chats[index].messages.removeSubrange(messageIndex..<chats[index].messages.count)
+        question = value
+        pendingImages = restoredImages
+        pendingAttachmentIDs = item.fileIDs
+        pendingWebPages = item.webPages
+        editingMessageID = nil
+        editingMessageText = ""
+        showingMessageEditor = false
         send()
     }
     private func exportText(_ chat: AIChat) -> String { chat.messages.map { "\($0.role == "user" ? "我" : "AI")：\($0.content)" }.joined(separator: "\n\n") }
@@ -6011,7 +6289,21 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         guard let url = URL(string: "ai-api/chat/stream", relativeTo: origin) else { throw NativeAPIError.invalidResponse }
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 45; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyWorkspaceHeaders(to: &request, path: "ai-api/chat/stream")
-        let contextMessages = history.filter { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.suffix(20)
+        let contextMessages = history
+            .filter { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .suffix(20)
+            .map { item -> AIChatMessage in
+                var bounded = item
+                if bounded.content.count > 12_000 {
+                    bounded.content = "…\n" + String(bounded.content.suffix(12_000))
+                }
+                // Keep prior remote references, but never resend large inline image payloads.
+                bounded.imageURLs = bounded.imageURLs.filter { !$0.hasPrefix("data:image/") }.prefix(4).map { $0 }
+                bounded.webPages = bounded.webPages.map { page in
+                    AIWebPage(url: page.url, title: page.title, summary: page.summary, content: String(page.content.prefix(4_000)))
+                }
+                return bounded
+            }
         let contextualQuestion: String
         if contextMessages.isEmpty {
             contextualQuestion = question
@@ -6035,7 +6327,7 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
             "documents": documents.map(\.body),
             "skill_ids": skillIDs,
             "tool_ids": toolIDs,
-            "history": history.map { item in
+            "history": contextMessages.map { item in
                 var value: [String: Any] = ["role": item.role, "content": item.content]
                 if !item.imageURLs.isEmpty { value["image_urls"] = item.imageURLs }
                 if !item.fileIDs.isEmpty { value["file_ids"] = item.fileIDs }
@@ -6055,28 +6347,38 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
         if let chatID, !chatID.isEmpty { body["chat_id"] = chatID }
         if let modelSystemPrompt, !modelSystemPrompt.isEmpty { body["system_prompt"] = modelSystemPrompt }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
-            var raw = Data()
-            for try await byte in bytes { raw.append(byte) }
-            let payload = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any]
-            let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "AI 服务返回错误（\(http.statusCode)）"
-            throw NativeAPIError.server(http.statusCode, detail)
+        var attempt = 0
+        while true {
+            var receivedChunk = false
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard let http = response as? HTTPURLResponse else { throw NativeAPIError.invalidResponse }
+                guard (200..<300).contains(http.statusCode) else {
+                    var raw = Data()
+                    for try await byte in bytes { raw.append(byte) }
+                    let payload = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any]
+                    let detail = payload?["error"] as? String ?? payload?["detail"] as? String ?? "AI 服务返回错误（\(http.statusCode)）"
+                    throw NativeAPIError.server(http.statusCode, detail)
+                }
+                for try await line in bytes.lines {
+                    try Task.checkCancellation()
+                    let normalizedLine = line.hasPrefix("data:") ? String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces) : line
+                    if normalizedLine == "[DONE]" { break }
+                    guard let data = normalizedLine.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                    if let streamError = object["error"] as? String, !streamError.isEmpty { throw NativeAPIError.server(502, streamError) }
+                    let content = aiStreamText(from: object)
+                    guard let content, !content.isEmpty else { continue }
+                    receivedChunk = true
+                    onChunk(content)
+                }
+                if !receivedChunk { throw NativeAPIError.server(502, "AI 模型没有返回内容，请检查模型账号是否可用。") }
+                return
+            } catch {
+                guard attempt == 0, !receivedChunk, shouldRetryAIRequest(error) else { throw error }
+                attempt += 1
+                try await Task.sleep(nanoseconds: 700_000_000)
+            }
         }
-        var receivedChunk = false
-        for try await line in bytes.lines {
-            try Task.checkCancellation()
-            let normalizedLine = line.hasPrefix("data:") ? String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces) : line
-            if normalizedLine == "[DONE]" { break }
-            guard let data = normalizedLine.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            if let streamError = object["error"] as? String, !streamError.isEmpty { throw NativeAPIError.server(502, streamError) }
-            let content = aiStreamText(from: object)
-            guard let content, !content.isEmpty else { continue }
-            receivedChunk = true
-            onChunk(content)
-        }
-        if !receivedChunk { throw NativeAPIError.server(502, "AI 模型没有返回内容，请检查模型账号是否可用。") }
     }
 
     func logout() async {
@@ -6095,6 +6397,16 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
             }
         }
         return "数据加载失败，请检查网络后重试。"
+    }
+
+    private func shouldRetryAIRequest(_ error: Error) -> Bool {
+        if case let NativeAPIError.server(status, _) = error {
+            return [408, 425, 429, 500, 502, 503, 504].contains(status)
+        }
+        if let network = error as? URLError {
+            return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet].contains(network.code)
+        }
+        return false
     }
 
     private func applyWorkspaceHeaders(to request: inout URLRequest, path: String) {
