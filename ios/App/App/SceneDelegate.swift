@@ -2511,7 +2511,6 @@ private struct NativeLedgerView: View {
     @State private var hasDateFilter = false
     @State private var showingDateFilter = false
     @State private var statisticPeriod = "day"
-    @State private var deletingExpenseID: Int?
 
     private var filtered: [CompanyExpense] {
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
@@ -2536,67 +2535,49 @@ private struct NativeLedgerView: View {
 
     var body: some View {
         NativeNavigationContainer(embedded: embedded) {
-            List {
-                if let summary {
-                    ExpenseSummaryCard(summary: summary)
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    Picker("统计周期", selection: $statisticPeriod) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented)
-                    ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 16) { ForEach(statisticBuckets, id: \.0) { bucket in VStack(spacing: 4) { Text(money(bucket.1)).font(.caption2).monospacedDigit().foregroundStyle(.secondary); RoundedRectangle(cornerRadius: 5).fill(Color.blue).frame(width: 28, height: max(CGFloat(bucket.1 / statisticMaximum) * 110, 5)); Text(statisticPeriod == "day" ? String(bucket.0.suffix(5)) : statisticPeriod == "month" ? String(bucket.0.suffix(2)) + "月" : bucket.0).font(.caption2).monospacedDigit() } } }.frame(height: 145, alignment: .bottom).padding(.vertical, 6) }
-                }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 14))
-                if let error {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 4)
-                }
-                if loading && records.isEmpty {
-                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 44)
-                } else if groupedByDay.isEmpty {
-                    NativeEmptyState(icon: query.isEmpty ? "tray" : "magnifyingglass", title: query.isEmpty ? "暂无记账记录" : "没有匹配记录", message: query.isEmpty ? "完成第一笔公司消费后会显示在这里" : "尝试搜索其他分类、账户或说明")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 30)
-                } else {
-                    ForEach(groupedByDay, id: \.0) { day, items in
-                        Section {
-                            ForEach(items) { item in
-                                HStack(spacing: 0) {
-                                    NavigationLink { ExpenseDetail(item: item) } label: {
-                                        ExpenseLedgerRow(item: item)
-                                    }
-                                    Button { deleting = item } label: {
-                                        Image(systemName: "trash")
-                                            .frame(width: 44, height: 44)
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .tint(.red)
-                                    .accessibilityLabel("删除\(item.category)记账记录")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let summary { ExpenseSummaryCard(summary: summary) }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("统计周期", selection: $statisticPeriod) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented)
+                        ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 16) { ForEach(statisticBuckets, id: \.0) { bucket in VStack(spacing: 4) { Text(money(bucket.1)).font(.caption2).monospacedDigit().foregroundStyle(.secondary); RoundedRectangle(cornerRadius: 5).fill(Color.blue).frame(width: 28, height: max(CGFloat(bucket.1 / statisticMaximum) * 110, 5)); Text(statisticPeriod == "day" ? String(bucket.0.suffix(5)) : statisticPeriod == "month" ? String(bucket.0.suffix(2)) + "月" : bucket.0).font(.caption2).monospacedDigit() } } }.frame(height: 145, alignment: .bottom).padding(.vertical, 6) }
+                    }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 14))
+                    if let error {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 4)
+                    }
+                    if loading && records.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 44)
+                    } else if groupedByDay.isEmpty {
+                        NativeEmptyState(icon: query.isEmpty ? "tray" : "magnifyingglass", title: query.isEmpty ? "暂无记账记录" : "没有匹配记录", message: query.isEmpty ? "完成第一笔公司消费后会显示在这里" : "尝试搜索其他分类、账户或说明")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 30)
+                    } else {
+                        ForEach(groupedByDay, id: \.0) { day, items in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(dayLabel(day)).font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Text("\(items.count) 笔").font(.caption).foregroundStyle(.secondary)
                                 }
-                                .disabled(deletingExpenseID != nil)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button { deleting = item } label: {
-                                        Label("删除", systemImage: "trash")
-                                    }.tint(.red)
-                                    Button { editing = item; showingForm = true } label: {
-                                        Label("编辑", systemImage: "pencil")
-                                    }.tint(.blue)
+                                VStack(spacing: 0) {
+                                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                        ExpenseSwipeRow(item: item, onDelete: { deleting = item }, onEdit: { editing = item; showingForm = true }) { ExpenseDetail(item: item) }
+                                        if index < items.count - 1 { Divider().padding(.leading, 72) }
+                                    }
                                 }
-                            }
-                        } header: {
-                            HStack {
-                                Text(dayLabel(day))
-                                Spacer()
-                                Text("\(items.count) 笔")
+                                .background(.background, in: RoundedRectangle(cornerRadius: 14))
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
                             }
                         }
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .padding(.bottom, 20)
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
             .background(Color(.systemGroupedBackground))
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }
@@ -2649,20 +2630,8 @@ private struct NativeLedgerView: View {
     }
 
     private func remove(_ item: CompanyExpense) async {
-        guard deletingExpenseID == nil else { return }
-        deletingExpenseID = item.id
-        error = nil
-        defer { deletingExpenseID = nil }
-        do {
-            try await session.delete("company-expenses/\(item.id)")
-            records.removeAll { $0.id == item.id }
-            deleting = nil
-            // Refresh the summary after a successful deletion as well as the chart.
-            summary = try await session.get("company-expenses/summary")
-        } catch {
-            self.error = session.message(for: error)
-            deleting = nil
-        }
+        do { try await session.delete("company-expenses/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
+        catch { self.error = session.message(for: error); deleting = nil }
     }
 }
 
@@ -2746,7 +2715,15 @@ private struct ExpenseLedgerRow: View {
 private struct ExpenseSwipeRow<Destination: View>: View {
     let item: CompanyExpense; let onDelete: () -> Void; let onEdit: () -> Void; let destination: () -> Destination
     @State private var offset: CGFloat = 0
-    var body: some View { HStack(spacing: 0) { NavigationLink(destination: destination) { ExpenseLedgerRow(item: item) }.buttonStyle(.plain); Button("??", action: onEdit).frame(width: 58, height: 72).background(.blue).foregroundStyle(.white); Button("??", role: .destructive, action: onDelete).frame(width: 58, height: 72).background(.red).foregroundStyle(.white) }.offset(x: offset).gesture(DragGesture(minimumDistance: 12).onChanged { value in offset = min(0, max(-116, value.translation.width)) }.onEnded { value in withAnimation { offset = value.translation.width < -45 ? -116 : 0 } }) }
+    var body: some View {
+        HStack(spacing: 0) {
+            NavigationLink(destination: destination) { ExpenseLedgerRow(item: item) }.buttonStyle(.plain)
+            Button("??", action: onEdit).frame(width: 58, height: 72).background(Color.blue).foregroundStyle(.white)
+            Button("??", role: .destructive, action: onDelete).frame(width: 58, height: 72).background(Color.red).foregroundStyle(.white)
+        }.offset(x: offset)
+        .gesture(DragGesture(minimumDistance: 12).onChanged { value in offset = min(0, max(-116, value.translation.width)) }.onEnded { value in withAnimation(.easeOut(duration: 0.18)) { offset = value.translation.width < -45 ? -116 : 0 } })
+        .animation(.easeOut(duration: 0.18), value: offset)
+    }
 }
 
 private func expenseCategoryIcon(_ value: String) -> String {
