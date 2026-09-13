@@ -292,6 +292,7 @@ private struct NativeNavigationContainer<Content: View>: View {
 private struct NativeWorkbenchView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var query = ""
+    @State private var selectedStore = "全部店铺"
     private let groups: [(String, [(String, String, Color, NativeDestination)])] = [
         ("任务记账", [("任务记录", "doc.text", .indigo, .tasks), ("负责人管理", "person.badge.plus", .cyan, .owners), ("钉钉利润", "chart.bar", .orange, .profits), ("公司记账", "creditcard", .blue, .expenses)]),
         ("店铺管理", [("生意参谋", "chart.bar", .teal, .sycm), ("店铺账号", "storefront", .mint, .shops), ("同行店铺", "building.2", .green, .peers), ("执照档案", "doc.badge.gearshape", .pink, .licenses), ("账号使用", "person.text.rectangle", .teal, .accountUsage), ("手机设备", "iphone", .cyan, .devices)]),
@@ -345,7 +346,7 @@ private struct NativeProfitView: View {
     @State private var error: String?
     private var filtered: [ProfitRecord] {
         rows
-            .filter { query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query) }
+            .filter { (selectedStore == "全部店铺" || $0.storeName == selectedStore) && (query.isEmpty || "\($0.storeName) \($0.reporterName) \($0.reportDate)".localizedCaseInsensitiveContains(query)) }
             .sorted {
                 let left = normalizedProfitDate($0.reportDate)
                 let right = normalizedProfitDate($1.reportDate)
@@ -354,14 +355,14 @@ private struct NativeProfitView: View {
             }
     }
     private var buckets: [(String, Double)] {
-        if period == "month", !months.isEmpty {
-            return months.map { (normalizedProfitMonth($0.month), $0.totalProfit) }.sorted { $0.0 > $1.0 }
+        if period == "month" || period == "year" {
+            let grouped = Dictionary(grouping: filtered) { item in
+                let date = normalizedProfitDate(item.reportDate)
+                return period == "month" ? String(date.prefix(7)) : String(date.prefix(4))
+            }
+            return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.profit }) }.sorted { $0.0 > $1.0 }
         }
-        if period == "year", !months.isEmpty {
-            let grouped = Dictionary(grouping: months) { String(normalizedProfitMonth($0.month).prefix(4)) }
-            return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.totalProfit }) }.sorted { $0.0 > $1.0 }
-        }
-        let grouped = Dictionary(grouping: rows) { normalizedProfitDate($0.reportDate) }
+        let grouped = Dictionary(grouping: filtered) { normalizedProfitDate($0.reportDate) }
         return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.profit }) }.sorted { $0.0 > $1.0 }
     }
     private var maximum: Double { max(buckets.map { abs($0.1) }.max() ?? 1, 1) }
@@ -369,7 +370,7 @@ private struct NativeProfitView: View {
         List {
             if let error { Text(error).foregroundStyle(.red) }
             Section { HStack { Metric(title: "累计利润", value: money(summary?.totalProfit ?? 0)); Metric(title: "店铺数", value: "\(summary?.uniqueStoreCount ?? 0) 家"); Metric(title: "报表人数", value: "\(summary?.uniqueReporterCount ?? 0) 人") } }
-            Section { Picker("统计周期", selection: $period) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented) }
+            Section { Picker("店铺", selection: $selectedStore) { Text("全部店铺").tag("全部店铺"); ForEach(Array(Set(rows.map(\.storeName)).sorted()), id: \.self) { Text($0).tag($0) } }; Picker("统计周期", selection: $period) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented) }
             Section(period == "day" ? "日利润趋势" : period == "year" ? "年度利润趋势" : "月度利润趋势") { ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 18) { ForEach(buckets, id: \.0) { item in VStack { Text(money(item.1)).font(.caption2).monospacedDigit().foregroundStyle(item.1 < 0 ? .red : .secondary); RoundedRectangle(cornerRadius: 5).fill(item.1 < 0 ? Color.red : Color.blue).frame(width: 28, height: max(CGFloat(abs(item.1) / maximum) * 115, 5)); Text(period == "day" ? String(item.0.suffix(5)) : period == "month" ? String(item.0.suffix(2)) + "月" : item.0).font(.caption).monospacedDigit() }.accessibilityElement(children: .combine).accessibilityLabel("\(item.0)，利润 \(money(item.1))") } }.frame(height: 165, alignment: .bottom).padding(.vertical, 8) } }
             Section("利润明细") { ForEach(filtered) { item in HStack { VStack(alignment: .leading, spacing: 4) { Text(item.storeName).fontWeight(.medium); Text("\(normalizedProfitDate(item.reportDate)) · \(item.reporterName)").font(.caption).monospacedDigit().foregroundStyle(.secondary) }; Spacer(); Text(money(item.profit)).monospacedDigit().foregroundStyle(item.profit < 0 ? .red : .green) } } }
         }.listStyle(.plain).navigationTitle("钉钉利润").searchable(text: $query, prompt: "搜索店铺、上报人或日期").task { await load() }.refreshable { await load() }
@@ -1025,8 +1026,8 @@ private struct NativeAIWorkspaceView: View {
                         }
                     }
                 }
-                if let imageURL = generatedImageURL(item.content) {
-                    CachedRemoteImage(url: imageURL, contentMode: .fit, maxPixelSize: 1600, placeholder: ProgressView()).frame(maxWidth: .infinity).frame(height: 280)
+                if let imageSource = generatedImageSource(item.content) {
+                    NativeChatImage(source: imageSource).frame(maxWidth: .infinity).frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
                     if item.content.isEmpty {
                         if isGenerating(item) {
@@ -1410,7 +1411,9 @@ private struct NativeAIWorkspaceView: View {
         streamTask = Task {
             do {
                 if imageMode {
-                    let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: ["prompt": value, "model_id": selectedModel, "size": imageSize], timeout: .infinity)
+                    var imageBody: [String: Any] = ["prompt": value, "model_id": selectedModel, "size": imageSize]
+                    if !images.isEmpty { imageBody["image_urls"] = images }
+                    let response: ImageGenerationResponse = try await session.send("ai-api/images/generations", method: "POST", body: imageBody, timeout: .infinity)
                     if let chatIndex = chats.firstIndex(where: { $0.id == activeChatID }), let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == answerID }) { chats[chatIndex].messages[messageIndex].content = "image:\(response.url)" }
                 } else {
                     var documents: [SearchDocument] = []
@@ -1582,7 +1585,7 @@ private struct NativeAIWorkspaceView: View {
         send()
     }
     private func exportText(_ chat: AIChat) -> String { chat.messages.map { "\($0.role == "user" ? "我" : "AI")：\($0.content)" }.joined(separator: "\n\n") }
-    private func generatedImageURL(_ content: String) -> URL? { guard content.hasPrefix("image:") else { return nil }; return URL(string: String(content.dropFirst(6))) }
+    private func generatedImageSource(_ content: String) -> String? { guard content.hasPrefix("image:") else { return nil }; let source = String(content.dropFirst(6)); return source.isEmpty ? nil : source }
     private var localChatsKey: String { "native-ai-chats-\(session.currentUser?.id ?? 0)" }
     private var modelCacheKey: String { "native-ai-models-\(session.currentUser?.id ?? 0)" }
     private func restoreCachedModels() {
@@ -2104,6 +2107,7 @@ private struct NativeTaskView: View {
                             }
                         }.padding(.vertical, 4) }
                         .swipeActions(edge: .leading) { Button("编辑") { editing = item; showingForm = true }.tint(.blue) }
+                        .swipeActions(edge: .trailing) { Button("删除", role: .destructive) { Task { await deleteRecord(item) } } }
                         .tag(item.id)
                     }
                      if hasMore {
@@ -2151,6 +2155,7 @@ private struct NativeTaskView: View {
     }
     private func batchStatus(_ field: String) async { do { let _: EmptyResponse = try await session.send("task-bookkeeping/records/batch-status", method: "PATCH", body: ["record_ids": Array(selectedIDs), "field": field, "value": "completed"], allowEmpty: true); selectedIDs.removeAll(); editMode = .inactive; await load(reset: true) } catch { self.error = session.message(for: error) } }
     private func batchDelete() async { do { let _: EmptyResponse = try await session.send("task-bookkeeping/records/batch-delete", method: "POST", body: ["record_ids": Array(selectedIDs)], allowEmpty: true); selectedIDs.removeAll(); editMode = .inactive; await load(reset: true) } catch { self.error = session.message(for: error) } }
+    private func deleteRecord(_ item: TaskRecord) async { do { let _: EmptyResponse = try await session.send("task-bookkeeping/records/batch-delete", method: "POST", body: ["record_ids": [item.id]], allowEmpty: true); records.removeAll { $0.id == item.id }; await load(reset: true) } catch { self.error = session.message(for: error) } }
 }
 
 private struct TaskCSVDocument: FileDocument {
@@ -2278,7 +2283,7 @@ private struct NativeQuickLedgerView: View {
     @EnvironmentObject private var session: NativeSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var amount = ""
-    @State private var category = "办公用品"
+    @State private var category = "其他消费"
     @State private var note = ""
     @State private var saving = false
     @State private var error: String?
@@ -2492,6 +2497,7 @@ private struct NativeLedgerView: View {
     @State private var filterDate = Date()
     @State private var hasDateFilter = false
     @State private var showingDateFilter = false
+    @State private var statisticPeriod = "day"
 
     private var filtered: [CompanyExpense] {
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
@@ -2503,12 +2509,26 @@ private struct NativeLedgerView: View {
         }
     }
     private var groupedByDay: [(String, [CompanyExpense])] { Dictionary(grouping: filtered, by: { $0.expenseDate }).map { ($0.key, $0.value.sorted { $0.id > $1.id }) }.sorted { $0.0 > $1.0 } }
+    private var statisticBuckets: [(String, Double)] {
+        let grouped = Dictionary(grouping: records) { item -> String in
+            let date = String(item.expenseDate.prefix(10))
+            if statisticPeriod == "month" { return String(date.prefix(7)) }
+            if statisticPeriod == "year" { return String(date.prefix(4)) }
+            return date
+        }
+        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.amount }) }.sorted { $0.0 > $1.0 }
+    }
+    private var statisticMaximum: Double { max(statisticBuckets.map { $0.1 }.max() ?? 1, 1) }
 
     var body: some View {
         NativeNavigationContainer(embedded: embedded) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let summary { ExpenseSummaryCard(summary: summary) }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("统计周期", selection: $statisticPeriod) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented)
+                        ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 16) { ForEach(statisticBuckets, id: \.0) { bucket in VStack(spacing: 4) { Text(money(bucket.1)).font(.caption2).monospacedDigit().foregroundStyle(.secondary); RoundedRectangle(cornerRadius: 5).fill(Color.blue).frame(width: 28, height: max(CGFloat(bucket.1 / statisticMaximum) * 110, 5)); Text(statisticPeriod == "day" ? String(bucket.0.suffix(5)) : statisticPeriod == "month" ? String(bucket.0.suffix(2)) + "月" : bucket.0).font(.caption2).monospacedDigit() } } }.frame(height: 145, alignment: .bottom).padding(.vertical, 6) }
+                    }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 14))
                     if let error {
                         Label(error, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
