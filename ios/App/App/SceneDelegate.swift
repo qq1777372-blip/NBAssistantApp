@@ -2535,7 +2535,7 @@ private struct NativeLedgerView: View {
 
     var body: some View {
         NativeNavigationContainer(embedded: embedded) {
-            ScrollView {
+            List {
                 VStack(alignment: .leading, spacing: 16) {
                     if let summary { ExpenseSummaryCard(summary: summary) }
                     VStack(alignment: .leading, spacing: 10) {
@@ -2564,7 +2564,12 @@ private struct NativeLedgerView: View {
                                 }
                                 VStack(spacing: 0) {
                                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                        ExpenseSwipeRow(item: item, onDelete: { deleting = item }, onEdit: { editing = item; showingForm = true }) { ExpenseDetail(item: item) }
+                                        NavigationLink { ExpenseDetail(item: item) } label: { ExpenseLedgerRow(item: item) }
+                                            .buttonStyle(.plain)
+                                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                                Button { deleting = item } label: { Label("删除", systemImage: "trash") }.tint(.red)
+                                                Button { editing = item; showingForm = true } label: { Label("编辑", systemImage: "pencil") }.tint(.blue)
+                                            }
                                         if index < items.count - 1 { Divider().padding(.leading, 72) }
                                     }
                                 }
@@ -2574,10 +2579,12 @@ private struct NativeLedgerView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .padding(.bottom, 20)
+                }
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .background(Color(.systemGroupedBackground))
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }
@@ -2709,20 +2716,6 @@ private struct ExpenseLedgerRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
-    }
-}
-
-private struct ExpenseSwipeRow<Destination: View>: View {
-    let item: CompanyExpense; let onDelete: () -> Void; let onEdit: () -> Void; let destination: () -> Destination
-    @State private var offset: CGFloat = 0
-    var body: some View {
-        HStack(spacing: 0) {
-            NavigationLink(destination: destination) { ExpenseLedgerRow(item: item) }.buttonStyle(.plain)
-            Button("??", action: onEdit).frame(width: 58, height: 72).background(Color.blue).foregroundStyle(.white)
-            Button("??", role: .destructive, action: onDelete).frame(width: 58, height: 72).background(Color.red).foregroundStyle(.white)
-        }.offset(x: offset)
-        .gesture(DragGesture(minimumDistance: 12).onChanged { value in offset = min(0, max(-116, value.translation.width)) }.onEnded { value in withAnimation(.easeOut(duration: 0.18)) { offset = value.translation.width < -45 ? -116 : 0 } })
-        .animation(.easeOut(duration: 0.18), value: offset)
     }
 }
 
