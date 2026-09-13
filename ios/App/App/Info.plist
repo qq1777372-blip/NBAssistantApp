@@ -26,6 +26,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用于 AI 工作台的语音输入和转写功能</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>用于将 AI 生成的图片保存到照片</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

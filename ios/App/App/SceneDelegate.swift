@@ -1027,7 +1027,10 @@ private struct NativeAIWorkspaceView: View {
                     }
                 }
                 if let imageSource = generatedImageSource(item.content) {
-                    NativeChatImage(source: imageSource).frame(maxWidth: .infinity).frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 8) {
+                        NativeChatImage(source: imageSource).frame(maxWidth: 520).frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 12))
+                        HStack { Button { saveGeneratedImage(imageSource) } label: { Label("保存图片", systemImage: "arrow.down.circle") }; Spacer() }.font(.caption)
+                    }
                 } else {
                     if item.content.isEmpty {
                         if isGenerating(item) {
@@ -1586,6 +1589,13 @@ private struct NativeAIWorkspaceView: View {
     }
     private func exportText(_ chat: AIChat) -> String { chat.messages.map { "\($0.role == "user" ? "我" : "AI")：\($0.content)" }.joined(separator: "\n\n") }
     private func generatedImageSource(_ content: String) -> String? { guard content.hasPrefix("image:") else { return nil }; let source = String(content.dropFirst(6)); return source.isEmpty ? nil : source }
+    private func saveGeneratedImage(_ source: String) {
+        guard source.hasPrefix("data:image/"),
+              let comma = source.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(source[source.index(after: comma)...])),
+              let image = UIImage(data: data) else { return }
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+    }
     private var localChatsKey: String { "native-ai-chats-\(session.currentUser?.id ?? 0)" }
     private var modelCacheKey: String { "native-ai-models-\(session.currentUser?.id ?? 0)" }
     private func restoreCachedModels() {
@@ -2498,6 +2508,7 @@ private struct NativeLedgerView: View {
     @State private var hasDateFilter = false
     @State private var showingDateFilter = false
     @State private var statisticPeriod = "day"
+    @State private var deletingExpenseID: Int?
 
     private var filtered: [CompanyExpense] {
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
@@ -2522,56 +2533,67 @@ private struct NativeLedgerView: View {
 
     var body: some View {
         NativeNavigationContainer(embedded: embedded) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let summary { ExpenseSummaryCard(summary: summary) }
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("统计周期", selection: $statisticPeriod) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented)
-                        ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 16) { ForEach(statisticBuckets, id: \.0) { bucket in VStack(spacing: 4) { Text(money(bucket.1)).font(.caption2).monospacedDigit().foregroundStyle(.secondary); RoundedRectangle(cornerRadius: 5).fill(Color.blue).frame(width: 28, height: max(CGFloat(bucket.1 / statisticMaximum) * 110, 5)); Text(statisticPeriod == "day" ? String(bucket.0.suffix(5)) : statisticPeriod == "month" ? String(bucket.0.suffix(2)) + "月" : bucket.0).font(.caption2).monospacedDigit() } } }.frame(height: 145, alignment: .bottom).padding(.vertical, 6) }
-                    }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 14))
-                    if let error {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 4)
-                    }
-                    if loading && records.isEmpty {
-                        ProgressView().frame(maxWidth: .infinity).padding(.vertical, 44)
-                    } else if groupedByDay.isEmpty {
-                        NativeEmptyState(icon: query.isEmpty ? "tray" : "magnifyingglass", title: query.isEmpty ? "暂无记账记录" : "没有匹配记录", message: query.isEmpty ? "完成第一笔公司消费后会显示在这里" : "尝试搜索其他分类、账户或说明")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 30)
-                    } else {
-                        ForEach(groupedByDay, id: \.0) { day, items in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(dayLabel(day)).font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    Text("\(items.count) 笔").font(.caption).foregroundStyle(.secondary)
-                                }
-                                VStack(spacing: 0) {
-                                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                        NavigationLink { ExpenseDetail(item: item) } label: {
-                                            ExpenseLedgerRow(item: item)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .swipeActions {
-                                            Button("删除", role: .destructive) { deleting = item }
-                                            Button("编辑") { editing = item; showingForm = true }.tint(.blue)
-                                        }
-                                        if index < items.count - 1 { Divider().padding(.leading, 72) }
+            List {
+                if let summary {
+                    ExpenseSummaryCard(summary: summary)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("统计周期", selection: $statisticPeriod) { Text("日").tag("day"); Text("月").tag("month"); Text("年").tag("year") }.pickerStyle(.segmented)
+                    ScrollView(.horizontal, showsIndicators: false) { HStack(alignment: .bottom, spacing: 16) { ForEach(statisticBuckets, id: \.0) { bucket in VStack(spacing: 4) { Text(money(bucket.1)).font(.caption2).monospacedDigit().foregroundStyle(.secondary); RoundedRectangle(cornerRadius: 5).fill(Color.blue).frame(width: 28, height: max(CGFloat(bucket.1 / statisticMaximum) * 110, 5)); Text(statisticPeriod == "day" ? String(bucket.0.suffix(5)) : statisticPeriod == "month" ? String(bucket.0.suffix(2)) + "月" : bucket.0).font(.caption2).monospacedDigit() } } }.frame(height: 145, alignment: .bottom).padding(.vertical, 6) }
+                }.padding(12).background(.background, in: RoundedRectangle(cornerRadius: 14))
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 4)
+                }
+                if loading && records.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 44)
+                } else if groupedByDay.isEmpty {
+                    NativeEmptyState(icon: query.isEmpty ? "tray" : "magnifyingglass", title: query.isEmpty ? "暂无记账记录" : "没有匹配记录", message: query.isEmpty ? "完成第一笔公司消费后会显示在这里" : "尝试搜索其他分类、账户或说明")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 30)
+                } else {
+                    ForEach(groupedByDay, id: \.0) { day, items in
+                        Section {
+                            ForEach(items) { item in
+                                HStack(spacing: 0) {
+                                    NavigationLink { ExpenseDetail(item: item) } label: {
+                                        ExpenseLedgerRow(item: item)
                                     }
+                                    Button { deleting = item } label: {
+                                        Image(systemName: "trash")
+                                            .frame(width: 44, height: 44)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .tint(.red)
+                                    .accessibilityLabel("删除\(item.category)记账记录")
                                 }
-                                .background(.background, in: RoundedRectangle(cornerRadius: 14))
-                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                                .disabled(deletingExpenseID != nil)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 8))
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button { deleting = item } label: {
+                                        Label("删除", systemImage: "trash")
+                                    }.tint(.red)
+                                    Button { editing = item; showingForm = true } label: {
+                                        Label("编辑", systemImage: "pencil")
+                                    }.tint(.blue)
+                                }
+                            }
+                        } header: {
+                            HStack {
+                                Text(dayLabel(day))
+                                Spacer()
+                                Text("\(items.count) 笔")
                             }
                         }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .padding(.bottom, 20)
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
             .background(Color(.systemGroupedBackground))
             .searchable(text: $query, prompt: "搜索分类、账户或说明")
             .refreshable { await load() }
@@ -2624,8 +2646,20 @@ private struct NativeLedgerView: View {
     }
 
     private func remove(_ item: CompanyExpense) async {
-        do { try await session.delete("company-expenses/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
-        catch { self.error = session.message(for: error); deleting = nil }
+        guard deletingExpenseID == nil else { return }
+        deletingExpenseID = item.id
+        error = nil
+        defer { deletingExpenseID = nil }
+        do {
+            try await session.delete("company-expenses/\(item.id)")
+            records.removeAll { $0.id == item.id }
+            deleting = nil
+            // Refresh the summary after a successful deletion as well as the chart.
+            summary = try await session.get("company-expenses/summary")
+        } catch {
+            self.error = session.message(for: error)
+            deleting = nil
+        }
     }
 }
 
