@@ -2579,7 +2579,6 @@ private struct NativeLedgerView: View {
                         }
                     }
                 }
-                }
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
             }
