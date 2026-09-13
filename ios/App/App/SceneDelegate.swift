@@ -1028,7 +1028,10 @@ private struct NativeAIWorkspaceView: View {
                 }
                 if let imageSource = generatedImageSource(item.content) {
                     VStack(alignment: .leading, spacing: 8) {
-                        NativeChatImage(source: imageSource).frame(maxWidth: 520).frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 12))
+                        NativeChatImage(source: imageSource)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: .infinity, maxHeight: 420, alignment: .leading)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
                         HStack { Button { saveGeneratedImage(imageSource) } label: { Label("保存图片", systemImage: "arrow.down.circle") }; Spacer() }.font(.caption)
                     }
                 } else {
@@ -2738,6 +2741,12 @@ private struct ExpenseLedgerRow: View {
         .padding(.vertical, 12)
         .contentShape(Rectangle())
     }
+}
+
+private struct ExpenseSwipeRow<Destination: View>: View {
+    let item: CompanyExpense; let onDelete: () -> Void; let onEdit: () -> Void; let destination: () -> Destination
+    @State private var offset: CGFloat = 0
+    var body: some View { HStack(spacing: 0) { NavigationLink(destination: destination) { ExpenseLedgerRow(item: item) }.buttonStyle(.plain); Button("??", action: onEdit).frame(width: 58, height: 72).background(.blue).foregroundStyle(.white); Button("??", role: .destructive, action: onDelete).frame(width: 58, height: 72).background(.red).foregroundStyle(.white) }.offset(x: offset).gesture(DragGesture(minimumDistance: 12).onChanged { value in offset = min(0, max(-116, value.translation.width)) }.onEnded { value in withAnimation { offset = value.translation.width < -45 ? -116 : 0 } }) }
 }
 
 private func expenseCategoryIcon(_ value: String) -> String {
