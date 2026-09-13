@@ -292,7 +292,6 @@ private struct NativeNavigationContainer<Content: View>: View {
 private struct NativeWorkbenchView: View {
     @EnvironmentObject private var session: NativeSession
     @State private var query = ""
-    @State private var selectedStore = "全部店铺"
     private let groups: [(String, [(String, String, Color, NativeDestination)])] = [
         ("任务记账", [("任务记录", "doc.text", .indigo, .tasks), ("负责人管理", "person.badge.plus", .cyan, .owners), ("钉钉利润", "chart.bar", .orange, .profits), ("公司记账", "creditcard", .blue, .expenses)]),
         ("店铺管理", [("生意参谋", "chart.bar", .teal, .sycm), ("店铺账号", "storefront", .mint, .shops), ("同行店铺", "building.2", .green, .peers), ("执照档案", "doc.badge.gearshape", .pink, .licenses), ("账号使用", "person.text.rectangle", .teal, .accountUsage), ("手机设备", "iphone", .cyan, .devices)]),
@@ -342,6 +341,7 @@ private struct NativeProfitView: View {
     @State private var months: [ProfitMonth] = []
     @State private var rows: [ProfitRecord] = []
     @State private var query = ""
+    @State private var selectedStore = "全部店铺"
     @State private var period = "day"
     @State private var error: String?
     private var filtered: [ProfitRecord] {
