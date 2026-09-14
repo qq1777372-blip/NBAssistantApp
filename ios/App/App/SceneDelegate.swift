@@ -879,7 +879,6 @@ private struct NativeAIWorkspaceView: View {
             .onAppear { scrollToBottom(proxy, animated: false) }
             .onChange(of: activeChatID) { _ in scrollToBottom(proxy, animated: false) }
             .onChange(of: activeChat?.messages.count ?? 0) { _ in scrollToBottom(proxy) }
-            .onChange(of: activeChat?.messages.last?.content.count ?? 0) { _ in scrollToBottom(proxy, animated: false) }
             .onChange(of: scrollRequest) { _ in scrollToBottom(proxy, animated: false) }
         }
     }
@@ -1413,7 +1412,6 @@ private struct NativeAIWorkspaceView: View {
         if chats[index].messages.count == 2 { chats[index].title = String(value.prefix(24)) }
         chats[index].modelID = selectedModel; chats[index].updatedAt = Date().timeIntervalSince1970; sending = true
         persistChatsLocally()
-        Task { await saveActiveChat() }
         streamTask = Task {
             do {
                 if imageMode {
@@ -1474,9 +1472,13 @@ private struct NativeAIWorkspaceView: View {
     }
     private func queueStreamChunk(_ chunk: String, answerID: String) {
         streamBuffer += chunk
+        if streamBuffer.count >= 96 {
+            flushStreamBuffer(answerID: answerID)
+            return
+        }
         guard streamFlushTask == nil else { return }
         streamFlushTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            try? await Task.sleep(nanoseconds: 60_000_000)
             guard !Task.isCancelled else { return }
             flushStreamBuffer(answerID: answerID)
         }
@@ -2511,10 +2513,17 @@ private struct NativeLedgerView: View {
     @State private var hasDateFilter = false
     @State private var showingDateFilter = false
     @State private var statisticPeriod = "day"
+    @State private var deletingExpenseID: Int?
+
+    private static let expenseDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     private var filtered: [CompanyExpense] {
-        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"
-        let dateKey = formatter.string(from: filterDate)
+        let dateKey = Self.expenseDateFormatter.string(from: filterDate)
         return records.filter { item in
             let matchesDate = !hasDateFilter || item.expenseDate == dateKey
             let matchesQuery = query.isEmpty || "\(item.expenseNo) \(item.category) \(item.paymentAccount) \(item.description) \(item.submitterName)".localizedCaseInsensitiveContains(query)
@@ -2636,8 +2645,19 @@ private struct NativeLedgerView: View {
     }
 
     private func remove(_ item: CompanyExpense) async {
-        do { try await session.delete("company-expenses/\(item.id)"); records.removeAll { $0.id == item.id }; deleting = nil }
-        catch { self.error = session.message(for: error); deleting = nil }
+        guard deletingExpenseID == nil else { return }
+        deletingExpenseID = item.id
+        error = nil
+        defer { deletingExpenseID = nil }
+        do {
+            try await session.delete("company-expenses/\(item.id)")
+            records.removeAll { $0.id == item.id }
+            deleting = nil
+            summary = try await session.get("company-expenses/summary")
+        } catch {
+            self.error = session.message(for: error)
+            deleting = nil
+        }
     }
 }
 
@@ -6526,22 +6546,8 @@ struct MultipartFile { let field: String; let filename: String; let data: Data; 
                 }
                 return bounded
             }
-        let contextualQuestion: String
-        if contextMessages.isEmpty {
-            contextualQuestion = question
-        } else {
-            let transcript = contextMessages.map { item in
-                let role = item.role == "user" ? "用户" : "助手"
-                return "\(role)：\(item.content)"
-            }.joined(separator: "\n")
-            contextualQuestion = """
-            请结合下面的历史对话理解当前问题。不要复述这段说明，也不要把历史问题当成当前问题；直接回答当前问题。
-            历史对话：
-            \(transcript)
-
-            当前问题：\(question)
-            """
-        }
+        // 历史消息通过 messages/history 传递一次，避免重复拼接进 question。
+        let contextualQuestion = question
         var body: [String: Any] = [
             "question": contextualQuestion,
             "image_urls": imageURLs,
