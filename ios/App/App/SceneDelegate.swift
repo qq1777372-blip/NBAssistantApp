@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 import WebKit
 import ImageIO
 import PhotosUI
-import AppIntents
 
 private let nativeExpenseShortcutPayloadKey = "native-expense-shortcut-payload"
 private let nativeExpenseShortcutNotification = Notification.Name("nativeExpenseShortcut")
@@ -96,62 +95,17 @@ private enum NativeExpenseOCRParser {
     }()
 }
 
-@available(iOS 16.0, *)
-struct QuickExpenseIntent: AppIntent {
-    static var title: LocalizedStringResource = "记一笔公司消费"
-    static var description = IntentDescription("打开公司记账并预填金额、分类和备注")
-    static var openAppWhenRun: Bool = true
-
-    @Parameter(title: "金额")
-    var amount: Double
-    @Parameter(title: "消费日期")
-    var expenseDate: String
-    @Parameter(title: "商户")
-    var merchant: String
-    @Parameter(title: "分类")
-    var category: String
-    @Parameter(title: "备注")
-    var note: String
-
-    init() {
-        amount = 0
-        expenseDate = ""
-        merchant = ""
-        category = "其他消费"
-        note = ""
-    }
-
-    func perform() async throws -> some IntentResult {
-        guard amount > 0 else {
-            throw NSError(domain: "NBAssistant.Shortcut", code: 1, userInfo: [NSLocalizedDescriptionKey: "金额必须大于 0"])
+private enum NativeExpenseShortcutURL {
+    static func handle(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "nbassistant",
+              url.host?.lowercased() == "shortcut",
+              url.path == "/expense",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let screenText = components.queryItems?.first(where: { $0.name == "text" })?.value,
+              let result = NativeExpenseOCRParser.parse(screenText) else {
+            return false
         }
-        let payload = NativeExpenseShortcutPayload(amount: amount, expenseDate: expenseDate, merchant: merchant, category: category, note: note, autoSubmit: true)
-        if let data = try? JSONEncoder().encode(payload) {
-            UserDefaults.standard.set(data, forKey: nativeExpenseShortcutPayloadKey)
-        }
-        NotificationCenter.default.post(name: nativeExpenseShortcutNotification, object: nil)
-        return .result(dialog: "已打开记账页面，请确认后保存")
-    }
-}
 
-@available(iOS 16.0, *)
-struct QuickExpenseFromTextIntent: AppIntent {
-    static var title: LocalizedStringResource = "截图快捷记账"
-    static var description = IntentDescription("接收支付截图识别出的文字，自动记账")
-    static var openAppWhenRun: Bool = true
-
-    @Parameter(title: "屏幕文字")
-    var screenText: String
-
-    init() { screenText = "" }
-
-    func perform() async throws -> some IntentResult {
-        guard !screenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .result(dialog: "请先在快捷指令中传入支付页面文字")
-        }
-        guard let result = NativeExpenseOCRParser.parse(screenText) else {
-            return .result(dialog: "没有识别到明确的支付金额，请确认当前页面是支付成功详情")
-        }
         let payload = NativeExpenseShortcutPayload(
             amount: result.amount,
             expenseDate: result.expenseDate,
@@ -160,23 +114,10 @@ struct QuickExpenseFromTextIntent: AppIntent {
             note: result.merchant,
             autoSubmit: true
         )
-        if let data = try? JSONEncoder().encode(payload) {
-            UserDefaults.standard.set(data, forKey: nativeExpenseShortcutPayloadKey)
-        }
+        guard let data = try? JSONEncoder().encode(payload) else { return false }
+        UserDefaults.standard.set(data, forKey: nativeExpenseShortcutPayloadKey)
         NotificationCenter.default.post(name: nativeExpenseShortcutNotification, object: nil)
-        return .result(dialog: "已识别 \(String(format: "%.2f", result.amount)) 元并写入公司账单")
-    }
-}
-
-@available(iOS 16.0, *)
-struct NBAssistantShortcuts: AppShortcutsProvider {
-    static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: QuickExpenseFromTextIntent(),
-            phrases: ["用 \(.applicationName) 快捷记账", "\(.applicationName) 截图记账"],
-            shortTitle: "截图快捷记账",
-            systemImageName: "creditcard"
-        )
+        return true
     }
 }
 
@@ -185,6 +126,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        connectionOptions.urlContexts.forEach { _ = NativeExpenseShortcutURL.handle($0.url) }
         window = UIWindow(windowScene: windowScene)
         window?.rootViewController = UIHostingController(rootView: NativeRootView())
         window?.makeKeyAndVisible()
@@ -192,6 +134,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        URLContexts.forEach { _ = NativeExpenseShortcutURL.handle($0.url) }
         SceneDelegateProxy.shared.scene(scene, openURLContexts: URLContexts)
     }
 

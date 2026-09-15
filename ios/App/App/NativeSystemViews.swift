@@ -320,12 +320,14 @@ private struct NativeShortcutSetupView: View {
                 shortcutStep("1", "新建普通快捷指令，名称为“NBAssistant 快捷记账”")
                 shortcutStep("2", "添加“截屏”，截取当前支付成功页面")
                 shortcutStep("3", "添加“从图像中提取文本”，将“截屏”连接到这个动作")
-                shortcutStep("4", "添加 NBAssistant 的“截图快捷记账”，将提取出的文字传给“屏幕文字”")
-                shortcutStep("5", "先手动运行测试，再在轻点背面中绑定这个普通快捷指令")
+                shortcutStep("4", "添加“URL 编码”，将提取出的文字连接到这个动作")
+                shortcutStep("5", "添加“文本”，填写 nbassistant://shortcut/expense?text=，并在末尾插入 URL 编码后的结果")
+                shortcutStep("6", "添加“URL”和“打开 URL”，将上一步文本连接进去")
+                shortcutStep("7", "删除旧的 NBAssistant 动作；手动测试成功后再绑定轻点背面")
             }
 
             Section {
-                Text("快捷指令名称建议使用：NBAssistant 快捷记账。首次使用需要保持 App 已登录；识别失败时不会创建账单。")
+                Text("快捷指令通过专用链接把识别文字交给 App，不再调用系统 AppIntent。首次使用需要保持 App 已登录；识别失败时不会创建账单。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
