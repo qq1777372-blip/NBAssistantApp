@@ -237,7 +237,7 @@ struct QuickExpenseFromScreenshotIntent: AppIntent {
     static var description = IntentDescription("识别支付截图中的金额、日期和商户并自动记账")
     static var openAppWhenRun: Bool = true
 
-    @Parameter(title: "支付截图", supportedTypeIdentifiers: ["public.image"])
+    @Parameter(title: "支付截图")
     var screenshot: IntentFile?
 
     init() { screenshot = nil }
