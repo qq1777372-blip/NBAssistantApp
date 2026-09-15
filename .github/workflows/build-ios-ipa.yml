@@ -7,7 +7,7 @@ on:
       - "ios-v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-ios:
@@ -84,3 +84,13 @@ jobs:
             NBAssistant-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NBAssistant iOS ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            NBAssistant-unsigned.ipa
+            NBAssistant-unsigned.ipa.sha256
