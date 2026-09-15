@@ -237,7 +237,7 @@ struct QuickExpenseFromScreenshotIntent: AppIntent {
     static var description = IntentDescription("识别支付截图中的金额、日期和商户并自动记账")
     static var openAppWhenRun: Bool = true
 
-    @Parameter(title: "支付截图")
+    @Parameter(title: "支付截图", supportedTypeIdentifiers: ["public.image"])
     var screenshot: IntentFile?
 
     init() { screenshot = nil }
@@ -246,9 +246,18 @@ struct QuickExpenseFromScreenshotIntent: AppIntent {
         guard let screenshot else {
             return .result(dialog: "请先在快捷指令中添加“截屏”并连接到此动作")
         }
+        let imageData: Data
+        do {
+            imageData = try await loadShortcutImageData(screenshot)
+        } catch {
+            return .result(dialog: "支付截图读取失败，请重新截屏后再试")
+        }
+        guard !imageData.isEmpty else {
+            return .result(dialog: "支付截图为空，请重新截屏后再试")
+        }
         let lines: [NativeExpenseOCRLine]
         do {
-            lines = try NativeExpenseOCRParser.recognizeLines(from: screenshot.data)
+            lines = try NativeExpenseOCRParser.recognizeLines(from: imageData)
         } catch {
             return .result(dialog: "支付截图文字识别失败")
         }
@@ -269,6 +278,22 @@ struct QuickExpenseFromScreenshotIntent: AppIntent {
         NotificationCenter.default.post(name: nativeExpenseShortcutNotification, object: nil)
         return .result(dialog: "已识别 \(String(format: "%.2f", result.amount)) 元，正在写入公司账单")
     }
+}
+
+@available(iOS 16.0, *)
+private func loadShortcutImageData(_ file: IntentFile) async throws -> Data {
+    if #available(iOS 18.0, *) {
+        // Shortcuts may provide a security-scoped temporary file. Use the
+        // throwing async API so an unavailable file becomes an intent result
+        // instead of terminating the AppIntent process.
+        return try await file.data(contentType: .image)
+    }
+    if let url = file.fileURL, let data = try? Data(contentsOf: url), !data.isEmpty {
+        return data
+    }
+    let data = file.data
+    guard !data.isEmpty else { throw IntentFile.IntentFileError.failedToLoadData }
+    return data
 }
 
 @available(iOS 16.0, *)
