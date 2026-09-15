@@ -249,6 +249,9 @@ struct NativeAppSettingsView: View {
                 NavigationLink { NativeAboutView() } label: {
                     Label("关于 NBAssistant", systemImage: "info.circle")
                 }
+                NavigationLink { NativeShortcutSetupView() } label: {
+                    Label("快捷记账", systemImage: "hand.tap")
+                }
             }
 
             Section {
@@ -275,6 +278,65 @@ struct NativeAppSettingsView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("退出后需要重新输入账号和密码才能进入。")
+        }
+    }
+}
+
+private struct NativeShortcutSetupView: View {
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("NBAssistant 快捷记账", systemImage: "hand.tap.fill")
+                        .font(.headline)
+                    Text("在支付宝或微信支付成功页面双击手机背面，识别金额、日期和商户后自动写入公司账单。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            }
+
+            Section("开始设置") {
+                Button {
+                    guard let url = URL(string: "shortcuts://") else { return }
+                    UIApplication.shared.open(url)
+                } label: {
+                    Label("打开快捷指令", systemImage: "arrow.up.forward.app")
+                }
+                Button {
+                    guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                    UIApplication.shared.open(url)
+                } label: {
+                    Label("打开系统设置", systemImage: "gearshape")
+                }
+            }
+
+            Section("快捷指令动作") {
+                shortcutStep("1", "获取屏幕上的内容")
+                shortcutStep("2", "从屏幕内容中提取金额、日期和商户")
+                shortcutStep("3", "运行 NBAssistant 的“记一笔公司消费”")
+                shortcutStep("4", "在轻点背面中绑定这个快捷指令")
+            }
+
+            Section {
+                Text("快捷指令名称建议使用：NBAssistant 快捷记账。首次使用需要保持 App 已登录；识别失败时不会创建账单。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("快捷记账")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func shortcutStep(_ number: String, _ title: String) -> some View {
+        HStack(spacing: 12) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Color.blue, in: Circle())
+            Text(title)
+                .font(.subheadline)
         }
     }
 }
