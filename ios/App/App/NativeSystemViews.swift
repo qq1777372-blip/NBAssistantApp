@@ -313,8 +313,8 @@ private struct NativeShortcutSetupView: View {
 
             Section("快捷指令动作") {
                 shortcutStep("1", "获取屏幕上的内容")
-                shortcutStep("2", "从屏幕内容中提取金额、日期和商户")
-                shortcutStep("3", "运行 NBAssistant 的“记一笔公司消费”")
+                shortcutStep("2", "从屏幕内容中提取文字")
+                shortcutStep("3", "运行 NBAssistant 的“截图快捷记账”")
                 shortcutStep("4", "在轻点背面中绑定这个快捷指令")
             }
 

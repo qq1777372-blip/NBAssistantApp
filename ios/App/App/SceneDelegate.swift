@@ -20,6 +20,66 @@ private struct NativeExpenseShortcutPayload: Codable {
     let autoSubmit: Bool
 }
 
+private struct NativeExpenseOCRResult {
+    let amount: Double
+    let expenseDate: String
+    let merchant: String
+}
+
+private enum NativeExpenseOCRParser {
+    static func parse(_ input: String) -> NativeExpenseOCRResult? {
+        let text = input
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "￥", with: "¥")
+        guard let amount = firstAmount(in: text), amount > 0, amount < 1_000_000 else { return nil }
+        let date = firstDate(in: text) ?? Self.dateFormatter.string(from: Date())
+        let merchant = firstMerchant(in: text) ?? ""
+        return NativeExpenseOCRResult(amount: amount, expenseDate: date, merchant: merchant)
+    }
+
+    private static func firstAmount(in text: String) -> Double? {
+        let labelled = #"(?:实付|实际支付|付款金额|支付金额|合计|总计|订单金额|金额)[^0-9¥]{0,16}(?:¥)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"#
+        let currency = #"¥\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"#
+        let yuan = #"([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*元"#
+        for pattern in [labelled, currency, yuan] {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > 1,
+                  let valueRange = Range(match.range(at: 1), in: text) else { continue }
+            if let value = Double(text[valueRange].replacingOccurrences(of: ",", with: "")) { return value }
+        }
+        return nil
+    }
+
+    private static func firstDate(in text: String) -> String? {
+        let pattern = #"(20\d{2})[年./-](\d{1,2})[月./-](\d{1,2})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges > 3,
+              let yearRange = Range(match.range(at: 1), in: text),
+              let monthRange = Range(match.range(at: 2), in: text),
+              let dayRange = Range(match.range(at: 3), in: text),
+              let year = Int(text[yearRange]), let month = Int(text[monthRange]), let day = Int(text[dayRange]) else { return nil }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+
+    private static func firstMerchant(in text: String) -> String? {
+        let pattern = #"(?:商户名称|收款商户|收款方|商户|商家)[：:\s]*([^\n]{2,48})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              match.numberOfRanges > 1,
+              let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+        let value = text[valueRange].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+}
+
 @available(iOS 16.0, *)
 struct QuickExpenseIntent: AppIntent {
     static var title: LocalizedStringResource = "记一笔公司消费"
@@ -59,12 +119,43 @@ struct QuickExpenseIntent: AppIntent {
 }
 
 @available(iOS 16.0, *)
+struct QuickExpenseFromScreenIntent: AppIntent {
+    static var title: LocalizedStringResource = "截图快捷记账"
+    static var description = IntentDescription("从支付页面文字中识别金额、日期和商户并自动记账")
+    static var openAppWhenRun: Bool = true
+
+    @Parameter(title: "屏幕文字")
+    var screenText: String
+
+    init() { screenText = "" }
+
+    func perform() async throws -> some IntentResult {
+        guard let result = NativeExpenseOCRParser.parse(screenText) else {
+            throw NSError(domain: "NBAssistant.Shortcut", code: 2, userInfo: [NSLocalizedDescriptionKey: "没有识别到明确的支付金额"])
+        }
+        let payload = NativeExpenseShortcutPayload(
+            amount: result.amount,
+            expenseDate: result.expenseDate,
+            merchant: result.merchant,
+            category: "其他消费",
+            note: result.merchant,
+            autoSubmit: true
+        )
+        if let data = try? JSONEncoder().encode(payload) {
+            UserDefaults.standard.set(data, forKey: nativeExpenseShortcutPayloadKey)
+        }
+        NotificationCenter.default.post(name: nativeExpenseShortcutNotification, object: nil)
+        return .result(dialog: "已识别 \(String(format: "%.2f", result.amount)) 元并写入公司账单")
+    }
+}
+
+@available(iOS 16.0, *)
 struct NBAssistantShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
-            intent: QuickExpenseIntent(),
-            phrases: ["在 \(.applicationName) 记一笔", "\(.applicationName) 记一笔公司消费"],
-            shortTitle: "记一笔",
+            intent: QuickExpenseFromScreenIntent(),
+            phrases: ["用 \(.applicationName) 快捷记账", "\(.applicationName) 截图记账"],
+            shortTitle: "截图快捷记账",
             systemImageName: "creditcard"
         )
     }
