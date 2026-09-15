@@ -7,7 +7,6 @@ import WebKit
 import ImageIO
 import PhotosUI
 import AppIntents
-import Vision
 
 private let nativeExpenseShortcutPayloadKey = "native-expense-shortcut-payload"
 private let nativeExpenseShortcutNotification = Notification.Name("nativeExpenseShortcut")
@@ -28,29 +27,7 @@ private struct NativeExpenseOCRResult {
     let merchant: String
 }
 
-private struct NativeExpenseOCRLine {
-    let text: String
-    let height: CGFloat
-}
-
 private enum NativeExpenseOCRParser {
-    static func recognizeLines(from imageData: Data) throws -> [NativeExpenseOCRLine] {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        request.recognitionLanguages = ["zh-Hans", "en-US"]
-        let handler = VNImageRequestHandler(data: imageData, options: [:])
-        try handler.perform([request])
-        return request.results?.compactMap { observation in
-            guard let candidate = observation.topCandidates(1).first else { return nil }
-            return NativeExpenseOCRLine(text: candidate.string, height: observation.boundingBox.height)
-        } ?? []
-    }
-
-    static func recognizeText(from imageData: Data) throws -> String {
-        try recognizeLines(from: imageData).map(\.text).joined(separator: "\n")
-    }
-
     static func parse(_ input: String) -> NativeExpenseOCRResult? {
         let text = input
             .replacingOccurrences(of: "\r", with: "\n")
@@ -61,35 +38,6 @@ private enum NativeExpenseOCRParser {
         guard let amount = firstAmount(in: text), amount > 0, amount < 1_000_000 else { return nil }
         let date = firstDate(in: text) ?? Self.dateFormatter.string(from: Date())
         let merchant = firstMerchant(in: text) ?? ""
-        return NativeExpenseOCRResult(amount: amount, expenseDate: date, merchant: merchant)
-    }
-
-    static func parse(_ lines: [NativeExpenseOCRLine]) -> NativeExpenseOCRResult? {
-        let text = lines.map(\.text).joined(separator: "\n")
-        let normalized = text
-            .replacingOccurrences(of: "￥", with: "¥")
-            .replacingOccurrences(of: "，", with: ",")
-            .replacingOccurrences(of: "．", with: ".")
-            .replacingOccurrences(of: "。", with: ".")
-        let amount = lines
-            .compactMap { line -> (amount: Double, height: CGFloat)? in
-                let value = line.text
-                    .replacingOccurrences(of: "￥", with: "¥")
-                    .replacingOccurrences(of: "，", with: ",")
-                    .replacingOccurrences(of: "．", with: ".")
-                let hasMoneyFormat = value.contains("¥") || value.contains("元") ||
-                    value.range(of: #"\d+\s*[.,]\s*\d{1,2}"#, options: .regularExpression) != nil ||
-                    value.range(of: #"实付金额|实付款|实际付款|实际支付|付款金额|支付金额|交易金额|收款金额|应付金额|合计|总计|订单金额|金额"#, options: .regularExpression) != nil
-                guard hasMoneyFormat,
-                      let amount = decimalAmount(in: value) ?? firstAmount(in: value),
-                      amount > 0, amount < 1_000_000 else { return nil }
-                return (amount, line.height)
-            }
-            .max { lhs, rhs in lhs.height < rhs.height }?.amount
-            ?? firstAmount(in: normalized)
-        guard let amount, amount > 0, amount < 1_000_000 else { return nil }
-        let date = firstDate(in: normalized) ?? Self.dateFormatter.string(from: Date())
-        let merchant = firstMerchant(in: normalized) ?? ""
         return NativeExpenseOCRResult(amount: amount, expenseDate: date, merchant: merchant)
     }
 
@@ -117,17 +65,6 @@ private enum NativeExpenseOCRParser {
             if let value = Double(normalizedValue), value > 0, value < 1_000_000 { return value }
         }
         return nil
-    }
-
-    private static func decimalAmount(in text: String) -> Double? {
-        let pattern = #"(?<![0-9])(\d{1,6}\s*[.,]\s*\d{1,2})(?![0-9])"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let valueRange = Range(match.range(at: 1), in: text) else { return nil }
-        let raw = String(text[valueRange]).replacingOccurrences(of: " ", with: "")
-        let normalized = raw.replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(normalized), value > 0, value < 1_000_000 else { return nil }
-        return value
     }
 
     private static func firstDate(in text: String) -> String? {
@@ -199,8 +136,8 @@ struct QuickExpenseIntent: AppIntent {
 
 @available(iOS 16.0, *)
 struct QuickExpenseFromTextIntent: AppIntent {
-    static var title: LocalizedStringResource = "文字快捷记账"
-    static var description = IntentDescription("从支付页面文字中识别金额、日期和商户并自动记账")
+    static var title: LocalizedStringResource = "截图快捷记账"
+    static var description = IntentDescription("接收支付截图识别出的文字，自动记账")
     static var openAppWhenRun: Bool = true
 
     @Parameter(title: "屏幕文字")
@@ -232,75 +169,10 @@ struct QuickExpenseFromTextIntent: AppIntent {
 }
 
 @available(iOS 16.0, *)
-struct QuickExpenseFromScreenshotIntent: AppIntent {
-    static var title: LocalizedStringResource = "截图快捷记账"
-    static var description = IntentDescription("识别支付截图中的金额、日期和商户并自动记账")
-    static var openAppWhenRun: Bool = true
-
-    @Parameter(title: "支付截图")
-    var screenshot: IntentFile?
-
-    init() { screenshot = nil }
-
-    func perform() async throws -> some IntentResult {
-        guard let screenshot else {
-            return .result(dialog: "请先在快捷指令中添加“截屏”并连接到此动作")
-        }
-        let imageData: Data
-        do {
-            imageData = try await loadShortcutImageData(screenshot)
-        } catch {
-            return .result(dialog: "支付截图读取失败，请重新截屏后再试")
-        }
-        guard !imageData.isEmpty else {
-            return .result(dialog: "支付截图为空，请重新截屏后再试")
-        }
-        let lines: [NativeExpenseOCRLine]
-        do {
-            lines = try NativeExpenseOCRParser.recognizeLines(from: imageData)
-        } catch {
-            return .result(dialog: "支付截图文字识别失败")
-        }
-        guard let result = NativeExpenseOCRParser.parse(lines) else {
-            return .result(dialog: "没有识别到明确的支付金额，请确认截图包含支付成功详情")
-        }
-        let payload = NativeExpenseShortcutPayload(
-            amount: result.amount,
-            expenseDate: result.expenseDate,
-            merchant: result.merchant,
-            category: "其他消费",
-            note: result.merchant,
-            autoSubmit: true
-        )
-        if let data = try? JSONEncoder().encode(payload) {
-            UserDefaults.standard.set(data, forKey: nativeExpenseShortcutPayloadKey)
-        }
-        NotificationCenter.default.post(name: nativeExpenseShortcutNotification, object: nil)
-        return .result(dialog: "已识别 \(String(format: "%.2f", result.amount)) 元，正在写入公司账单")
-    }
-}
-
-@available(iOS 16.0, *)
-private func loadShortcutImageData(_ file: IntentFile) async throws -> Data {
-    if #available(iOS 18.0, *) {
-        // Shortcuts may provide a security-scoped temporary file. Use the
-        // throwing async API so an unavailable file becomes an intent result
-        // instead of terminating the AppIntent process.
-        return try await file.data(contentType: .image)
-    }
-    if let url = file.fileURL, let data = try? Data(contentsOf: url), !data.isEmpty {
-        return data
-    }
-    let data = file.data
-    guard !data.isEmpty else { throw IntentFile.IntentFileError.failedToLoadData }
-    return data
-}
-
-@available(iOS 16.0, *)
 struct NBAssistantShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
-            intent: QuickExpenseFromScreenshotIntent(),
+            intent: QuickExpenseFromTextIntent(),
             phrases: ["用 \(.applicationName) 快捷记账", "\(.applicationName) 截图记账"],
             shortTitle: "截图快捷记账",
             systemImageName: "creditcard"

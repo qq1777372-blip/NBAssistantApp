@@ -319,8 +319,9 @@ private struct NativeShortcutSetupView: View {
             Section("快捷指令动作") {
                 shortcutStep("1", "新建普通快捷指令，名称为“NBAssistant 快捷记账”")
                 shortcutStep("2", "添加“截屏”，截取当前支付成功页面")
-                shortcutStep("3", "添加 NBAssistant 的“截图快捷记账”，将截图传给“支付截图”")
-                shortcutStep("4", "先手动运行测试，再在轻点背面中绑定这个普通快捷指令")
+                shortcutStep("3", "添加“从图像中提取文本”，将“截屏”连接到这个动作")
+                shortcutStep("4", "添加 NBAssistant 的“截图快捷记账”，将提取出的文字传给“屏幕文字”")
+                shortcutStep("5", "先手动运行测试，再在轻点背面中绑定这个普通快捷指令")
             }
 
             Section {
