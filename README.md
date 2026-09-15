@@ -51,7 +51,7 @@ API at `https://xiaoxu666.asia`.
 ## Current release
 
 - Web: `v2026.08.20.7`
-- iOS: `v1.3.8 (build 60)`
+- iOS: `v1.4.9 (build 71)`
 
 The web bundle and demo API in this repository include the synchronized AI
 workspace session context, daily usage data, share links, and message feedback.

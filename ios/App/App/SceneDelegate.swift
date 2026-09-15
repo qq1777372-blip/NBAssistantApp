@@ -43,11 +43,15 @@ private enum NativeExpenseOCRParser {
     private static func firstAmount(in text: String) -> Double? {
         // Keep generic words such as "支付" out of this pattern: OCR text like
         // "支付方式 ... 18:30" must not turn the time into an amount.
+        let successDecimal = #"(?:转账成功|支付成功|交易成功|付款成功|收款成功)[^0-9¥]{0,80}(?:¥)?\s*([0-9]{1,6}\s*[.,]\s*[0-9]{1,2})"#
         let labelled = #"(?:实付金额|实付款|实际付款|实际支付|付款金额|支付金额|交易金额|收款金额|应付金额|合计|总计|订单金额|金额)[^0-9¥]{0,24}(?:¥)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\s*[.,]\s*[0-9]{1,2})?|[0-9]+(?:\s*[.,]\s*[0-9]{1,2})?)"#
         let currency = #"¥\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"#
         let yuan = #"([0-9]{1,3}(?:,[0-9]{3})*(?:\s*[.,]\s*[0-9]{1,2})?|[0-9]+(?:\s*[.,]\s*[0-9]{1,2})?)\s*元"#
         let decimalFallback = #"(?<![0-9])(\d{1,6}\s*[.,]\s*\d{1,2})(?![0-9])"#
-        for pattern in [currency, yuan, labelled, decimalFallback] {
+        // Payment screens often contain promotion text such as “满50元立减”.
+        // Prefer explicit payment labels and decimal amounts before generic
+        // “元” matches, otherwise a promotion threshold can win as the amount.
+        for pattern in [successDecimal, currency, labelled, decimalFallback, yuan] {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             let range = NSRange(text.startIndex..., in: text)
             guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > 1,
@@ -3417,9 +3421,10 @@ private struct ExpenseLedgerRow: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-                Text(shortDate(item.expenseDate))
+                Text("\(shortDate(item.expenseDate)) · \(expenseListTime(item.createdAt))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .padding(.horizontal, 14)
@@ -5457,6 +5462,11 @@ private struct ExpenseDetail: View {
                     .font(.caption)
                     .opacity(0.78)
                     .lineLimit(1)
+                    if let createdAt = item.createdAt {
+                        Label("记账时间  \(expenseDetailTime(createdAt))", systemImage: "clock")
+                            .font(.caption)
+                            .opacity(0.78)
+                    }
                 }
                 .foregroundStyle(.white)
                 .padding(20)
@@ -6578,11 +6588,43 @@ private struct TaskSummary: Codable {
     enum CodingKeys: String, CodingKey { case totalRecords = "total_records"; case principalTotal = "principal_total"; case commissionTotal = "commission_total"; case giftTotal = "gift_total"; case pendingSignedCount = "pending_signed_count"; case pendingSettlementCount = "pending_settlement_count" }
 }
 
-private struct CompanyExpense: Codable, Identifiable {
+private struct CompanyExpense: Decodable, Identifiable {
     let id: Int; let expenseNo: String; let expenseDate: String; let amount: Double; let category: String
     let paymentType: String; let paymentAccount: String; let expenseScope: String; let description: String; let submitterName: String
-    let attachmentURL: String?; let attachmentName: String?
-    enum CodingKeys: String, CodingKey { case id, amount, category, description; case expenseNo = "expense_no"; case expenseDate = "expense_date"; case paymentType = "payment_type"; case paymentAccount = "payment_account"; case expenseScope = "expense_scope"; case submitterName = "submitter_name"; case attachmentURL = "attachment_url"; case attachmentName = "attachment_name" }
+    let attachmentURL: String?; let attachmentName: String?; let createdAt: String?
+    enum CodingKeys: String, CodingKey {
+        case id, amount, category, description, updatedAt = "updated_at"
+        case expenseNo = "expense_no"; case expenseDate = "expense_date"; case paymentType = "payment_type"
+        case paymentAccount = "payment_account"; case expenseScope = "expense_scope"; case submitterName = "submitter_name"
+        case attachmentURL = "attachment_url"; case attachmentName = "attachment_name"
+        case createdAt = "created_at"; case createdAtCamel = "createdAt"; case submittedAt = "submitted_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? values.decode(Int.self, forKey: .id)) ?? 0
+        expenseNo = (try? values.decode(String.self, forKey: .expenseNo)) ?? ""
+        expenseDate = (try? values.decode(String.self, forKey: .expenseDate)) ?? ""
+        amount = (try? values.decode(Double.self, forKey: .amount)) ?? Double((try? values.decode(String.self, forKey: .amount)) ?? "") ?? 0
+        category = (try? values.decode(String.self, forKey: .category)) ?? "其他消费"
+        paymentType = (try? values.decode(String.self, forKey: .paymentType)) ?? "company"
+        paymentAccount = (try? values.decode(String.self, forKey: .paymentAccount)) ?? ""
+        expenseScope = (try? values.decode(String.self, forKey: .expenseScope)) ?? ""
+        description = (try? values.decode(String.self, forKey: .description)) ?? ""
+        submitterName = (try? values.decode(String.self, forKey: .submitterName)) ?? ""
+        attachmentURL = try? values.decodeIfPresent(String.self, forKey: .attachmentURL)
+        attachmentName = try? values.decodeIfPresent(String.self, forKey: .attachmentName)
+        createdAt = Self.decodeTimestamp(values, keys: [.createdAt, .createdAtCamel, .submittedAt, .updatedAt])
+    }
+
+    private static func decodeTimestamp(_ values: KeyedDecodingContainer<CodingKeys>, keys: [CodingKeys]) -> String? {
+        for key in keys {
+            if let value = try? values.decode(String.self, forKey: key), !value.isEmpty { return value }
+            if let seconds = try? values.decode(Double.self, forKey: key) { return String(seconds) }
+            if let seconds = try? values.decode(Int.self, forKey: key) { return String(seconds) }
+        }
+        return nil
+    }
 }
 
 private struct ExpenseSummary: Codable {
@@ -7791,6 +7833,51 @@ private struct HomeDashboardMetric: View {
 private struct HomeTodo: View { let color: Color; let title: String; let detail: String; let value: String; var body: some View { HStack(spacing: 12) { Circle().fill(color).frame(width: 7, height: 7); VStack(alignment: .leading, spacing: 3) { Text(title).font(.subheadline).fontWeight(.semibold); Text(detail).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Text(value).font(.title3).fontWeight(.bold) }.padding(.horizontal, 14).padding(.vertical, 13) } }
 private func money(_ value: Double) -> String { String(format: "¥ %.2f", value) }
 func shortDate(_ value: String?) -> String { guard let value else { return "-" }; return String(value.replacingOccurrences(of: "T", with: " ").prefix(16)) }
+private func expenseTimestamp(_ value: String) -> Date? {
+    if let seconds = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)), seconds > 0 {
+        // APIs sometimes serialize a database timestamp as Unix seconds or milliseconds.
+        return Date(timeIntervalSince1970: seconds > 10_000_000_000 ? seconds / 1_000 : seconds)
+    }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = formatter.date(from: value) { return date }
+    formatter.formatOptions = [.withInternetDateTime]
+    if let date = formatter.date(from: value) { return date }
+    let local = DateFormatter()
+    local.locale = Locale(identifier: "en_US_POSIX")
+    local.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    for format in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd'T'HH:mm"] {
+        local.dateFormat = format
+        if let date = local.date(from: value) { return date }
+    }
+    return nil
+}
+private func expenseListTime(_ value: String?) -> String {
+    guard let value else { return "--:--" }
+    guard let date = expenseTimestamp(value) else {
+        return expenseTimeText(value, includeSeconds: false) ?? "--:--"
+    }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.timeZone = .current
+    formatter.dateFormat = "HH:mm"
+    return formatter.string(from: date)
+}
+private func expenseDetailTime(_ value: String) -> String {
+    guard let date = expenseTimestamp(value) else { return shortDate(value) }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.timeZone = .current
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter.string(from: date)
+}
+private func expenseTimeText(_ value: String, includeSeconds: Bool) -> String? {
+    let pattern = includeSeconds ? #"(?:T|\s)(\d{1,2}:\d{2}:\d{2})"# : #"(?:T|\s)(\d{1,2}:\d{2})"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+          let range = Range(match.range(at: 1), in: value) else { return nil }
+    return String(value[range])
+}
 private func nativeImageURL(_ value: String) -> URL? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
