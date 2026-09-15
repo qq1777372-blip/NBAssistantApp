@@ -7,9 +7,11 @@ import WebKit
 import ImageIO
 import PhotosUI
 import AppIntents
+import Vision
 
 private let nativeExpenseShortcutPayloadKey = "native-expense-shortcut-payload"
 private let nativeExpenseShortcutNotification = Notification.Name("nativeExpenseShortcut")
+private let nativeExpenseSavedNotification = Notification.Name("nativeExpenseSaved")
 
 private struct NativeExpenseShortcutPayload: Codable {
     let amount: Double
@@ -26,29 +28,106 @@ private struct NativeExpenseOCRResult {
     let merchant: String
 }
 
+private struct NativeExpenseOCRLine {
+    let text: String
+    let height: CGFloat
+}
+
 private enum NativeExpenseOCRParser {
+    static func recognizeLines(from imageData: Data) throws -> [NativeExpenseOCRLine] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        let handler = VNImageRequestHandler(data: imageData, options: [:])
+        try handler.perform([request])
+        return request.results?.compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            return NativeExpenseOCRLine(text: candidate.string, height: observation.boundingBox.height)
+        } ?? []
+    }
+
+    static func recognizeText(from imageData: Data) throws -> String {
+        try recognizeLines(from: imageData).map(\.text).joined(separator: "\n")
+    }
+
     static func parse(_ input: String) -> NativeExpenseOCRResult? {
         let text = input
             .replacingOccurrences(of: "\r", with: "\n")
             .replacingOccurrences(of: "￥", with: "¥")
+            .replacingOccurrences(of: "，", with: ",")
+            .replacingOccurrences(of: "．", with: ".")
+            .replacingOccurrences(of: "。", with: ".")
         guard let amount = firstAmount(in: text), amount > 0, amount < 1_000_000 else { return nil }
         let date = firstDate(in: text) ?? Self.dateFormatter.string(from: Date())
         let merchant = firstMerchant(in: text) ?? ""
         return NativeExpenseOCRResult(amount: amount, expenseDate: date, merchant: merchant)
     }
 
+    static func parse(_ lines: [NativeExpenseOCRLine]) -> NativeExpenseOCRResult? {
+        let text = lines.map(\.text).joined(separator: "\n")
+        let normalized = text
+            .replacingOccurrences(of: "￥", with: "¥")
+            .replacingOccurrences(of: "，", with: ",")
+            .replacingOccurrences(of: "．", with: ".")
+            .replacingOccurrences(of: "。", with: ".")
+        let amount = lines
+            .compactMap { line -> (amount: Double, height: CGFloat)? in
+                let value = line.text
+                    .replacingOccurrences(of: "￥", with: "¥")
+                    .replacingOccurrences(of: "，", with: ",")
+                    .replacingOccurrences(of: "．", with: ".")
+                let hasMoneyFormat = value.contains("¥") || value.contains("元") ||
+                    value.range(of: #"\d+\s*[.,]\s*\d{1,2}"#, options: .regularExpression) != nil ||
+                    value.range(of: #"实付金额|实付款|实际付款|实际支付|付款金额|支付金额|交易金额|收款金额|应付金额|合计|总计|订单金额|金额"#, options: .regularExpression) != nil
+                guard hasMoneyFormat,
+                      let amount = decimalAmount(in: value) ?? firstAmount(in: value),
+                      amount > 0, amount < 1_000_000 else { return nil }
+                return (amount, line.height)
+            }
+            .max { lhs, rhs in lhs.height < rhs.height }?.amount
+            ?? firstAmount(in: normalized)
+        guard let amount, amount > 0, amount < 1_000_000 else { return nil }
+        let date = firstDate(in: normalized) ?? Self.dateFormatter.string(from: Date())
+        let merchant = firstMerchant(in: normalized) ?? ""
+        return NativeExpenseOCRResult(amount: amount, expenseDate: date, merchant: merchant)
+    }
+
     private static func firstAmount(in text: String) -> Double? {
-        let labelled = #"(?:实付|实际支付|付款金额|支付金额|合计|总计|订单金额|金额)[^0-9¥]{0,16}(?:¥)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"#
+        // Keep generic words such as "支付" out of this pattern: OCR text like
+        // "支付方式 ... 18:30" must not turn the time into an amount.
+        let labelled = #"(?:实付金额|实付款|实际付款|实际支付|付款金额|支付金额|交易金额|收款金额|应付金额|合计|总计|订单金额|金额)[^0-9¥]{0,24}(?:¥)?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\s*[.,]\s*[0-9]{1,2})?|[0-9]+(?:\s*[.,]\s*[0-9]{1,2})?)"#
         let currency = #"¥\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)"#
-        let yuan = #"([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)\s*元"#
-        for pattern in [labelled, currency, yuan] {
+        let yuan = #"([0-9]{1,3}(?:,[0-9]{3})*(?:\s*[.,]\s*[0-9]{1,2})?|[0-9]+(?:\s*[.,]\s*[0-9]{1,2})?)\s*元"#
+        let decimalFallback = #"(?<![0-9])(\d{1,6}\s*[.,]\s*\d{1,2})(?![0-9])"#
+        for pattern in [currency, yuan, labelled, decimalFallback] {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
             let range = NSRange(text.startIndex..., in: text)
             guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > 1,
                   let valueRange = Range(match.range(at: 1), in: text) else { continue }
-            if let value = Double(text[valueRange].replacingOccurrences(of: ",", with: "")) { return value }
+            let rawValue = String(text[valueRange]).replacingOccurrences(of: " ", with: "")
+            let normalizedValue: String
+            if rawValue.contains(".") {
+                normalizedValue = rawValue.replacingOccurrences(of: ",", with: "")
+            } else if let comma = rawValue.firstIndex(of: ","), rawValue.distance(from: comma, to: rawValue.endIndex) == 4 {
+                normalizedValue = rawValue.replacingOccurrences(of: ",", with: "")
+            } else {
+                normalizedValue = rawValue.replacingOccurrences(of: ",", with: ".")
+            }
+            if let value = Double(normalizedValue), value > 0, value < 1_000_000 { return value }
         }
         return nil
+    }
+
+    private static func decimalAmount(in text: String) -> Double? {
+        let pattern = #"(?<![0-9])(\d{1,6}\s*[.,]\s*\d{1,2})(?![0-9])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+        let raw = String(text[valueRange]).replacingOccurrences(of: " ", with: "")
+        let normalized = raw.replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value > 0, value < 1_000_000 else { return nil }
+        return value
     }
 
     private static func firstDate(in text: String) -> String? {
@@ -119,8 +198,8 @@ struct QuickExpenseIntent: AppIntent {
 }
 
 @available(iOS 16.0, *)
-struct QuickExpenseFromScreenIntent: AppIntent {
-    static var title: LocalizedStringResource = "截图快捷记账"
+struct QuickExpenseFromTextIntent: AppIntent {
+    static var title: LocalizedStringResource = "文字快捷记账"
     static var description = IntentDescription("从支付页面文字中识别金额、日期和商户并自动记账")
     static var openAppWhenRun: Bool = true
 
@@ -130,8 +209,11 @@ struct QuickExpenseFromScreenIntent: AppIntent {
     init() { screenText = "" }
 
     func perform() async throws -> some IntentResult {
+        guard !screenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .result(dialog: "请先在快捷指令中传入支付页面文字")
+        }
         guard let result = NativeExpenseOCRParser.parse(screenText) else {
-            throw NSError(domain: "NBAssistant.Shortcut", code: 2, userInfo: [NSLocalizedDescriptionKey: "没有识别到明确的支付金额"])
+            return .result(dialog: "没有识别到明确的支付金额，请确认当前页面是支付成功详情")
         }
         let payload = NativeExpenseShortcutPayload(
             amount: result.amount,
@@ -150,10 +232,50 @@ struct QuickExpenseFromScreenIntent: AppIntent {
 }
 
 @available(iOS 16.0, *)
+struct QuickExpenseFromScreenshotIntent: AppIntent {
+    static var title: LocalizedStringResource = "截图快捷记账"
+    static var description = IntentDescription("识别支付截图中的金额、日期和商户并自动记账")
+    static var openAppWhenRun: Bool = true
+
+    @Parameter(title: "支付截图")
+    var screenshot: IntentFile?
+
+    init() { screenshot = nil }
+
+    func perform() async throws -> some IntentResult {
+        guard let screenshot else {
+            return .result(dialog: "请先在快捷指令中添加“截屏”并连接到此动作")
+        }
+        let lines: [NativeExpenseOCRLine]
+        do {
+            lines = try NativeExpenseOCRParser.recognizeLines(from: screenshot.data)
+        } catch {
+            return .result(dialog: "支付截图文字识别失败")
+        }
+        guard let result = NativeExpenseOCRParser.parse(lines) else {
+            return .result(dialog: "没有识别到明确的支付金额，请确认截图包含支付成功详情")
+        }
+        let payload = NativeExpenseShortcutPayload(
+            amount: result.amount,
+            expenseDate: result.expenseDate,
+            merchant: result.merchant,
+            category: "其他消费",
+            note: result.merchant,
+            autoSubmit: true
+        )
+        if let data = try? JSONEncoder().encode(payload) {
+            UserDefaults.standard.set(data, forKey: nativeExpenseShortcutPayloadKey)
+        }
+        NotificationCenter.default.post(name: nativeExpenseShortcutNotification, object: nil)
+        return .result(dialog: "已识别 \(String(format: "%.2f", result.amount)) 元，正在写入公司账单")
+    }
+}
+
+@available(iOS 16.0, *)
 struct NBAssistantShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
-            intent: QuickExpenseFromScreenIntent(),
+            intent: QuickExpenseFromScreenshotIntent(),
             phrases: ["用 \(.applicationName) 快捷记账", "\(.applicationName) 截图记账"],
             shortTitle: "截图快捷记账",
             systemImageName: "creditcard"
@@ -976,6 +1098,7 @@ private struct NativeAIWorkspaceView: View {
     @State private var editingMessageText = ""
     @State private var showingMessageEditor = false
     @State private var generatedImagePreview: GeneratedImagePreview?
+    @State private var imageSaveMessage: String?
     @State private var scrollRequest = 0
     @State private var chatInitialPositioned = false
 
@@ -1086,6 +1209,20 @@ private struct NativeAIWorkspaceView: View {
                 .padding(.top, 8)
             }
         }
+        .overlay(alignment: .top) {
+            if let imageSaveMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text(imageSaveMessage).font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 36)
+                .background(Color(.secondarySystemBackground), in: Capsule())
+                .overlay(Capsule().stroke(Color.green.opacity(0.22), lineWidth: 0.5))
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
     }
 
     private var modelSelector: some View {
@@ -1113,6 +1250,9 @@ private struct NativeAIWorkspaceView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .frame(minHeight: 44)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityLabel("选择 AI 模型")
     }
 
@@ -1124,11 +1264,13 @@ private struct NativeAIWorkspaceView: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .frame(width: 38, height: 40)
             }
+            .buttonStyle(AIComposerButtonStyle())
             .accessibilityLabel("历史会话")
             Button { createChat() } label: {
                 Image(systemName: "square.and.pencil")
                     .frame(width: 38, height: 40)
             }
+            .buttonStyle(AIComposerButtonStyle())
             .accessibilityLabel("新建会话")
         }
         .padding(.horizontal, 16)
@@ -1145,9 +1287,11 @@ private struct NativeAIWorkspaceView: View {
             Button { showingHistory = true } label: {
                 Image(systemName: "clock.arrow.circlepath")
             }
+            .buttonStyle(AIComposerButtonStyle())
             Button { createChat() } label: {
                 Image(systemName: "square.and.pencil")
             }
+            .buttonStyle(AIComposerButtonStyle())
         }
     }
     private var chatScrollContent: some View {
@@ -1400,12 +1544,20 @@ private struct NativeAIWorkspaceView: View {
                 if item.role == "assistant" && (!item.content.isEmpty || item.generatedImageURL != nil || generatedImageSource(item.content) != nil) {
                     HStack {
                         if !item.content.isEmpty {
-                            Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }.accessibilityLabel("复制回答")
+                            Button { UIPasteboard.general.string = item.content } label: { Image(systemName: "doc.on.doc") }
+                                .buttonStyle(AIComposerButtonStyle(foreground: .secondary, fill: Color(.secondarySystemBackground)))
+                                .accessibilityLabel("复制回答")
                         }
-                        Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("重新生成")
-                        if item.status == "failed" { Button { regenerate(item.id) } label: { Image(systemName: "arrow.triangle.2.circlepath") }.accessibilityLabel("重试") }
+                        Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(AIComposerButtonStyle(foreground: .secondary, fill: Color(.secondarySystemBackground)))
+                            .accessibilityLabel("重新生成")
+                        if item.status == "failed" {
+                            Button { regenerate(item.id) } label: { Image(systemName: "arrow.triangle.2.circlepath") }
+                                .buttonStyle(AIComposerButtonStyle(foreground: .orange, fill: Color.orange.opacity(0.13)))
+                                .accessibilityLabel("重试")
+                        }
                     }
-                    .font(.caption)
+                    .padding(.top, 2)
                 }
             }
             .padding(.trailing, item.role == "user" && (!item.content.isEmpty || !item.imageURLs.isEmpty) ? 20 : 0)
@@ -2033,6 +2185,11 @@ private struct NativeAIWorkspaceView: View {
                     throw NativeImageError.invalidImage
                 }
                 UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                withAnimation(.easeOut(duration: 0.16)) { imageSaveMessage = "图片已保存到照片" }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    withAnimation(.easeIn(duration: 0.16)) { imageSaveMessage = nil }
+                }
             } catch {
                 self.error = "图片保存失败，请稍后重试。"
             }
@@ -3107,7 +3264,7 @@ private struct NativeQuickLedgerView: View {
         amount = String(format: "%.2f", payload.amount)
         if categories.contains(payload.category) { category = payload.category }
         expenseDate = parseExpenseDate(payload.expenseDate) ?? Date()
-        paymentAccount = payload.merchant.isEmpty ? "公司卡" : "支付宝 · (payload.merchant)"
+        paymentAccount = payload.merchant.isEmpty ? "公司卡" : "支付宝 · \(payload.merchant)"
         note = payload.note.isEmpty ? payload.merchant : payload.note
         shortcutAutoSubmit = payload.autoSubmit
     }
@@ -3140,6 +3297,7 @@ private struct NativeQuickLedgerView: View {
             }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             UIAccessibility.post(notification: .announcement, argument: message)
+            NotificationCenter.default.post(name: nativeExpenseSavedNotification, object: nil)
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard successToken == token else { return }
@@ -3259,6 +3417,12 @@ private struct NativeLedgerView: View {
             .navigationTitle("公司记账")
             .navigationBarTitleDisplayMode(.inline)
             .task { if records.isEmpty { await load() } }
+            .onAppear {
+                if !records.isEmpty { Task { await load() } }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: nativeExpenseSavedNotification)) { _ in
+                Task { await load() }
+            }
             .sheet(isPresented: $showingForm) { ExpenseForm(item: editing) { await load() } }
             .sheet(isPresented: $showingDateFilter) {
                 NavigationStack {
@@ -4365,7 +4529,7 @@ private struct SavedLinkFeedRow: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: onOpen)
 
-            if isArticle && !item.images.isEmpty {
+            if !item.images.isEmpty {
                 SavedLinkImageGrid(images: item.images, onTap: onOpenImage)
             }
 
@@ -4417,7 +4581,14 @@ private struct SavedLinkImageGrid: View {
                         SavedLinkFeedImage(url: entry.1, maxPixelSize: 600)
                         if index == 2 && entries.count > 3 {
                             Color.black.opacity(0.38).allowsHitTesting(false)
-                            Text("+\(entries.count - 3)").font(.headline).foregroundStyle(.white).allowsHitTesting(false)
+                            Button { onTap?(entries[3].0) } label: {
+                                Text("+\(entries.count - 3)")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                     .frame(height: 118)
@@ -4728,14 +4899,6 @@ private struct NativeZoomableRemoteImage: View {
             }.onEnded { value in
                 scale = min(max(scale * value, 1), 5)
                 if scale == 1 { offset = .zero }
-            })
-            .simultaneousGesture(DragGesture().updating($gestureOffset) { value, state, _ in
-                if scale > 1 { state = value.translation }
-            }.onEnded { value in
-                if scale > 1 {
-                    offset.width += value.translation.width
-                    offset.height += value.translation.height
-                }
             })
             .onTapGesture(count: 2) {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -6895,8 +7058,14 @@ private struct SavedLinkDetail: View {
                 }
                 let segments = isArticle ? savedLinkContentSegments(item.description) : []
                 let inlineURLs = Set(segments.compactMap { segment -> String? in if case .image(let url, _) = segment { return nativeImageURL(url)?.absoluteString }; return nil })
-                if isArticle {
-                    ForEach(Array(item.images.filter { image in guard let value = nativeImageURL(image.url)?.absoluteString else { return true }; return !inlineURLs.contains(value) }.enumerated()), id: \.offset) { _, image in Button { openImage(image.url) } label: { SavedLinkDetailImage(url: image.url) }.buttonStyle(.plain) }
+                if !item.images.isEmpty {
+                    ForEach(Array(item.images.filter { image in
+                        guard isArticle, let value = nativeImageURL(image.url)?.absoluteString else { return true }
+                        return !inlineURLs.contains(value)
+                    }.enumerated()), id: \.offset) { _, image in
+                        Button { openImage(image.url) } label: { SavedLinkDetailImage(url: image.url) }
+                            .buttonStyle(.plain)
+                    }
                 }
                 if let value = item.url,
                    let url = URL(string: value),
@@ -6963,6 +7132,8 @@ private struct SavedLinkImageGallery: View {
     @Environment(\.dismiss) private var dismiss
     let images: [SavedLinkGalleryImage]
     @State private var selection: String
+    @State private var saving = false
+    @State private var saveMessage: String?
 
     init(images: [SavedLinkGalleryImage], initialSelection: String) {
         self.images = images
@@ -7006,6 +7177,17 @@ private struct SavedLinkImageGallery: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(.black, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        saveCurrentImage()
+                    } label: {
+                        Image(systemName: saving ? "hourglass" : "square.and.arrow.down")
+                    }
+                    .disabled(saving || !images.indices.contains(selectedIndex))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel("保存图片")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                         .foregroundStyle(.white)
@@ -7015,6 +7197,34 @@ private struct SavedLinkImageGallery: View {
             }
             .onAppear {
                 if !images.contains(where: { $0.id == selection }) { selection = images.first?.id ?? "" }
+            }
+            .alert("图片", isPresented: Binding(get: { saveMessage != nil }, set: { if !$0 { saveMessage = nil } })) {
+                Button("好", role: .cancel) { saveMessage = nil }
+            } message: {
+                Text(saveMessage ?? "")
+            }
+        }
+    }
+
+    private func saveCurrentImage() {
+        guard images.indices.contains(selectedIndex) else { return }
+        let source = images[selectedIndex].source
+        saving = true
+        Task { @MainActor in
+            defer { saving = false }
+            do {
+                let image: UIImage
+                if let inline = nativeInlineImage(source) {
+                    image = inline
+                } else if let url = nativeImageURL(source) {
+                    image = try await NativeImagePipeline.shared.image(for: url, maxPixelSize: 3000)
+                } else {
+                    throw NativeImageError.invalidImage
+                }
+                UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                saveMessage = "已保存到照片"
+            } catch {
+                saveMessage = "图片保存失败，请稍后重试"
             }
         }
     }

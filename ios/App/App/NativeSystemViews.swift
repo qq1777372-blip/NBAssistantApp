@@ -298,6 +298,11 @@ private struct NativeShortcutSetupView: View {
 
             Section("开始设置") {
                 Button {
+                    runExpenseShortcut()
+                } label: {
+                    Label("运行快捷记账", systemImage: "play.circle.fill")
+                }
+                Button {
                     guard let url = URL(string: "shortcuts://") else { return }
                     UIApplication.shared.open(url)
                 } label: {
@@ -312,10 +317,10 @@ private struct NativeShortcutSetupView: View {
             }
 
             Section("快捷指令动作") {
-                shortcutStep("1", "获取屏幕上的内容")
-                shortcutStep("2", "从屏幕内容中提取文字")
-                shortcutStep("3", "运行 NBAssistant 的“截图快捷记账”")
-                shortcutStep("4", "在轻点背面中绑定这个快捷指令")
+                shortcutStep("1", "新建普通快捷指令，名称为“NBAssistant 快捷记账”")
+                shortcutStep("2", "添加“截屏”，截取当前支付成功页面")
+                shortcutStep("3", "添加 NBAssistant 的“截图快捷记账”，将截图传给“支付截图”")
+                shortcutStep("4", "先手动运行测试，再在轻点背面中绑定这个普通快捷指令")
             }
 
             Section {
@@ -326,6 +331,15 @@ private struct NativeShortcutSetupView: View {
         }
         .navigationTitle("快捷记账")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func runExpenseShortcut() {
+        var components = URLComponents()
+        components.scheme = "shortcuts"
+        components.host = "run-shortcut"
+        components.queryItems = [URLQueryItem(name: "name", value: "NBAssistant 快捷记账")]
+        guard let url = components.url else { return }
+        UIApplication.shared.open(url)
     }
 
     private func shortcutStep(_ number: String, _ title: String) -> some View {
